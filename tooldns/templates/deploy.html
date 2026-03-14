@@ -1,0 +1,211 @@
+{% extends "base.html" %}
+{% block title %} — Deploy{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>🚀 Deploy {{ app_name }}</h1>
+  <p class="hint-text">Pick a platform and follow the steps — no code editing required.</p>
+</div>
+
+<!-- Platform cards -->
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-bottom:24px">
+
+  <!-- Railway -->
+  <section class="card" style="text-align:center">
+    <div style="font-size:2rem;margin-bottom:8px">🚂</div>
+    <h2 style="margin-bottom:4px">Railway</h2>
+    <p class="hint-text" style="margin-bottom:16px">Easiest. $5/mo. Free trial. One click.</p>
+    <a href="https://railway.app/new/template" target="_blank" class="btn btn-primary" style="width:100%;display:block;text-align:center">
+      Deploy to Railway →
+    </a>
+    <p class="hint" style="margin-top:12px">After deploy, set env vars in Railway dashboard → Variables tab</p>
+  </section>
+
+  <!-- Render -->
+  <section class="card" style="text-align:center">
+    <div style="font-size:2rem;margin-bottom:8px">🎨</div>
+    <h2 style="margin-bottom:4px">Render</h2>
+    <p class="hint-text" style="margin-bottom:16px">Free tier available. Auto-deploys from GitHub.</p>
+    <a href="https://render.com/deploy" target="_blank" class="btn btn-primary" style="width:100%;display:block;text-align:center">
+      Deploy to Render →
+    </a>
+    <p class="hint" style="margin-top:12px">Connect your GitHub repo → add env vars → deploy</p>
+  </section>
+
+  <!-- Fly.io -->
+  <section class="card" style="text-align:center">
+    <div style="font-size:2rem;margin-bottom:8px">🪰</div>
+    <h2 style="margin-bottom:4px">Fly.io</h2>
+    <p class="hint-text" style="margin-bottom:16px">Fast global edge. Free allowance.</p>
+    <a href="https://fly.io/docs/getting-started/" target="_blank" class="btn btn-primary" style="width:100%;display:block;text-align:center">
+      Fly.io Docs →
+    </a>
+    <p class="hint" style="margin-top:12px"><code>flyctl launch</code> then <code>flyctl secrets set</code></p>
+  </section>
+
+  <!-- Docker / VPS -->
+  <section class="card" style="text-align:center">
+    <div style="font-size:2rem;margin-bottom:8px">🐳</div>
+    <h2 style="margin-bottom:4px">Docker / VPS</h2>
+    <p class="hint-text" style="margin-bottom:16px">Full control. Any Linux server.</p>
+    <a href="#docker-guide" class="btn" style="width:100%;display:block;text-align:center">
+      See Instructions ↓
+    </a>
+    <p class="hint" style="margin-top:12px">DigitalOcean, Hetzner, Linode, or any VPS</p>
+  </section>
+
+</div>
+
+<!-- Required Environment Variables -->
+<section class="card">
+  <h2>⚙️ Required Environment Variables</h2>
+  <p class="hint-text">Copy these into your platform's environment variables panel. Each platform has a "Variables" or "Environment" tab in their dashboard.</p>
+
+  <table style="width:100%;border-collapse:collapse;margin-top:12px;font-size:14px">
+    <thead>
+      <tr style="border-bottom:1px solid #1e293b;color:#94a3b8">
+        <th style="text-align:left;padding:8px 0">Variable</th>
+        <th style="text-align:left;padding:8px 12px">What to put</th>
+        <th style="text-align:left;padding:8px 0">Required?</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="border-bottom:1px solid #0f172a">
+        <td style="padding:10px 0"><code>TOOLDNS_API_KEY</code></td>
+        <td style="padding:10px 12px">Any secret string — e.g. <code>td_mysecretkey123</code></td>
+        <td><span style="color:#4ade80">Yes</span></td>
+      </tr>
+      <tr style="border-bottom:1px solid #0f172a">
+        <td style="padding:10px 0"><code>TOOLDNS_APP_NAME</code></td>
+        <td style="padding:10px 12px">Your brand name — e.g. <code>MyAITools</code></td>
+        <td><span style="color:#94a3b8">Optional</span></td>
+      </tr>
+      <tr style="border-bottom:1px solid #0f172a">
+        <td style="padding:10px 0"><code>TOOLDNS_APP_TAGLINE</code></td>
+        <td style="padding:10px 12px">Your tagline — e.g. <code>AI Tools for Everyone</code></td>
+        <td><span style="color:#94a3b8">Optional</span></td>
+      </tr>
+      <tr style="border-bottom:1px solid #0f172a">
+        <td style="padding:10px 0"><code>TOOLDNS_CONTACT_EMAIL</code></td>
+        <td style="padding:10px 12px">Your support email</td>
+        <td><span style="color:#94a3b8">Optional</span></td>
+      </tr>
+      <tr style="border-bottom:1px solid #0f172a">
+        <td style="padding:10px 0"><code>TOOLDNS_HOST</code></td>
+        <td style="padding:10px 12px"><code>0.0.0.0</code></td>
+        <td><span style="color:#4ade80">Yes</span></td>
+      </tr>
+      <tr style="border-bottom:1px solid #0f172a">
+        <td style="padding:10px 0"><code>TOOLDNS_PORT</code></td>
+        <td style="padding:10px 12px"><code>8787</code> (or whatever port your platform assigns)</td>
+        <td><span style="color:#94a3b8">Optional</span></td>
+      </tr>
+      <tr>
+        <td style="padding:10px 0"><code>TOOLDNS_MODEL</code></td>
+        <td style="padding:10px 12px">e.g. <code>claude-sonnet-4-6</code> — for cost tracking</td>
+        <td><span style="color:#94a3b8">Optional</span></td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- Docker guide -->
+<section class="card" id="docker-guide">
+  <h2>🐳 Docker / VPS Step-by-Step</h2>
+  <p class="hint-text">Run this on any Linux server (Ubuntu 22.04 recommended). Takes about 5 minutes.</p>
+
+  <div style="display:flex;flex-direction:column;gap:16px;margin-top:16px">
+
+    <div>
+      <p style="color:#94a3b8;font-size:13px;margin-bottom:6px">Step 1 — Install Docker (skip if already installed)</p>
+      <pre style="background:#0a0e1a;border:1px solid #1e293b;border-radius:6px;padding:14px;overflow-x:auto;font-size:13px;color:#e2e8f0">curl -fsSL https://get.docker.com | sh</pre>
+    </div>
+
+    <div>
+      <p style="color:#94a3b8;font-size:13px;margin-bottom:6px">Step 2 — Clone your repo</p>
+      <pre style="background:#0a0e1a;border:1px solid #1e293b;border-radius:6px;padding:14px;overflow-x:auto;font-size:13px;color:#e2e8f0">git clone https://github.com/syedfahimdev/ToolsDNS.git
+cd ToolsDNS</pre>
+    </div>
+
+    <div>
+      <p style="color:#94a3b8;font-size:13px;margin-bottom:6px">Step 3 — Create your .env file</p>
+      <pre style="background:#0a0e1a;border:1px solid #1e293b;border-radius:6px;padding:14px;overflow-x:auto;font-size:13px;color:#e2e8f0">cat > ~/.tooldns/.env &lt;&lt;EOF
+TOOLDNS_API_KEY=td_your_secret_key_here
+TOOLDNS_APP_NAME={{ app_name }}
+TOOLDNS_APP_TAGLINE={{ app_tagline }}
+TOOLDNS_CONTACT_EMAIL={{ contact_email }}
+TOOLDNS_HOST=0.0.0.0
+TOOLDNS_PORT=8787
+EOF</pre>
+    </div>
+
+    <div>
+      <p style="color:#94a3b8;font-size:13px;margin-bottom:6px">Step 4 — Start with Docker Compose</p>
+      <pre style="background:#0a0e1a;border:1px solid #1e293b;border-radius:6px;padding:14px;overflow-x:auto;font-size:13px;color:#e2e8f0">docker compose up -d</pre>
+    </div>
+
+    <div>
+      <p style="color:#94a3b8;font-size:13px;margin-bottom:6px">Step 5 — Open the dashboard</p>
+      <pre style="background:#0a0e1a;border:1px solid #1e293b;border-radius:6px;padding:14px;overflow-x:auto;font-size:13px;color:#e2e8f0">http://YOUR_SERVER_IP:8787/ui</pre>
+    </div>
+
+    <div style="background:#0f2720;border:1px solid #166534;border-radius:6px;padding:14px">
+      <p style="color:#4ade80;font-weight:600;margin-bottom:4px">✅ That's it!</p>
+      <p style="color:#86efac;font-size:14px">Your dashboard is live. Add a domain with Nginx or Caddy for HTTPS. Add tools from the Sources page.</p>
+    </div>
+  </div>
+</section>
+
+<!-- Nginx HTTPS -->
+<section class="card">
+  <h2>🔒 Add HTTPS with Nginx + Let's Encrypt</h2>
+  <p class="hint-text">Run these on your server after Docker is up. Replace <code>yourdomain.com</code> with your actual domain.</p>
+  <pre style="background:#0a0e1a;border:1px solid #1e293b;border-radius:6px;padding:14px;overflow-x:auto;font-size:13px;color:#e2e8f0">sudo apt install nginx certbot python3-certbot-nginx -y
+
+# Create nginx config
+sudo tee /etc/nginx/sites-available/toolsdns &lt;&lt;'NGINX'
+server {
+    listen 80;
+    server_name yourdomain.com;
+    location / {
+        proxy_pass http://127.0.0.1:8787;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
+NGINX
+
+sudo ln -s /etc/nginx/sites-available/toolsdns /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+
+# Get SSL certificate (free)
+sudo certbot --nginx -d yourdomain.com</pre>
+</section>
+
+<!-- Keep contributors clean -->
+<section class="card" style="border-color:#1e3a5f">
+  <h2>🔓 Open Source — Safe for Contributors</h2>
+  <p class="hint-text">Your brand config lives only in <code>~/.tooldns/.env</code> which is gitignored. Anyone who forks or clones your repo gets clean defaults — they never see your API keys or brand settings.</p>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px">
+    <div style="background:#0a0e1a;border:1px solid #1e293b;border-radius:6px;padding:12px">
+      <p style="color:#4ade80;font-weight:600;margin-bottom:4px">What GitHub has (public)</p>
+      <ul style="color:#94a3b8;font-size:13px;list-style:disc;padding-left:16px;margin:0">
+        <li>Source code (AGPL-3.0)</li>
+        <li>Default config values</li>
+        <li>Templates + UI</li>
+        <li>No secrets, no brand</li>
+      </ul>
+    </div>
+    <div style="background:#0a0e1a;border:1px solid #1e293b;border-radius:6px;padding:12px">
+      <p style="color:#818cf8;font-weight:600;margin-bottom:4px">What stays on your server (private)</p>
+      <ul style="color:#94a3b8;font-size:13px;list-style:disc;padding-left:16px;margin:0">
+        <li><code>~/.tooldns/.env</code> — API keys + brand</li>
+        <li><code>~/.tooldns/tooldns.db</code> — your data</li>
+        <li><code>~/.tooldns/skills/</code> — your skills</li>
+        <li>All gitignored automatically</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+{% endblock %}

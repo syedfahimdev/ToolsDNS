@@ -12,11 +12,43 @@
 </div>
 {% endif %}
 
+<!-- Branding -->
+<section class="card">
+  <h2>🏷️ Branding</h2>
+  <p class="hint-text">Customize your hosted instance. Changes apply instantly — no restart needed. Contributors who fork see clean defaults.</p>
+  <form method="post" action="/ui/settings/save-branding" class="settings-form">
+    <div class="form-row">
+      <label>App Name <span class="hint">shown in nav, titles, emails</span></label>
+      <input type="text" name="app_name" value="{{ env.TOOLDNS_APP_NAME or app_name }}"
+             class="search-input" placeholder="ToolsDNS">
+    </div>
+    <div class="form-row">
+      <label>Tagline <span class="hint">shown under logo</span></label>
+      <input type="text" name="app_tagline" value="{{ env.TOOLDNS_APP_TAGLINE or app_tagline }}"
+             class="search-input" placeholder="DNS for AI Tools">
+    </div>
+    <div class="form-row">
+      <label>Support Email <span class="hint">shown in pricing + footer</span></label>
+      <input type="email" name="contact_email" value="{{ env.TOOLDNS_CONTACT_EMAIL or contact_email }}"
+             class="search-input" placeholder="hello@toolsdns.com">
+    </div>
+    <div class="form-row">
+      <label>GitHub / Docs URL <span class="hint">linked in footer</span></label>
+      <input type="url" name="github_url" value="{{ env.TOOLDNS_GITHUB_URL or github_url }}"
+             class="search-input" placeholder="https://github.com/syedfahimdev/ToolsDNS">
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">Save Branding</button>
+      <a href="/ui/deploy" class="btn btn-sm" style="margin-left:8px">🚀 Deploy Guide</a>
+    </div>
+  </form>
+</section>
+
 <!-- Model Configuration -->
 <section class="card">
   <h2>LLM Model</h2>
   <p class="hint-text">
-    ToolDNS logs the model used on each search. Set this so cost savings are calculated correctly.
+    {{ app_name }} logs the model used on each search. Set this so cost savings are calculated correctly.
     Searches from different frameworks are tracked separately in the Stats page.
   </p>
   <form method="post" action="/ui/settings/save" class="settings-form">
@@ -49,7 +81,7 @@
 <!-- API Key -->
 <section class="card">
   <h2>API Key</h2>
-  <p class="hint-text">The key agents must send in the <code>Authorization: Bearer</code> header to call ToolDNS.</p>
+  <p class="hint-text">The key agents must send in the <code>Authorization: Bearer</code> header to call {{ app_name }}.</p>
   <form method="post" action="/ui/settings/save" class="settings-form">
     <div class="form-row">
       <label>TOOLDNS_API_KEY</label>

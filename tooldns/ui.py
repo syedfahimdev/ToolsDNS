@@ -812,6 +812,45 @@ async def settings_delete_all_sources():
     return RedirectResponse("/ui/settings?msg=success:All+sources+and+tools+deleted", status_code=303)
 
 
+@ui_router.post("/settings/save-branding")
+async def settings_save_branding(
+    app_name: str = Form(""),
+    app_tagline: str = Form(""),
+    contact_email: str = Form(""),
+    github_url: str = Form(""),
+):
+    """Save branding values to .env and reload template globals immediately."""
+    changes = {
+        "TOOLDNS_APP_NAME": app_name.strip(),
+        "TOOLDNS_APP_TAGLINE": app_tagline.strip(),
+        "TOOLDNS_CONTACT_EMAIL": contact_email.strip(),
+        "TOOLDNS_GITHUB_URL": github_url.strip(),
+    }
+    for key, val in changes.items():
+        if val:
+            _save_env_key(key, val)
+    # Hot-reload template globals without restart
+    templates.env.globals.update({
+        k.replace("TOOLDNS_", "").lower(): v
+        for k, v in changes.items() if v
+    })
+    return RedirectResponse("/ui/settings?msg=success:Branding+saved+—+changes+live+immediately", status_code=303)
+
+
+@ui_router.get("/deploy", response_class=HTMLResponse)
+async def deploy_page(request: Request):
+    """One-click deploy guide for Railway, Render, Fly.io, and Docker."""
+    from tooldns.config import settings as _settings
+    env, _ = _read_env_file()
+    base_url = str(request.base_url).rstrip("/")
+    return templates.TemplateResponse("deploy.html", {
+        "request": request,
+        "page": "deploy",
+        "base_url": base_url,
+        "api_key": env.get("TOOLDNS_API_KEY", ""),
+    })
+
+
 # ---------------------------------------------------------------------------
 # API Key Manager (SaaS / multi-tenant)
 # ---------------------------------------------------------------------------
