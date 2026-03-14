@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ToolDNS{% block title %}{% endblock %}</title>
+  <title>{{ app_name }}{% block title %}{% endblock %}</title>
   <link rel="stylesheet" href="/static/style.css">
   <script src="https://unpkg.com/htmx.org@2.0.3/dist/htmx.min.js"></script>
 </head>
@@ -11,7 +11,7 @@
   <nav>
     <div class="nav-brand">
       <span class="nav-logo">⚡</span>
-      <span>ToolDNS</span>
+      <span>{{ app_name }}</span>
     </div>
     <div class="nav-links">
       <a href="/ui" class="{% if page == 'dashboard' %}active{% endif %}">Home</a>
@@ -30,11 +30,11 @@
 
   <footer>
     <div class="footer-inner">
-      <span>ToolDNS — DNS for AI Tools</span>
+      <span>{{ app_name }} — {{ app_tagline }}</span>
       <div class="footer-links">
         <a href="/docs">API Docs</a>
         <a href="/ui/pricing">Pricing</a>
-        <a href="https://github.com/syedfahimdev/tooldns" target="_blank">GitHub</a>
+        <a href="{{ github_url }}" target="_blank">GitHub</a>
       </div>
     </div>
   </footer>

@@ -21,6 +21,9 @@ Environment Variables:
     TOOLDNS_DB_PATH: Path to SQLite database (default: ~/.tooldns/tooldns.db)
     TOOLDNS_REFRESH_INTERVAL: Auto-refresh interval in minutes (default: 15, 0 = disabled)
     TOOLDNS_LOG_LEVEL: Logging level (default: INFO)
+    TOOLDNS_APP_NAME: Branding name (default: ToolDNS)
+    TOOLDNS_GITHUB_URL: GitHub repo URL shown in UI/footer
+    TOOLDNS_CONTACT_EMAIL: Contact email shown on pricing page
 """
 
 import os
@@ -63,6 +66,11 @@ class Settings(BaseSettings):
     model: str = ""  # LLM model name for cost calc (e.g. claude-sonnet-4-6)
     webhook_url: str = ""  # POST health alerts here (Slack/Discord/custom)
     webhook_secret: str = ""  # Added as X-ToolDNS-Secret header if set
+    # Branding — override these in ~/.tooldns/.env to white-label
+    app_name: str = "ToolDNS"
+    app_tagline: str = "DNS for AI Tools"
+    github_url: str = "https://github.com/syedfahimdev/tooldns"
+    contact_email: str = "hello@tooldns.ai"
 
     model_config = ConfigDict(env_prefix="TOOLDNS_")
 

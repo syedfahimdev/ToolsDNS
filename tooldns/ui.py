@@ -35,6 +35,14 @@ def init_ui(database, ingestion_pipeline, health_monitor=None):
     _database = database
     _ingestion_pipeline = ingestion_pipeline
     _health_monitor = health_monitor
+    # Expose branding config to every template without passing it per-route
+    from tooldns.config import settings as _settings
+    templates.env.globals.update({
+        "app_name": _settings.app_name,
+        "app_tagline": _settings.app_tagline,
+        "github_url": _settings.github_url,
+        "contact_email": _settings.contact_email,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -808,20 +816,54 @@ async def settings_delete_all_sources():
 # API Key Manager (SaaS / multi-tenant)
 # ---------------------------------------------------------------------------
 
+def _mask_key(key: str) -> str:
+    """Show first 6 chars + masked middle + last 4 chars. Never exposes the full key in HTML."""
+    if len(key) <= 12:
+        return key[:4] + "****"
+    return key[:6] + "••••••••••••" + key[-4:]
+
+
 @ui_router.get("/keys", response_class=HTMLResponse)
 async def keys_page(request: Request, msg: str = ""):
     """API key management page — create, view, revoke customer keys."""
     from tooldns.config import settings
     keys = _database.get_all_api_keys()
     stats = _database.get_search_stats()
+    base_url = str(request.base_url).rstrip("/")
     return templates.TemplateResponse("keys.html", {
         "request": request,
         "keys": keys,
-        "admin_key": settings.api_key,
+        "admin_key_masked": _mask_key(settings.api_key),
         "msg": msg,
         "total_searches": stats.get("total_searches", 0),
+        "base_url": base_url,
         "page": "keys",
     })
+
+
+@ui_router.get("/keys/reveal-admin")
+async def reveal_admin_key():
+    """Return the admin key — only on explicit click, never embedded in initial HTML."""
+    from tooldns.config import settings
+    key = settings.api_key
+    return HTMLResponse(
+        f'<code class="key-revealed" id="admin-key-val">{key}</code>'
+        f'<button class="btn btn-sm" onclick="copyText(\'{key}\', this)">Copy</button>'
+        f'<span class="hint" style="margin-left:8px">Click away to hide</span>'
+    )
+
+
+@ui_router.get("/keys/{key}/reveal")
+async def reveal_sub_key(key: str):
+    """Return a sub-key in full — only on explicit click."""
+    key_info = _database.get_api_key(key)
+    if not key_info:
+        return HTMLResponse("<span class='badge badge-error'>Not found</span>")
+    full_key = key_info["key"]
+    return HTMLResponse(
+        f'<code class="key-revealed">{full_key}</code>'
+        f'<button class="btn btn-sm" onclick="copyText(\'{full_key}\', this)">Copy</button>'
+    )
 
 
 @ui_router.post("/keys/create")
@@ -840,9 +882,7 @@ async def create_key(
         plan=plan.strip(),
         monthly_limit=monthly_limit,
     )
-    # URL-encode the key for the msg param
-    safe_key = key.replace("_", "%5F")
-    return RedirectResponse(f"/ui/keys?msg=success:Key+created:+{key}", status_code=303)
+    return RedirectResponse(f"/ui/keys?msg=success:Key+created+-+copy+it+from+the+table+below", status_code=303)
 
 
 @ui_router.post("/keys/{key}/revoke")
@@ -873,8 +913,13 @@ async def reset_key_count(key: str):
 @ui_router.get("/pricing", response_class=HTMLResponse)
 async def pricing_page(request: Request):
     """Public-facing pricing page for selling ToolDNS as a service."""
+    from tooldns.config import settings as _settings
     return templates.TemplateResponse("pricing.html", {
         "request": request,
+        "app_name": _settings.app_name,
+        "app_tagline": _settings.app_tagline,
+        "github_url": _settings.github_url,
+        "contact_email": _settings.contact_email,
         "page": "pricing",
     })
 
@@ -886,9 +931,13 @@ async def pricing_page(request: Request):
 @ui_router.get("/savings-card", response_class=HTMLResponse)
 async def savings_card(request: Request):
     """Shareable token savings card — screenshot this and post it."""
+    from tooldns.config import settings as _settings
     stats = _database.get_search_stats()
     tool_count = _database.get_tool_count()
     source_count = len(_database.get_all_sources())
+    github_url = _settings.github_url
+    app_name = _settings.app_name
+    app_tagline = _settings.app_tagline
 
     tokens_saved = stats.get("total_tokens_saved") or 0
     cost_saved = stats.get("total_cost_saved_usd") or 0.0
@@ -906,7 +955,6 @@ async def savings_card(request: Request):
     searches_fmt = _fmt(total_searches)
     tools_fmt = _fmt(tool_count)
 
-    card_url = str(request.url_for("savings_card"))
     svg_url = str(request.url_for("savings_card_svg"))
 
     return HTMLResponse(f"""<!DOCTYPE html>
@@ -914,8 +962,8 @@ async def savings_card(request: Request):
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ToolDNS — Token Savings</title>
-<meta property="og:title" content="I saved {tokens_fmt} tokens with ToolDNS">
+<title>{app_name} — Token Savings</title>
+<meta property="og:title" content="I saved {tokens_fmt} tokens with {app_name}">
 <meta property="og:description" content="DNS for AI Tools — semantic search over 10,000+ tools so your LLM only sees what it needs.">
 <meta property="og:image" content="{svg_url}">
 <style>
@@ -978,8 +1026,8 @@ async def savings_card(request: Request):
     <div class="logo">
       <div class="logo-icon">⚡</div>
       <div>
-        <div class="logo-text">ToolDNS</div>
-        <div class="logo-sub">DNS for AI Tools</div>
+        <div class="logo-text">{app_name}</div>
+        <div class="logo-sub">{app_tagline}</div>
       </div>
     </div>
     <div class="tagline">Semantic search over {tools_fmt} tools — LLMs only see what they need</div>
@@ -1008,7 +1056,7 @@ async def savings_card(request: Request):
       <div class="badge">
         <strong>{source_count}</strong> sources registered
       </div>
-      <div class="badge">github.com/syedfahimdev/tooldns</div>
+      <div class="badge">{github_url.replace("https://", "")}</div>
     </div>
   </div>
 
@@ -1035,8 +1083,12 @@ function copyLink() {{
 async def savings_card_svg(request: Request):
     """SVG image version of savings card — embeddable in README/tweets."""
     from fastapi.responses import Response
+    from tooldns.config import settings as _settings
     stats = _database.get_search_stats()
     tool_count = _database.get_tool_count()
+    github_url = _settings.github_url
+    app_name = _settings.app_name
+    app_tagline = _settings.app_tagline
 
     tokens_saved = stats.get("total_tokens_saved") or 0
     cost_saved = stats.get("total_cost_saved_usd") or 0.0
@@ -1076,8 +1128,8 @@ async def savings_card_svg(request: Request):
   <!-- Logo -->
   <rect x="24" y="24" width="32" height="32" rx="8" fill="url(#accent)"/>
   <text x="40" y="45" font-family="system-ui" font-size="18" fill="white" text-anchor="middle">⚡</text>
-  <text x="64" y="37" font-family="system-ui,sans-serif" font-size="16" font-weight="700" fill="#e2e8f0">ToolDNS</text>
-  <text x="64" y="52" font-family="system-ui,sans-serif" font-size="11" fill="#64748b">DNS for AI Tools</text>
+  <text x="64" y="37" font-family="system-ui,sans-serif" font-size="16" font-weight="700" fill="#e2e8f0">{app_name}</text>
+  <text x="64" y="52" font-family="system-ui,sans-serif" font-size="11" fill="#64748b">{app_tagline}</text>
 
   <!-- Divider -->
   <line x1="24" y1="70" x2="536" y2="70" stroke="#1e3a5f" stroke-width="1"/>
@@ -1110,7 +1162,7 @@ async def savings_card_svg(request: Request):
   <line x1="24" y1="212" x2="536" y2="212" stroke="#1e3a5f" stroke-width="1"/>
 
   <!-- Footer -->
-  <text x="24" y="250" font-family="system-ui,sans-serif" font-size="11" fill="#475569">github.com/syedfahimdev/tooldns</text>
+  <text x="24" y="250" font-family="system-ui,sans-serif" font-size="11" fill="#475569">{github_url.replace("https://", "")}</text>
   <rect x="390" y="232" width="146" height="26" rx="6" fill="url(#accent)" opacity="0.15"/>
   <text x="463" y="249" font-family="system-ui,sans-serif" font-size="11" font-weight="600" fill="#a78bfa" text-anchor="middle">⭐ Star on GitHub</text>
 </svg>"""

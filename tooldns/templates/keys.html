@@ -18,13 +18,17 @@
 <!-- Admin key info -->
 <section class="card">
   <h2>Your Admin Key</h2>
-  <p class="hint-text">This is your master key — unlimited access, never expires. Keep it secret.</p>
-  <div class="key-display">
-    <code id="admin-key-val">{{ admin_key }}</code>
-    <button class="btn btn-sm" onclick="copyKey('admin-key-val')">Copy</button>
+  <p class="hint-text">This is your master key — unlimited access, never expires. Keep it secret. Never share your screen while this is visible.</p>
+  <div class="key-display" id="admin-key-box">
+    <code id="admin-key-val">{{ admin_key_masked }}</code>
+    <button class="btn btn-sm"
+            hx-get="/ui/keys/reveal-admin"
+            hx-target="#admin-key-box"
+            hx-swap="innerHTML"
+            onclick="this.textContent='Loading…'">Reveal &amp; Copy</button>
   </div>
   <div class="key-usage-hint">
-    Use as: <code>Authorization: Bearer {{ admin_key }}</code>
+    Click "Reveal &amp; Copy" to see and copy the full key. Used as: <code>Authorization: Bearer &lt;key&gt;</code>
   </div>
 </section>
 
@@ -94,9 +98,12 @@
         {% if k.label %}<br><small class="text-dim">{{ k.label }}</small>{% endif %}
       </td>
       <td>
-        <div class="key-cell">
-          <code id="key-{{ loop.index }}" class="key-code">{{ k.key[:12] }}…</code>
-          <button class="btn btn-sm" onclick="revealAndCopy('key-{{ loop.index }}', '{{ k.key }}')">Copy</button>
+        <div class="key-cell" id="key-cell-{{ loop.index }}">
+          <code class="key-code">{{ k.key[:6] }}••••••••••••{{ k.key[-4:] }}</code>
+          <button class="btn btn-sm"
+                  hx-get="/ui/keys/{{ k.key }}/reveal"
+                  hx-target="#key-cell-{{ loop.index }}"
+                  hx-swap="innerHTML">Copy</button>
         </div>
       </td>
       <td><span class="badge badge-plan-{{ k.plan }}">{{ k.plan }}</span></td>
@@ -147,7 +154,7 @@
 <section class="card">
   <h2>How to Use an API Key</h2>
   <p class="hint-text">Give a key to your AI agent or client. They use it to search your tool registry:</p>
-  <pre class="code-block">curl -X POST http://your-server:8787/v1/search \
+  <pre class="code-block">curl -X POST {{ base_url }}/v1/search \
   -H "Authorization: Bearer td_their_key" \
   -H "Content-Type: application/json" \
   -d '{"query": "send an email", "top_k": 2}'</pre>
@@ -158,23 +165,9 @@
 </section>
 
 <script>
-function copyKey(id) {
-  const el = document.getElementById(id);
-  navigator.clipboard.writeText(el.textContent.trim()).then(() => {
-    const orig = el.nextElementSibling.textContent;
-    el.nextElementSibling.textContent = '✓ Copied';
-    setTimeout(() => el.nextElementSibling.textContent = orig, 2000);
-  });
-}
-function revealAndCopy(id, fullKey) {
-  navigator.clipboard.writeText(fullKey).then(() => {
-    const el = document.getElementById(id);
-    el.textContent = fullKey;
-    el.nextElementSibling.textContent = '✓ Copied';
-    setTimeout(() => {
-      el.textContent = fullKey.substring(0, 12) + '…';
-      el.nextElementSibling.textContent = 'Copy';
-    }, 3000);
+function copyText(text, btn) {
+  navigator.clipboard.writeText(text).then(() => {
+    if (btn) { const orig = btn.textContent; btn.textContent = '✓ Copied'; setTimeout(() => btn.textContent = orig, 2000); }
   });
 }
 </script>
