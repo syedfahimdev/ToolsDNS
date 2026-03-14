@@ -104,10 +104,27 @@
       <div class="faq-a">Any MCP server, skill file, or API you connect. GitHub, Slack, Gmail — each is a source with multiple tools inside.</div>
     </div>
     <div class="faq-item">
-      <div class="faq-q">How much does ToolDNS save?</div>
+      <div class="faq-q">How much does {{ app_name }} save?</div>
       <div class="faq-a">Typically 95%+ of context tokens. Instead of sending 500 tool schemas (50,000+ tokens) every message, your AI gets 1-2 schemas (~200 tokens).</div>
     </div>
+    <div class="faq-item">
+      <div class="faq-q">Is this open source? Can I use it commercially?</div>
+      <div class="faq-a">{{ app_name }} is licensed under <strong>AGPL-3.0</strong> — free for personal and open-source use. For commercial use, embedding in proprietary software, or hosting without open-sourcing your changes, a <strong>commercial license</strong> is required. <a href="mailto:{{ contact_email }}?subject=Commercial License">Contact us →</a></div>
+    </div>
   </div>
+</div>
+
+<!-- Commercial license CTA -->
+<div style="max-width:640px;margin:0 auto 48px;text-align:center;padding:32px;background:var(--surface);border:1px solid var(--border);border-radius:16px;">
+  <div style="font-size:28px;margin-bottom:12px">⚖️</div>
+  <div style="font-size:18px;font-weight:700;margin-bottom:8px">Need a Commercial License?</div>
+  <div style="color:var(--text-dim);font-size:13px;margin-bottom:20px;line-height:1.6">
+    Building a closed-source product or SaaS on top of {{ app_name }}?
+    Get a commercial license that lets you skip the AGPL open-source requirement.
+  </div>
+  <a href="mailto:{{ contact_email }}?subject=Commercial License Inquiry" class="btn btn-primary" style="font-size:14px;padding:12px 28px;">
+    Get a Commercial License →
+  </a>
 </div>
 
 {% endblock %}
