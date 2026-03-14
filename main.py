@@ -97,9 +97,13 @@ limiter = Limiter(key_func=_get_key, default_limits=["120/minute"])
 
 
 async def _auto_refresh(pipeline: IngestionPipeline, interval_min: int):
-    """Background task: re-ingest all sources every interval_min minutes."""
+    """Background task: re-ingest all sources every interval_min minutes.
+
+    Runs once immediately at startup (after a short delay) to register local
+    skill sources, then repeats on the configured interval.
+    """
+    await asyncio.sleep(5)  # Short delay to let server finish starting
     while True:
-        await asyncio.sleep(interval_min * 60)
         try:
             logger.info("Auto-refresh: re-ingesting all sources...")
             loop = asyncio.get_event_loop()
@@ -107,6 +111,7 @@ async def _auto_refresh(pipeline: IngestionPipeline, interval_min: int):
             logger.info(f"Auto-refresh complete: {total} tools indexed")
         except Exception as e:
             logger.error(f"Auto-refresh error: {e}")
+        await asyncio.sleep(interval_min * 60)
 
 
 async def _health_check_loop(monitor: HealthMonitor, interval_sec: int = 60):

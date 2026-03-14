@@ -274,8 +274,9 @@ class IngestionPipeline:
                     skill_path = Path(os.path.expanduser(skill_path_str))
                     if skill_path.exists():
                         try:
-                            # Use parent+folder name to avoid collisions
-                            sname = f"skills-{skill_path.parent.name}-{skill_path.name}"
+                            # Use parent app name to distinguish e.g. .agents/skills vs .nanobot/skills
+                            app = skill_path.parent.name.lstrip(".")
+                            sname = f"tooldns-skills-{app}" if app else f"tooldns-skills-{skill_path.name}"
                             count = self._ingest_local_skills(
                                 skill_path, source_name=sname
                             )
@@ -332,7 +333,7 @@ class IngestionPipeline:
         return self.ingest_source(config)
 
     def _ingest_local_skills(self, skills_dir: Path,
-                              source_name: str = "local-skills") -> int:
+                              source_name: str = "tooldns-skills") -> int:
         """
         Ingest skills from ~/.tooldns/skills/<name>/SKILL.md files.
 
@@ -389,7 +390,19 @@ class IngestionPipeline:
                 except Exception as e:
                     logger.warning(f"  ✗ Skill {item.name}: {e}")
 
-        return self._index_tools(tools, source_name, "skill_directory")
+        count = self._index_tools(tools, source_name, "skill_directory")
+
+        # Register as a proper source so it appears in the UI sources table
+        source_id = self._make_source_id({"name": source_name, "type": "skill_directory"})
+        self.db.upsert_source(
+            source_id=source_id,
+            name=source_name,
+            source_type="skill_directory",
+            config={"type": "skill_directory", "name": source_name, "path": str(skills_dir)},
+            tools_count=count,
+            status="active",
+        )
+        return count
 
     def _parse_skill_md(self, content: str, folder_name: str) -> tuple[str, str]:
         """
