@@ -60,7 +60,7 @@ class SearchEngine:
         self.embedder = embedder
 
     def search(self, query: str, top_k: int = 3,
-               threshold: float = 0.5) -> SearchResponse:
+               threshold: float = 0.1) -> SearchResponse:
         """
         Search for tools matching a natural language query.
 

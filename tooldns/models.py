@@ -118,11 +118,12 @@ class SearchRequest(BaseModel):
         query: Natural language description of what tool is needed.
                Example: "create a github issue about the login bug"
         top_k: Maximum number of results to return (default: 3).
-        threshold: Minimum confidence score (0.0-1.0) to include a result (default: 0.5).
+        threshold: Minimum confidence score (0.0-1.0) to include a result (default: 0.1).
+            Sentence-transformers scores typically range 0.1-0.4 for related content.
     """
     query: str
     top_k: int = Field(default=3, ge=1, le=20)
-    threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    threshold: float = Field(default=0.1, ge=0.0, le=1.0)
 
 
 class SearchResult(BaseModel):
