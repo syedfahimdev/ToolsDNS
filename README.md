@@ -206,6 +206,26 @@ The core endpoint. Send a natural language query, get back the matching tool(s).
 
 ### `GET /v1/stats` — Get token savings and usage analytics
 
+### `POST /v1/discover` — Auto-discover an MCP server from any URL
+
+```json
+{"url": "https://smithery.ai/server/@modelcontextprotocol/server-github", "ingest": true}
+```
+
+Accepts Smithery.ai server pages, npm package pages, GitHub repos, or direct HTTP MCP endpoints.
+Auto-detects the type, generates the source config, and optionally ingests it.
+
+**Response:**
+```json
+{
+  "detected_type": "Smithery MCP Server",
+  "message": "Detected Smithery server '@modelcontextprotocol/server-github' — will run via npx.",
+  "source_config": {"type": "mcp_stdio", "name": "server-github", "command": "npx", "args": [...]},
+  "ingested": true,
+  "tools_count": 8
+}
+```
+
 ### API Docs
 
 Full interactive API documentation is available at `http://localhost:8787/docs` when the server is running.
@@ -365,7 +385,8 @@ tooldns/
 │   ├── marketplace.py   # Curated MCP server + skill catalog
 │   ├── tokens.py        # Token counting and cost estimation
 │   ├── integrate.py     # Wizard for nanobot/openclaw integration
-│   ├── ui.py            # Web dashboard + marketplace routes
+│   ├── ui.py            # Web dashboard, savings card, discover form
+│   ├── discover.py      # URL auto-discovery (Smithery, npm, GitHub, HTTP MCP)
 │   └── static/          # CSS, JS for web UI
 ├── templates/           # Jinja2 templates for web UI
 ├── requirements.txt
@@ -390,6 +411,21 @@ ToolDNS tracks real token usage using tiktoken (cl100k_base encoding). Each sear
 - `search_time_ms` — how fast the search ran
 
 View cumulative savings at `/ui/stats` or `GET /v1/stats`.
+
+### Shareable Savings Card
+
+Share your token savings with a screenshot-ready card:
+
+```
+http://localhost:8787/ui/savings-card
+```
+
+Shows total tokens saved, cost saved, searches run, and tools indexed — styled for screenshots.
+Embed the SVG version in your README:
+
+```markdown
+![ToolDNS Savings](http://localhost:8787/ui/savings-card.svg)
+```
 
 ## Health Monitoring
 

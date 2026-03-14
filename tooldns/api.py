@@ -973,3 +973,58 @@ async def trigger_health_check():
         asyncio.create_task(_health_monitor.check_all())
         return {"status": "health check triggered"}
     return {"status": "health monitor not configured"}
+
+
+# -----------------------------------------------------------------------
+# Discover
+# -----------------------------------------------------------------------
+
+@router.post("/discover")
+async def discover_source(req: dict):
+    """
+    Auto-discover an MCP server from any URL.
+
+    Accepts a URL pointing to:
+      - Smithery.ai server page  (smithery.ai/server/...)
+      - npm package page         (npmjs.com/package/...)
+      - GitHub repository        (github.com/user/repo)
+      - Direct HTTP MCP endpoint (any https://... URL)
+
+    ToolDNS detects the type, generates the source config, and optionally
+    ingests it immediately.
+
+    Request body:
+        {"url": "https://smithery.ai/server/@modelcontextprotocol/server-github", "ingest": true}
+
+    Returns:
+        dict: Detected config + ingestion result (if ingest=true).
+    """
+    from tooldns.discover import discover_from_url
+
+    url = req.get("url", "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="url is required")
+
+    auto_ingest = req.get("ingest", False)
+    result = discover_from_url(url)
+
+    if "error" in result:
+        raise HTTPException(status_code=422, detail=result["error"])
+
+    response = {
+        "url": url,
+        "detected_type": result.get("detected_type"),
+        "message": result.get("message"),
+        "source_config": result.get("source_config"),
+    }
+
+    if auto_ingest and result.get("source_config"):
+        try:
+            count = _ingestion_pipeline.ingest_source(result["source_config"])
+            response["ingested"] = True
+            response["tools_count"] = count
+        except Exception as e:
+            response["ingested"] = False
+            response["ingest_error"] = str(e)
+
+    return response

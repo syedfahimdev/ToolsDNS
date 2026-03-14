@@ -68,6 +68,24 @@
   </form>
 </section>
 
+<!-- Discover from URL -->
+<section class="card">
+  <h2>Discover from URL</h2>
+  <p class="hint-text">Paste any Smithery, npm, GitHub, or HTTP MCP endpoint URL — ToolDNS auto-detects the server type.</p>
+  <form hx-post="/ui/sources/discover" hx-target="#discover-result" hx-swap="innerHTML"
+        style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+    <div style="flex:1;min-width:280px">
+      <label class="form-label" style="display:block;margin-bottom:6px;font-size:13px;color:#94a3b8">
+        URL <span class="hint">— smithery.ai, npmjs.com, github.com, or direct HTTPS</span>
+      </label>
+      <input type="url" name="url" required placeholder="https://smithery.ai/server/@scope/server-name"
+             class="search-input" style="width:100%">
+    </div>
+    <button type="submit" class="btn btn-primary">🔍 Detect &amp; Configure</button>
+  </form>
+  <div id="discover-result" class="discover-result" style="margin-top:14px"></div>
+</section>
+
 <!-- Skill Creator shortcut -->
 <section class="card">
   <h2>Add Skill</h2>

@@ -805,6 +805,309 @@ async def settings_delete_all_sources():
 
 
 # ---------------------------------------------------------------------------
+# Shareable Savings Card
+# ---------------------------------------------------------------------------
+
+@ui_router.get("/savings-card", response_class=HTMLResponse)
+async def savings_card(request: Request):
+    """Shareable token savings card — screenshot this and post it."""
+    stats = _database.get_search_stats()
+    tool_count = _database.get_tool_count()
+    source_count = len(_database.get_all_sources())
+
+    tokens_saved = stats.get("total_tokens_saved") or 0
+    cost_saved = stats.get("total_cost_saved_usd") or 0.0
+    total_searches = stats.get("total_searches") or 0
+
+    def _fmt(n):
+        if n >= 1_000_000:
+            return f"{n/1_000_000:.1f}M"
+        if n >= 1_000:
+            return f"{n/1_000:.1f}K"
+        return str(n)
+
+    tokens_fmt = _fmt(tokens_saved)
+    cost_fmt = f"${cost_saved:.2f}"
+    searches_fmt = _fmt(total_searches)
+    tools_fmt = _fmt(tool_count)
+
+    card_url = str(request.url_for("savings_card"))
+    svg_url = str(request.url_for("savings_card_svg"))
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ToolDNS — Token Savings</title>
+<meta property="og:title" content="I saved {tokens_fmt} tokens with ToolDNS">
+<meta property="og:description" content="DNS for AI Tools — semantic search over 10,000+ tools so your LLM only sees what it needs.">
+<meta property="og:image" content="{svg_url}">
+<style>
+  * {{ margin:0; padding:0; box-sizing:border-box; }}
+  body {{ background:#0f172a; font-family:'Inter',system-ui,sans-serif; min-height:100vh;
+          display:flex; flex-direction:column; align-items:center; justify-content:center;
+          padding:24px; color:#f8fafc; }}
+  .card {{
+    background:linear-gradient(135deg,#1e293b 0%,#0f172a 50%,#1a2744 100%);
+    border:1px solid #334155; border-radius:20px;
+    padding:48px 56px; max-width:560px; width:100%;
+    box-shadow:0 25px 60px rgba(0,0,0,0.5);
+    position:relative; overflow:hidden;
+  }}
+  .card::before {{
+    content:''; position:absolute; top:-60px; right:-60px;
+    width:220px; height:220px; border-radius:50%;
+    background:radial-gradient(circle,rgba(99,102,241,0.15) 0%,transparent 70%);
+  }}
+  .logo {{ display:flex; align-items:center; gap:10px; margin-bottom:32px; }}
+  .logo-icon {{ width:32px; height:32px; background:linear-gradient(135deg,#6366f1,#8b5cf6);
+                border-radius:8px; display:flex; align-items:center; justify-content:center;
+                font-size:18px; }}
+  .logo-text {{ font-size:18px; font-weight:700; color:#e2e8f0; }}
+  .logo-sub {{ font-size:12px; color:#64748b; margin-top:1px; }}
+  .tagline {{ font-size:13px; color:#64748b; margin-bottom:36px; }}
+  .stats {{ display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-bottom:36px; }}
+  .stat {{ background:rgba(255,255,255,0.03); border:1px solid #1e3a5f;
+           border-radius:12px; padding:20px; }}
+  .stat-num {{ font-size:36px; font-weight:800; background:linear-gradient(135deg,#6366f1,#a78bfa);
+               -webkit-background-clip:text; -webkit-text-fill-color:transparent;
+               background-clip:text; line-height:1; }}
+  .stat-num.green {{ background:linear-gradient(135deg,#10b981,#34d399);
+                     -webkit-background-clip:text; -webkit-text-fill-color:transparent;
+                     background-clip:text; }}
+  .stat-label {{ font-size:12px; color:#64748b; margin-top:6px; text-transform:uppercase;
+                 letter-spacing:0.05em; }}
+  .divider {{ height:1px; background:linear-gradient(90deg,transparent,#334155,transparent);
+              margin:28px 0; }}
+  .footer {{ display:flex; align-items:center; justify-content:space-between; }}
+  .badge {{ font-size:12px; color:#64748b; }}
+  .badge strong {{ color:#94a3b8; }}
+  .actions {{ display:flex; gap:10px; margin-top:32px; }}
+  .btn {{ padding:10px 20px; border-radius:8px; font-size:13px; font-weight:600;
+          cursor:pointer; border:none; text-decoration:none; display:inline-flex;
+          align-items:center; gap:6px; }}
+  .btn-primary {{ background:linear-gradient(135deg,#6366f1,#8b5cf6); color:#fff; }}
+  .btn-secondary {{ background:#1e293b; border:1px solid #334155; color:#94a3b8; }}
+  .btn:hover {{ opacity:0.85; }}
+  .copy-hint {{ font-size:11px; color:#475569; margin-top:12px; text-align:center; }}
+  @media(max-width:500px) {{
+    .card {{ padding:32px 24px; }}
+    .stats {{ grid-template-columns:1fr; }}
+    .stat-num {{ font-size:28px; }}
+  }}
+</style>
+</head>
+<body>
+  <div class="card" id="savings-card">
+    <div class="logo">
+      <div class="logo-icon">⚡</div>
+      <div>
+        <div class="logo-text">ToolDNS</div>
+        <div class="logo-sub">DNS for AI Tools</div>
+      </div>
+    </div>
+    <div class="tagline">Semantic search over {tools_fmt} tools — LLMs only see what they need</div>
+
+    <div class="stats">
+      <div class="stat">
+        <div class="stat-num">{tokens_fmt}</div>
+        <div class="stat-label">Tokens Saved</div>
+      </div>
+      <div class="stat">
+        <div class="stat-num green">{cost_fmt}</div>
+        <div class="stat-label">Cost Saved</div>
+      </div>
+      <div class="stat">
+        <div class="stat-num">{searches_fmt}</div>
+        <div class="stat-label">Searches</div>
+      </div>
+      <div class="stat">
+        <div class="stat-num">{tools_fmt}</div>
+        <div class="stat-label">Tools Indexed</div>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+    <div class="footer">
+      <div class="badge">
+        <strong>{source_count}</strong> sources registered
+      </div>
+      <div class="badge">github.com/syedfahimdev/tooldns</div>
+    </div>
+  </div>
+
+  <div class="actions">
+    <button class="btn btn-primary" onclick="copyLink()">🔗 Copy Link</button>
+    <a href="{svg_url}" class="btn btn-secondary" download="tooldns-savings.svg">⬇ Download SVG</a>
+    <a href="/ui/stats" class="btn btn-secondary">📊 Full Stats</a>
+  </div>
+  <div class="copy-hint" id="copy-hint">&nbsp;</div>
+
+<script>
+function copyLink() {{
+  navigator.clipboard.writeText(window.location.href).then(() => {{
+    document.getElementById('copy-hint').textContent = '✓ Link copied to clipboard!';
+    setTimeout(() => document.getElementById('copy-hint').textContent = '\\u00a0', 2000);
+  }});
+}}
+</script>
+</body>
+</html>""")
+
+
+@ui_router.get("/savings-card.svg")
+async def savings_card_svg(request: Request):
+    """SVG image version of savings card — embeddable in README/tweets."""
+    from fastapi.responses import Response
+    stats = _database.get_search_stats()
+    tool_count = _database.get_tool_count()
+
+    tokens_saved = stats.get("total_tokens_saved") or 0
+    cost_saved = stats.get("total_cost_saved_usd") or 0.0
+    total_searches = stats.get("total_searches") or 0
+
+    def _fmt(n):
+        if n >= 1_000_000:
+            return f"{n/1_000_000:.1f}M"
+        if n >= 1_000:
+            return f"{n/1_000:.1f}K"
+        return str(int(n))
+
+    tokens_fmt = _fmt(tokens_saved)
+    cost_fmt = f"${cost_saved:.2f}"
+    searches_fmt = _fmt(total_searches)
+    tools_fmt = _fmt(tool_count)
+
+    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="560" height="280" viewBox="0 0 560 280">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1e293b"/>
+      <stop offset="100%" style="stop-color:#0f172a"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#6366f1"/>
+      <stop offset="100%" style="stop-color:#a78bfa"/>
+    </linearGradient>
+    <linearGradient id="green" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#10b981"/>
+      <stop offset="100%" style="stop-color:#34d399"/>
+    </linearGradient>
+    <clipPath id="rounded"><rect width="560" height="280" rx="16"/></clipPath>
+  </defs>
+  <rect width="560" height="280" rx="16" fill="url(#bg)" stroke="#334155" stroke-width="1"/>
+  <circle cx="480" cy="-20" r="140" fill="rgba(99,102,241,0.08)"/>
+
+  <!-- Logo -->
+  <rect x="24" y="24" width="32" height="32" rx="8" fill="url(#accent)"/>
+  <text x="40" y="45" font-family="system-ui" font-size="18" fill="white" text-anchor="middle">⚡</text>
+  <text x="64" y="37" font-family="system-ui,sans-serif" font-size="16" font-weight="700" fill="#e2e8f0">ToolDNS</text>
+  <text x="64" y="52" font-family="system-ui,sans-serif" font-size="11" fill="#64748b">DNS for AI Tools</text>
+
+  <!-- Divider -->
+  <line x1="24" y1="70" x2="536" y2="70" stroke="#1e3a5f" stroke-width="1"/>
+
+  <!-- Stat boxes -->
+  <!-- Tokens Saved -->
+  <rect x="24" y="84" width="120" height="80" rx="10" fill="rgba(255,255,255,0.03)" stroke="#1e3a5f" stroke-width="1"/>
+  <text x="84" y="124" font-family="system-ui,sans-serif" font-size="26" font-weight="800" fill="url(#accent)" text-anchor="middle">{tokens_fmt}</text>
+  <text x="84" y="148" font-family="system-ui,sans-serif" font-size="10" fill="#64748b" text-anchor="middle" letter-spacing="1">TOKENS SAVED</text>
+
+  <!-- Cost Saved -->
+  <rect x="156" y="84" width="120" height="80" rx="10" fill="rgba(255,255,255,0.03)" stroke="#1e3a5f" stroke-width="1"/>
+  <text x="216" y="124" font-family="system-ui,sans-serif" font-size="26" font-weight="800" fill="url(#green)" text-anchor="middle">{cost_fmt}</text>
+  <text x="216" y="148" font-family="system-ui,sans-serif" font-size="10" fill="#64748b" text-anchor="middle" letter-spacing="1">COST SAVED</text>
+
+  <!-- Searches -->
+  <rect x="288" y="84" width="120" height="80" rx="10" fill="rgba(255,255,255,0.03)" stroke="#1e3a5f" stroke-width="1"/>
+  <text x="348" y="124" font-family="system-ui,sans-serif" font-size="26" font-weight="800" fill="url(#accent)" text-anchor="middle">{searches_fmt}</text>
+  <text x="348" y="148" font-family="system-ui,sans-serif" font-size="10" fill="#64748b" text-anchor="middle" letter-spacing="1">SEARCHES</text>
+
+  <!-- Tools Indexed -->
+  <rect x="420" y="84" width="116" height="80" rx="10" fill="rgba(255,255,255,0.03)" stroke="#1e3a5f" stroke-width="1"/>
+  <text x="478" y="124" font-family="system-ui,sans-serif" font-size="26" font-weight="800" fill="url(#accent)" text-anchor="middle">{tools_fmt}</text>
+  <text x="478" y="148" font-family="system-ui,sans-serif" font-size="10" fill="#64748b" text-anchor="middle" letter-spacing="1">TOOLS INDEXED</text>
+
+  <!-- Tagline -->
+  <text x="24" y="196" font-family="system-ui,sans-serif" font-size="13" fill="#94a3b8">Semantic search so LLMs only see what they need — not 500 schemas</text>
+
+  <!-- Bottom divider -->
+  <line x1="24" y1="212" x2="536" y2="212" stroke="#1e3a5f" stroke-width="1"/>
+
+  <!-- Footer -->
+  <text x="24" y="250" font-family="system-ui,sans-serif" font-size="11" fill="#475569">github.com/syedfahimdev/tooldns</text>
+  <rect x="390" y="232" width="146" height="26" rx="6" fill="url(#accent)" opacity="0.15"/>
+  <text x="463" y="249" font-family="system-ui,sans-serif" font-size="11" font-weight="600" fill="#a78bfa" text-anchor="middle">⭐ Star on GitHub</text>
+</svg>"""
+
+    return Response(content=svg, media_type="image/svg+xml")
+
+
+# ---------------------------------------------------------------------------
+# Discover from URL
+# ---------------------------------------------------------------------------
+
+@ui_router.post("/sources/discover", response_class=HTMLResponse)
+async def discover_source_ui(url: str = Form(...)):
+    """HTMX endpoint: auto-detect source from URL and return a pre-filled form."""
+    from tooldns.discover import discover_from_url
+
+    url = url.strip()
+    if not url:
+        return HTMLResponse("<span class='badge badge-error'>Please enter a URL</span>")
+
+    result = discover_from_url(url)
+    if "error" in result:
+        return HTMLResponse(f"<div class='alert alert-error'>{result['error']}</div>")
+
+    cfg = result.get("source_config", {})
+    name = cfg.get("name", "")
+    transport = cfg.get("type", "mcp_stdio")
+    command = cfg.get("command", "")
+    args = " ".join(cfg.get("args", []))
+    url_val = cfg.get("url", "")
+    detected = result.get("detected_type", "")
+    message = result.get("message", "")
+
+    transport_type = "http" if "http" in transport else "stdio"
+    stdio_display = "block" if transport_type == "stdio" else "none"
+    http_display = "none" if transport_type == "stdio" else "block"
+
+    return HTMLResponse(f"""
+    <div class="alert alert-ok" style="margin-bottom:12px">
+      <strong>{detected}</strong> — {message}
+    </div>
+    <form method="post" action="/ui/sources/add-mcp" class="mcp-form">
+      <div class="form-row">
+        <label>Server Name</label>
+        <input type="text" name="name" value="{name}" required
+               pattern="[a-zA-Z0-9_\\-]+" class="form-input">
+      </div>
+      <input type="hidden" name="transport" value="{transport_type}">
+      <div id="discovered-stdio" style="display:{stdio_display}">
+        <div class="form-row">
+          <label>Command</label>
+          <input type="text" name="command" value="{command}" class="form-input">
+        </div>
+        <div class="form-row">
+          <label>Arguments</label>
+          <input type="text" name="args" value="{args}" class="form-input code-input">
+        </div>
+      </div>
+      <div id="discovered-http" style="display:{http_display}">
+        <div class="form-row">
+          <label>Server URL</label>
+          <input type="url" name="url" value="{url_val}" class="form-input">
+        </div>
+      </div>
+      <div class="form-row">
+        <button type="submit" class="btn btn-primary">Add &amp; Index This Server</button>
+        <button type="button" class="btn btn-sm" onclick="this.closest('.discover-result').remove()">Cancel</button>
+      </div>
+    </form>""")
+
+
+# ---------------------------------------------------------------------------
 # Marketplace
 # ---------------------------------------------------------------------------
 
