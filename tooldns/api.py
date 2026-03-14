@@ -708,9 +708,21 @@ async def create_skill(req: CreateSkillRequest):
     if not req.content:
         raise HTTPException(status_code=400, detail="content is required")
 
+    # Security: validate name — only safe filename chars, no path traversal
+    import re as _re
+    if not _re.match(r'^[a-zA-Z0-9_\-]+$', req.name):
+        raise HTTPException(status_code=400, detail="name must contain only letters, numbers, hyphens, underscores")
+    if len(req.content) > 500_000:
+        raise HTTPException(status_code=400, detail="content too large (max 500KB)")
+
     # Determine target directory
     if req.skill_path:
-        skill_dir = Path(os.path.expanduser(req.skill_path))
+        # Validate skill_path stays within allowed base directories
+        allowed_bases = [str(TOOLDNS_HOME), os.path.expanduser("~/.nanobot"), os.path.expanduser("~/.openclaw")]
+        expanded = os.path.realpath(os.path.expanduser(req.skill_path))
+        if not any(expanded.startswith(b) for b in allowed_bases):
+            raise HTTPException(status_code=400, detail="skill_path must be within ~/.tooldns, ~/.nanobot, or ~/.openclaw")
+        skill_dir = Path(expanded)
     else:
         skill_dir = TOOLDNS_HOME / "skills"
 
@@ -718,6 +730,10 @@ async def create_skill(req: CreateSkillRequest):
 
     # Write skill file (support both folder/SKILL.md and flat .md)
     skill_folder = skill_dir / req.name
+    # Security: ensure resolved path is still within skill_dir
+    resolved_folder = Path(os.path.realpath(str(skill_dir / req.name)))
+    if not str(resolved_folder).startswith(str(skill_dir.resolve())):
+        raise HTTPException(status_code=400, detail="Invalid skill name")
     skill_folder.mkdir(exist_ok=True)
     skill_file = skill_folder / "SKILL.md"
 

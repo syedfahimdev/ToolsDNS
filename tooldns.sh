@@ -220,6 +220,56 @@ do_new_skill() {
     $PYTHON -m tooldns.cli new-skill
 }
 
+do_setup_service() {
+    print_step "Setting up ToolDNS + Nanobot as system services..."
+    echo ""
+    print_info "This will:"
+    print_info "  • Enable tooldns.service  (auto-starts, restarts on crash)"
+    print_info "  • Enable nanobot.service  (auto-starts after tooldns)"
+    print_info "  • Stop any running background processes"
+    echo ""
+
+    if [ ! -f /etc/systemd/system/tooldns.service ]; then
+        print_error "Service files not found. Expected:"
+        print_info "  /etc/systemd/system/tooldns.service"
+        print_info "  /etc/systemd/system/nanobot.service"
+        print_info "These were created by Claude Code. Check if they exist."
+        return 1
+    fi
+
+    print_info "Stopping any running instances..."
+    pkill -f "tooldns.cli serve" 2>/dev/null || true
+    pkill -f "nanobot gateway" 2>/dev/null || true
+    sleep 1
+
+    print_info "Reloading systemd..."
+    systemctl daemon-reload
+
+    print_info "Enabling services (auto-start on boot)..."
+    systemctl enable tooldns.service
+    systemctl enable nanobot.service
+
+    print_info "Starting tooldns..."
+    systemctl start tooldns.service
+    sleep 3
+
+    print_info "Starting nanobot..."
+    systemctl start nanobot.service
+    sleep 2
+
+    echo ""
+    print_step "Service status:"
+    systemctl is-active tooldns.service && print_info "  ✅ tooldns: running" || print_error "  ❌ tooldns: failed — run: journalctl -u tooldns -n 30"
+    systemctl is-active nanobot.service && print_info "  ✅ nanobot: running" || print_error "  ❌ nanobot: failed — run: journalctl -u nanobot -n 30"
+    echo ""
+    print_info "Useful commands:"
+    print_info "  journalctl -u tooldns -f    # Follow tooldns logs"
+    print_info "  journalctl -u nanobot  -f   # Follow nanobot logs"
+    print_info "  systemctl restart tooldns   # Restart tooldns"
+    print_info "  systemctl restart nanobot   # Restart nanobot"
+    print_info "  systemctl stop tooldns      # Stop tooldns"
+}
+
 do_reset() {
     print_warn "This will delete the ToolDNS database and re-ingest everything."
     echo -n "  Continue? [y/N]: "
@@ -293,8 +343,9 @@ show_menu() {
     echo "   12)  info         Show configuration details (API key, paths, DB size)"
     echo ""
     echo -e "  ${CYAN}Maintenance:${NC}"
-    echo "   13)  update       Pull latest code from git and reinstall"
-    echo "   14)  reset        Wipe database and start fresh"
+    echo "   13)  update          Pull latest code from git and reinstall"
+    echo "   14)  reset           Wipe database and start fresh"
+    echo "   15)  setup-service   Install as systemd service (auto-start/restart)"
     echo ""
     echo "    0)  exit"
     echo ""
@@ -321,7 +372,8 @@ if [ $# -gt 0 ]; then
         test-api)     do_test_api ;;
         logs)         do_logs ;;
         info)         do_info ;;
-        reset)        do_reset ;;
+        reset)         do_reset ;;
+        setup-service) do_setup_service ;;
         help|--help|-h)
             print_header
             echo "  Usage: ./tooldns.sh [command]"
@@ -346,8 +398,9 @@ if [ $# -gt 0 ]; then
             echo "    info         Show config details (API key, paths, DB size)"
             echo ""
             echo "  Maintenance:"
-            echo "    update       Pull latest code from git and reinstall"
-            echo "    reset        Wipe database and start fresh"
+            echo "    update         Pull latest code from git and reinstall"
+            echo "    reset          Wipe database and start fresh"
+            echo "    setup-service  Install as systemd service (auto-start/restart)"
             ;;
         *)
             print_error "Unknown command: $1"
@@ -378,6 +431,7 @@ else
             12) do_info ;;
             13) do_update ;;
             14) do_reset ;;
+            15) do_setup_service ;;
             0)  echo "  Goodbye!"; exit 0 ;;
             *)  print_error "Invalid choice. Enter a number from the menu above." ;;
         esac

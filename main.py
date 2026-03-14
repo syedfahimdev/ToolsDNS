@@ -15,13 +15,24 @@ API documentation is auto-generated at /docs (Swagger UI).
 
 import asyncio
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from tooldns.config import settings, logger
 from tooldns.database import ToolDatabase
 from tooldns.embedder import get_embedder
 from tooldns.search import SearchEngine
 from tooldns.ingestion import IngestionPipeline
 from tooldns.api import router, init_api
+
+# Rate limiter — keyed by IP (all requests go through localhost so key by API key header instead)
+def _get_key(request: Request) -> str:
+    auth = request.headers.get("Authorization", "")
+    return auth or get_remote_address(request)
+
+limiter = Limiter(key_func=_get_key, default_limits=["120/minute"])
 
 
 async def _auto_refresh(pipeline: IngestionPipeline, interval_min: int):
@@ -108,7 +119,14 @@ app = FastAPI(
     ),
     version="1.0.0",
     lifespan=lifespan,
+    # Hide /docs and /openapi.json in production (security: don't expose schema publicly)
+    docs_url="/docs" if settings.host == "127.0.0.1" else None,
+    redoc_url=None,
 )
+
+# Attach rate limiter
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.include_router(router)
 

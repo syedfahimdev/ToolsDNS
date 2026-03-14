@@ -53,7 +53,7 @@ class Settings(BaseSettings):
 
     home: str = str(TOOLDNS_HOME)
     api_key: str = "td_dev_key"
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"
     port: int = 8787
     embedding_model: str = "all-MiniLM-L6-v2"
     db_path: str = str(TOOLDNS_HOME / "tooldns.db")
