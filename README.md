@@ -22,6 +22,20 @@ Without ToolDNS:  LLM receives 500 tool schemas (50,000+ tokens) every message
 With ToolDNS:     LLM searches → gets 1-2 relevant schemas (~200 tokens)
 ```
 
+## Features
+
+| Feature | Description |
+|---------|-------------|
+| 🔍 **Semantic Search** | Find tools by natural language, not exact names |
+| 📊 **Token Tracking** | Real token counting with tiktoken, cost savings per search |
+| 🏥 **Health Monitoring** | Auto-check if MCP servers are online/degraded/down |
+| 🛒 **Marketplace** | One-click install popular MCP servers (GitHub, Slack, etc.) |
+| 🎨 **Web Dashboard** | Browser UI for managing sources, browsing tools, viewing stats |
+| 🔌 **MCP Server Mode** | Expose ToolDNS itself as an MCP server for any agent |
+| ⚡ **FastMCP Integration** | Native FastMCP wrapper for easy agent integration |
+| 📦 **Skill Management** | Create and manage skill files from the UI |
+| 🔧 **Auto-Discovery** | Pull tools from any MCP config file automatically |
+
 ## How It Works
 
 ```
@@ -30,9 +44,9 @@ With ToolDNS:     LLM searches → gets 1-2 relevant schemas (~200 tokens)
 │                   │     │                      │     │              │
 │ • MCP Servers     │────▶│  1. Register tools   │◀────│  "I need a   │
 │ • Config files    │     │  2. Embed & index    │     │   tool to    │
-│ • Skill files     │     │  3. Semantic search  │────▶│   create a   │
-│ • Custom tools    │     │  4. Return only the  │     │   github     │
-│ • OpenAPI specs   │     │     relevant schema  │     │   issue"     │
+│ • Skill files     │     │  3. Semantic search   │────▶│   create a   │
+│ • Custom tools    │     │  4. Return only the   │     │   github     │
+│ • OpenAPI specs   │     │     relevant schema   │     │   issue"     │
 └──────────────────┘     └─────────────────────┘     └──────────────┘
 ```
 
@@ -99,6 +113,23 @@ python main.py
 # Or with uvicorn
 uvicorn main:app --port 8787
 ```
+
+### Web Dashboard
+
+The server includes a built-in web UI:
+
+```
+http://localhost:8787/ui
+```
+
+Features:
+- Dashboard: Overview of indexed tools, recent searches
+- Sources: Add/remove/edit MCP server sources
+- Tools: Browse all indexed tools with search
+- Marketplace: One-click install popular MCP servers
+- Health: Monitor which tools are online/offline
+- Stats: Token savings, search analytics
+- Settings: Configure API key, refresh interval
 
 ### Search for Tools
 
@@ -171,6 +202,10 @@ The core endpoint. Send a natural language query, get back the matching tool(s).
 
 ### `DELETE /v1/sources/{id}` — Remove a source
 
+### `GET /v1/health` — Check tool/source health status
+
+### `GET /v1/stats` — Get token savings and usage analytics
+
 ### API Docs
 
 Full interactive API documentation is available at `http://localhost:8787/docs` when the server is running.
@@ -186,6 +221,8 @@ Full interactive API documentation is available at `http://localhost:8787/docs` 
 | `python -m tooldns.cli search "query"` | Search for a tool |
 | `python -m tooldns.cli ingest` | Re-ingest all sources |
 | `python -m tooldns.cli serve` | Start the API server |
+| `python -m tooldns.cli health` | Check health of all sources |
+| `python -m tooldns.cli integrate` | Wizard to integrate with nanobot/openclaw |
 
 ## Configuration
 
@@ -200,6 +237,29 @@ All configuration is via environment variables (or `.env` file):
 | `TOOLDNS_DB_PATH` | `./tooldns.db` | SQLite database path |
 | `TOOLDNS_REFRESH_INTERVAL` | `15` | Auto-refresh interval (minutes) |
 | `TOOLDNS_LOG_LEVEL` | `INFO` | Log level |
+
+## MCP Server Mode
+
+ToolDNS can expose itself as an MCP server, giving any MCP-capable agent access to its tool registry:
+
+```python
+# In your nanobot / openclaw / mcporter config:
+"tooldns": {
+    "command": "python3",
+    "args": ["-m", "tooldns.mcp_server"]
+}
+```
+
+This exposes 5 tools:
+- `search_tools` — find tools by natural language
+- `get_tool` — get full schema + skill instructions
+- `call_tool` — execute a tool through ToolDNS
+- `register_mcp_server` — add a new MCP server on the fly
+- `create_skill` — create a new skill file
+
+Plus two live MCP resources:
+- `tooldns://tools` — browse all indexed tools
+- `tooldns://sources` — list all registered sources
 
 ## LLM Integration Pattern
 
@@ -232,13 +292,21 @@ tooldns/
 │   ├── config.py        # Settings from environment variables
 │   ├── models.py        # Pydantic data models (universal tool schema)
 │   ├── database.py      # SQLite storage for tools and sources
-│   ├── embedder.py      # Sentence-transformers embedding engine
-│   ├── fetcher.py       # MCP protocol client (stdio + HTTP transports)
-│   ├── ingestion.py     # Multi-source ingestion pipeline
-│   ├── search.py        # Semantic search with cosine similarity
-│   ├── auth.py          # API key authentication
-│   ├── api.py           # FastAPI route handlers
-│   └── cli.py           # Interactive command-line interface
+│   ├── embedder.py     # Sentence-transformers embedding engine
+│   ├── fetcher.py      # MCP protocol client (stdio + HTTP transports)
+│   ├── ingestion.py    # Multi-source ingestion pipeline
+│   ├── search.py       # Semantic search with cosine similarity
+│   ├── auth.py         # API key authentication
+│   ├── api.py          # FastAPI route handlers
+│   ├── cli.py          # Interactive command-line interface
+│   ├── mcp_server.py   # FastMCP wrapper (expose as MCP server)
+│   ├── health.py       # Tool/source health monitoring
+│   ├── marketplace.py  # Curated MCP server catalog
+│   ├── tokens.py       # Token counting and cost estimation
+│   ├── integrate.py    # Wizard for nanobot/openclaw integration
+│   ├── ui.py           # Web dashboard routes
+│   └── static/         # CSS, JS for web UI
+├── templates/           # Jinja2 templates for web UI
 ├── requirements.txt
 ├── .env.example
 └── .gitignore
@@ -254,17 +322,43 @@ tooldns/
 | `skill_directory` | Directory of skill .md files | Parses YAML headers and TEMPLATE sections |
 | `custom` | Single custom tool | User provides name, description, and schema |
 
+## Token Savings
+
+ToolDNS tracks real token usage using tiktoken (cl100k_base encoding, ~5% accuracy for all major LLMs). Each search response includes:
+
+- `tokens_saved` — tokens not sent to LLM by using semantic search
+- `search_time_ms` — how fast the search ran
+
+This helps you quantify the cost savings of using ToolDNS vs loading all tool schemas.
+
+## Health Monitoring
+
+ToolDNS periodically checks whether registered MCP servers are reachable:
+
+- **HTTP MCP servers**: Send a ping, check HTTP 200
+- **stdio MCP servers**: Use "staleness" heuristic (if refreshed within 2× interval = healthy)
+- **Skill directories**: Always healthy (local files)
+
+Check health via API: `GET /v1/health` or web UI: `/ui/health`
+
+## Marketplace
+
+Built-in catalog of popular MCP servers with one-click install:
+
+- GitHub, Git, Filesystem
+- Browser automation (Playwright, Puppeteer)
+- Slack, Discord, Telegram
+- Search (Brave, SerpAPI)
+- Data (Supabase, PostgreSQL)
+- Cloud (AWS, GCP, Azure)
+- AI (OpenAI, Anthropic, HuggingFace)
+
 ## Future Improvements
 
 ### Planned Features
-- [ ] **Auto-refresh scheduler** — Periodically re-ingest sources on a cron schedule
-- [ ] **MCP protocol wrapper** — Expose ToolDNS itself as an MCP server for native agent integration
-- [ ] **OpenAPI spec ingestion** — Parse OpenAPI/Swagger JSON specs as tool sources
-- [ ] **Execution proxy** — Optional mode where ToolDNS also executes the discovered tool
-- [ ] **Web dashboard** — Visual UI for managing sources, browsing tools, and viewing search analytics
+- [ ] **Auto-refresh scheduler** — Periodically re-ingest sources on a cron schedule (already partially implemented)
 - [ ] **SDK packages** — Python and TypeScript client libraries
 - [ ] **Multi-tenant support** — Team workspaces with shared tool registries
-- [ ] **Tool quality scoring** — Track success rates and rank tools by reliability
 - [ ] **Community marketplace** — Share and discover tool registries publicly
 - [ ] **Webhook support** — Get notified when sources update their tool lists
 - [ ] **Vector DB upgrade** — Migrate from SQLite to Qdrant/pgvector for larger indexes
