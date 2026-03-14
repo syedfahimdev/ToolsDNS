@@ -6,7 +6,7 @@ Thank you for helping make ToolsDNS better! Here's how to get started.
 
 ```bash
 git clone https://github.com/syedfahimdev/ToolsDNS
-cd tooldns
+cd ToolsDNS
 pip install -e ".[dev]"
 python -m tooldns.cli setup
 python -m tooldns.cli serve

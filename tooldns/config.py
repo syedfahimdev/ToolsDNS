@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     app_name: str = "ToolsDNS"
     app_tagline: str = "DNS for AI Tools"
     github_url: str = "https://github.com/syedfahimdev/ToolsDNS"
-    contact_email: str = "hello@toolsdns.ai"
+    contact_email: str = "hello@toolsdns.com"
 
     model_config = ConfigDict(env_prefix="TOOLDNS_")
 

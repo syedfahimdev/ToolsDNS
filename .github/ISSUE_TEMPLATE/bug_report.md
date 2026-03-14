@@ -12,4 +12,4 @@ labels: bug
 
 **Expected behavior:**
 
-**ToolDNS version / OS:**
+**ToolsDNS version / OS:**

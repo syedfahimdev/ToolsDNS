@@ -1,7 +1,7 @@
 services:
-  tooldns:
+  toolsdns:
     build: .
-    container_name: tooldns
+    container_name: toolsdns
     restart: unless-stopped
     ports:
       - "8787:8787"
