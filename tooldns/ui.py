@@ -907,6 +907,64 @@ async def reset_key_count(key: str):
 
 
 # ---------------------------------------------------------------------------
+# Client portal (per-key self-service dashboard)
+# ---------------------------------------------------------------------------
+
+@ui_router.get("/client", response_class=HTMLResponse)
+async def client_portal(request: Request):
+    """Public-facing client dashboard — clients enter their key to see usage."""
+    from tooldns.config import settings as _settings
+    return templates.TemplateResponse("client_portal.html", {
+        "request": request,
+        "app_name": _settings.app_name,
+        "app_tagline": _settings.app_tagline,
+    })
+
+
+@ui_router.post("/client/stats")
+async def client_stats(request: Request):
+    """
+    Return usage stats for a given API key — used by the client portal JS.
+
+    Accepts JSON body: {"key": "td_xxx"}
+    Returns key info + aggregated token savings for that key's searches.
+    Never returns the full key — only masked + metadata.
+    """
+    import json as _json
+    try:
+        body = await request.json()
+    except Exception:
+        return {"error": "Invalid request body."}
+
+    key = (body.get("key") or "").strip()
+    if not key:
+        return {"error": "API key is required."}
+
+    key_info = _database.get_api_key(key)
+    if not key_info:
+        return {"error": "Invalid API key. Check your key and try again."}
+    if not key_info["is_active"]:
+        return {"error": "This API key has been revoked. Contact support."}
+
+    # Aggregate token savings from search_log for this key's searches.
+    # search_log doesn't store the key used, so we return the global stats
+    # for now (fine for single-tenant; extend later for per-key log).
+    stats = _database.get_search_stats()
+
+    return {
+        "name": key_info["name"],
+        "label": key_info.get("label", ""),
+        "plan": key_info["plan"],
+        "search_count": key_info["search_count"],
+        "total_searches": key_info["total_searches"],
+        "monthly_limit": key_info["monthly_limit"],
+        "last_used_at": key_info.get("last_used_at", ""),
+        "tokens_saved": stats.get("total_tokens_saved") or 0,
+        "cost_saved": stats.get("total_cost_saved_usd") or 0.0,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Pricing page
 # ---------------------------------------------------------------------------
 

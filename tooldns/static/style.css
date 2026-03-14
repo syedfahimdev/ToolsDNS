@@ -344,3 +344,7 @@ code { font-family: var(--mono); font-size: 12px; background: var(--surface2); p
 .mkt-actions { display:flex; gap:8px; flex-wrap:wrap; }
 .mkt-install-note { font-size:11px; color:var(--text-dim); padding:6px 8px; background:var(--bg); border-radius:4px; border-left:2px solid var(--accent); }
 .install-area { margin-top:4px; }
+
+/* Client portal nav link */
+.nav-portal-link { font-size:12px; color:var(--text-dim) !important; border:1px solid var(--border); border-radius:var(--radius); }
+.nav-portal-link:hover { color:var(--text) !important; }
