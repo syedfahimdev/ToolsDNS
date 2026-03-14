@@ -1,5 +1,5 @@
 """
-ui.py — Web UI for ToolDNS management.
+ui.py — Web UI for ToolsDNS management.
 
 Provides a browser-based dashboard at /ui for managing sources,
 browsing tools, monitoring health, and adding MCP servers without
@@ -700,7 +700,7 @@ async def settings_page(request: Request, msg: str = ""):
     candidates = [
         ("~/.nanobot/config.json", "mcpServers", "Nanobot"),
         ("~/.openclaw/workspace/config/mcporter.json", "mcpServers", "OpenClaw (mcporter)"),
-        ("~/.tooldns/config.json", "mcpServers", "ToolDNS local"),
+        ("~/.tooldns/config.json", "mcpServers", "ToolsDNS local"),
     ]
     for path_str, key, label in candidates:
         path = os.path.expanduser(path_str)
@@ -970,7 +970,7 @@ async def client_stats(request: Request):
 
 @ui_router.get("/pricing", response_class=HTMLResponse)
 async def pricing_page(request: Request):
-    """Public-facing pricing page for selling ToolDNS as a service."""
+    """Public-facing pricing page for selling ToolsDNS as a service."""
     from tooldns.config import settings as _settings
     return templates.TemplateResponse("pricing.html", {
         "request": request,

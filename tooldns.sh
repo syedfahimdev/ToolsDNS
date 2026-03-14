@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # ============================================================
-# tooldns.sh — Developer Helper Script for ToolDNS
+# tooldns.sh — Developer Helper Script for ToolsDNS
 # ============================================================
 #
 # This script provides guided commands for installing, running,
-# testing, and debugging ToolDNS. Designed for junior devs
+# testing, and debugging ToolsDNS. Designed for junior devs
 # and anyone new to the project.
 #
 # Usage:
@@ -39,7 +39,7 @@ NC='\033[0m' # No Color
 print_header() {
     echo ""
     echo -e "${CYAN}╔════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}║            ⚡ ToolDNS ⚡               ║${NC}"
+    echo -e "${CYAN}║            ⚡ ToolsDNS ⚡               ║${NC}"
     echo -e "${CYAN}║     Developer Helper Script            ║${NC}"
     echo -e "${CYAN}╚════════════════════════════════════════╝${NC}"
     echo ""
@@ -66,7 +66,7 @@ print_error() {
 # ============================================================
 
 do_install() {
-    print_step "Installing ToolDNS..."
+    print_step "Installing ToolsDNS..."
     echo ""
     print_info "This will:"
     print_info "  1. Create ~/.tooldns home directory"
@@ -78,7 +78,7 @@ do_install() {
 }
 
 do_start() {
-    print_step "Starting ToolDNS server..."
+    print_step "Starting ToolsDNS server..."
     print_info "Repo: $REPO_DIR"
     print_info "Home: $TOOLDNS_HOME"
     print_info "Swagger docs will be at: http://localhost:8787/docs"
@@ -88,7 +88,7 @@ do_start() {
 }
 
 do_status() {
-    print_step "Checking ToolDNS status..."
+    print_step "Checking ToolsDNS status..."
     echo ""
     cd "$REPO_DIR"
     $PYTHON -m tooldns.cli status
@@ -121,7 +121,7 @@ do_ingest() {
 }
 
 do_update() {
-    print_step "Updating ToolDNS from git..."
+    print_step "Updating ToolsDNS from git..."
     echo ""
     cd "$REPO_DIR"
     $PYTHON -m tooldns.cli update
@@ -132,7 +132,7 @@ do_docker() {
     cd "$REPO_DIR"
     case "$subcmd" in
         up)
-            print_step "Starting ToolDNS in Docker..."
+            print_step "Starting ToolsDNS in Docker..."
             print_info "Your ~/.tooldns folder is mounted into the container."
             print_info "Edit config, skills, or tools on the host — changes are live instantly."
             echo ""
@@ -142,14 +142,14 @@ do_docker() {
             print_info "Stop: ./tooldns.sh docker down"
             ;;
         down)
-            print_step "Stopping ToolDNS Docker container..."
+            print_step "Stopping ToolsDNS Docker container..."
             docker compose down
             ;;
         logs)
             docker compose logs -f
             ;;
         build)
-            print_step "Building ToolDNS Docker image..."
+            print_step "Building ToolsDNS Docker image..."
             docker compose build
             ;;
         status)
@@ -181,7 +181,7 @@ do_test_api() {
     local port="${TOOLDNS_PORT:-8787}"
     local api_key
     api_key=$(_get_api_key)
-    print_step "Testing ToolDNS API on port $port..."
+    print_step "Testing ToolsDNS API on port $port..."
     echo ""
 
     if [ -z "$api_key" ]; then
@@ -223,12 +223,12 @@ do_test_api() {
 }
 
 do_integrate() {
-    print_step "Wiring ToolDNS into your AI agent (nanobot/openclaw)..."
+    print_step "Wiring ToolsDNS into your AI agent (nanobot/openclaw)..."
     echo ""
     print_info "This will:"
-    print_info "  1. Add ToolDNS to your agent's MCP server list"
-    print_info "  2. Move heavy tool servers to ToolDNS config (saves tokens)"
-    print_info "  3. Update AGENTS.md with correct ToolDNS instructions"
+    print_info "  1. Add ToolsDNS to your agent's MCP server list"
+    print_info "  2. Move heavy tool servers to ToolsDNS config (saves tokens)"
+    print_info "  3. Update AGENTS.md with correct ToolsDNS instructions"
     echo ""
     cd "$REPO_DIR"
     $PYTHON -m tooldns.cli integrate
@@ -256,7 +256,7 @@ do_new_skill() {
 }
 
 do_setup_service() {
-    print_step "Setting up ToolDNS + Nanobot as system services..."
+    print_step "Setting up ToolsDNS + Nanobot as system services..."
     echo ""
     print_info "This will:"
     print_info "  • Enable tooldns.service  (auto-starts, restarts on crash)"
@@ -306,7 +306,7 @@ do_setup_service() {
 }
 
 do_reset() {
-    print_warn "This will delete the ToolDNS database and re-ingest everything."
+    print_warn "This will delete the ToolsDNS database and re-ingest everything."
     echo -n "  Continue? [y/N]: "
     read -r confirm
     if [ "$confirm" = "y" ] || [ "$confirm" = "Y" ]; then
@@ -319,7 +319,7 @@ do_reset() {
 }
 
 do_info() {
-    print_step "ToolDNS Configuration"
+    print_step "ToolsDNS Configuration"
     echo ""
     print_info "Home directory:   $TOOLDNS_HOME"
     print_info "Repo directory:   $REPO_DIR"
@@ -361,7 +361,7 @@ show_menu() {
     echo ""
     echo -e "  ${CYAN}Getting Started:${NC}"
     echo "    1)  install      First-time setup (creates ~/.tooldns, installs deps)"
-    echo "    2)  integrate    Wire ToolDNS into nanobot/openclaw (updates AGENTS.md)"
+    echo "    2)  integrate    Wire ToolsDNS into nanobot/openclaw (updates AGENTS.md)"
     echo "    3)  start        Start the API server"
     echo "    4)  status       Show system status & health"
     echo ""
@@ -417,7 +417,7 @@ if [ $# -gt 0 ]; then
             echo ""
             echo "  Getting Started:"
             echo "    install      First-time setup (creates ~/.tooldns, installs deps)"
-            echo "    integrate    Wire ToolDNS into nanobot/openclaw (updates AGENTS.md)"
+            echo "    integrate    Wire ToolsDNS into nanobot/openclaw (updates AGENTS.md)"
             echo "    start        Start the API server"
             echo "    status       Show system status and health"
             echo ""

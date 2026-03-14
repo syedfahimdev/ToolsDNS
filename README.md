@@ -1,8 +1,8 @@
-# ToolDNS
+# ToolsDNS
 
 **DNS for AI Tools** — Search 10,000 tools. Return only the one you need.
 
-> The standard way to give an AI agent tools (loading a massive MCP with 500 schemas) is like making someone read a 1,000-page encyclopedia every time you ask them a single question. ToolDNS fixes this.
+> The standard way to give an AI agent tools (loading a massive MCP with 500 schemas) is like making someone read a 1,000-page encyclopedia every time you ask them a single question. ToolsDNS fixes this.
 
 ## The Problem
 
@@ -15,11 +15,11 @@ When you connect an AI agent to tools via Composio, Zapier MCP, or similar platf
 
 ## The Solution
 
-ToolDNS is a universal tool registry with semantic search routing. Point it at your MCP servers, skill files, or APIs — and when your LLM needs a tool, it queries ToolDNS to get back **only** the relevant tool schema.
+ToolsDNS is a universal tool registry with semantic search routing. Point it at your MCP servers, skill files, or APIs — and when your LLM needs a tool, it queries ToolsDNS to get back **only** the relevant tool schema.
 
 ```
-Without ToolDNS:  LLM receives 500 tool schemas (50,000+ tokens) every message
-With ToolDNS:     LLM searches → gets 1-2 relevant schemas (~200 tokens)
+Without ToolsDNS:  LLM receives 500 tool schemas (50,000+ tokens) every message
+With ToolsDNS:     LLM searches → gets 1-2 relevant schemas (~200 tokens)
 ```
 
 ## Features
@@ -31,7 +31,7 @@ With ToolDNS:     LLM searches → gets 1-2 relevant schemas (~200 tokens)
 | 🏥 **Health Monitoring** | Auto-check if MCP servers are online/degraded/down |
 | 🛒 **Marketplace** | One-click install popular MCP servers (GitHub, Slack, etc.) |
 | 🎨 **Web Dashboard** | Browser UI for managing sources, browsing tools, viewing stats |
-| 🔌 **MCP Server Mode** | Expose ToolDNS itself as an MCP server for any agent |
+| 🔌 **MCP Server Mode** | Expose ToolsDNS itself as an MCP server for any agent |
 | ⚡ **FastMCP Integration** | Native FastMCP wrapper for easy agent integration |
 | 📦 **Skill Management** | Create and manage skill files from the UI |
 | 🔧 **Auto-Discovery** | Pull tools from any MCP config file automatically |
@@ -40,7 +40,7 @@ With ToolDNS:     LLM searches → gets 1-2 relevant schemas (~200 tokens)
 
 ```
 ┌──────────────────┐     ┌─────────────────────┐     ┌──────────────┐
-│  Tool Sources     │     │      ToolDNS         │     │  LLM Agent   │
+│  Tool Sources     │     │      ToolsDNS         │     │  LLM Agent   │
 │                   │     │                      │     │              │
 │ • MCP Servers     │────▶│  1. Register tools   │◀────│  "I need a   │
 │ • Config files    │     │  2. Embed & index    │     │   tool to    │
@@ -50,18 +50,18 @@ With ToolDNS:     LLM searches → gets 1-2 relevant schemas (~200 tokens)
 └──────────────────┘     └─────────────────────┘     └──────────────┘
 ```
 
-1. **Register sources** — Point ToolDNS at your MCP configs, skill directories, or custom tools
-2. **Auto-discover** — ToolDNS connects to each MCP server and fetches all tool definitions
+1. **Register sources** — Point ToolsDNS at your MCP configs, skill directories, or custom tools
+2. **Auto-discover** — ToolsDNS connects to each MCP server and fetches all tool definitions
 3. **Embed & index** — Each tool's description is embedded for semantic search (locally, no API cost)
-4. **Search** — When an LLM needs a tool, it queries ToolDNS with natural language
-5. **Return** — ToolDNS returns only the 1-2 most relevant tool schemas
+4. **Search** — When an LLM needs a tool, it queries ToolsDNS with natural language
+5. **Return** — ToolsDNS returns only the 1-2 most relevant tool schemas
 
 ## Quick Start
 
 ### Installation
 
 ```bash
-git clone https://github.com/syedfahimdev/tooldns.git
+git clone https://github.com/syedfahimdev/toolsdns.git
 cd tooldns
 pip install -r requirements.txt
 ```
@@ -246,7 +246,7 @@ Full interactive API documentation is available at `http://localhost:8787/docs` 
 
 ## Docker
 
-The recommended way to run ToolDNS in production. Your `~/.tooldns` folder is bind-mounted so config, skills, tools, and the database are shared between the host and container — edit anything on the host and it's picked up live.
+The recommended way to run ToolsDNS in production. Your `~/.tooldns` folder is bind-mounted so config, skills, tools, and the database are shared between the host and container — edit anything on the host and it's picked up live.
 
 ```bash
 # Start
@@ -280,11 +280,11 @@ All configuration is via environment variables (or `~/.tooldns/.env`):
 | `TOOLDNS_REFRESH_INTERVAL` | `15` | Auto-refresh interval (minutes, 0=off) |
 | `TOOLDNS_LOG_LEVEL` | `INFO` | Log level |
 | `TOOLDNS_WEBHOOK_URL` | *(empty)* | URL to POST health alerts to |
-| `TOOLDNS_WEBHOOK_SECRET` | *(empty)* | Sent as `X-ToolDNS-Secret` header |
+| `TOOLDNS_WEBHOOK_SECRET` | *(empty)* | Sent as `X-ToolsDNS-Secret` header |
 
 ## MCP Server Mode
 
-ToolDNS can expose itself as an MCP server, giving any MCP-capable agent access to its tool registry:
+ToolsDNS can expose itself as an MCP server, giving any MCP-capable agent access to its tool registry:
 
 ```python
 # In your nanobot / openclaw / mcporter config:
@@ -297,7 +297,7 @@ ToolDNS can expose itself as an MCP server, giving any MCP-capable agent access 
 This exposes 5 tools:
 - `search_tools` — find tools by natural language
 - `get_tool` — get full schema + skill instructions
-- `call_tool` — execute a tool through ToolDNS
+- `call_tool` — execute a tool through ToolsDNS
 - `register_mcp_server` — add a new MCP server on the fly
 - `create_skill` — create a new skill file
 
@@ -321,14 +321,14 @@ tools = [{
 }]
 
 # When the LLM calls tooldns_search:
-# 1. Forward the query to ToolDNS
+# 1. Forward the query to ToolsDNS
 # 2. Get back the relevant tool schema
 # 3. LLM can now call the actual tool with the returned schema
 ```
 
 ## Hot Reload
 
-ToolDNS watches `~/.tooldns/config.json` with OS-level file notifications (inotify on Linux, kqueue on macOS). When you save a change — adding a new MCP server, a new skill path, etc. — re-ingestion starts automatically within ~1 second. No restart needed.
+ToolsDNS watches `~/.tooldns/config.json` with OS-level file notifications (inotify on Linux, kqueue on macOS). When you save a change — adding a new MCP server, a new skill path, etc. — re-ingestion starts automatically within ~1 second. No restart needed.
 
 ```bash
 # Example: add a server to config.json, it's indexed within seconds
@@ -346,7 +346,7 @@ TOOLDNS_WEBHOOK_URL=https://hooks.slack.com/services/T.../B.../...
 TOOLDNS_WEBHOOK_SECRET=my-signing-secret   # optional
 ```
 
-ToolDNS POSTs this JSON when any source changes status:
+ToolsDNS POSTs this JSON when any source changes status:
 
 ```json
 {
@@ -358,7 +358,7 @@ ToolDNS POSTs this JSON when any source changes status:
 }
 ```
 
-The secret is sent as the `X-ToolDNS-Secret` header so your endpoint can verify the request came from ToolDNS.
+The secret is sent as the `X-ToolsDNS-Secret` header so your endpoint can verify the request came from ToolsDNS.
 
 **Works with any HTTP endpoint** — Slack incoming webhooks, Discord webhooks, PagerDuty Events API, or your own endpoint. Only fires on transitions (healthy→down, down→healthy, etc.), not on every health check.
 
@@ -405,7 +405,7 @@ tooldns/
 
 ## Token Savings
 
-ToolDNS tracks real token usage using tiktoken (cl100k_base encoding). Each search response includes:
+ToolsDNS tracks real token usage using tiktoken (cl100k_base encoding). Each search response includes:
 
 - `tokens_saved` — tokens not sent to LLM by using semantic search
 - `search_time_ms` — how fast the search ran
@@ -424,12 +424,12 @@ Shows total tokens saved, cost saved, searches run, and tools indexed — styled
 Embed the SVG version in your README:
 
 ```markdown
-![ToolDNS Savings](http://localhost:8787/ui/savings-card.svg)
+![ToolsDNS Savings](http://localhost:8787/ui/savings-card.svg)
 ```
 
 ## Health Monitoring
 
-ToolDNS periodically checks whether registered MCP servers are reachable:
+ToolsDNS periodically checks whether registered MCP servers are reachable:
 
 - **HTTP MCP servers**: Send a ping, check HTTP 200
 - **stdio MCP servers**: Use "staleness" heuristic (if refreshed within 2× interval = healthy)

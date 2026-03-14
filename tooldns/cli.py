@@ -1,7 +1,7 @@
-"""cli.py — Interactive CLI for ToolDNS.
+"""cli.py — Interactive CLI for ToolsDNS.
 
 Provides a command-line interface for setting up, managing,
-and using ToolDNS without running the HTTP server.
+and using ToolsDNS without running the HTTP server.
 
 Features:
     - Install/update mechanism with ~/.tooldns home directory
@@ -103,7 +103,7 @@ def detect_configs() -> list[dict]:
 
 def get_components():
     """
-    Initialize and return all ToolDNS components.
+    Initialize and return all ToolsDNS components.
 
     Creates the database, embedder, search engine, and ingestion
     pipeline. Used by CLI commands that need the full stack.
@@ -124,10 +124,10 @@ def get_components():
 
 
 def print_banner():
-    """Print the ToolDNS ASCII banner."""
+    """Print the ToolsDNS ASCII banner."""
     print("""
 ╔════════════════════════════════════════╗
-║            ⚡ ToolDNS ⚡               ║
+║            ⚡ ToolsDNS ⚡               ║
 ║     DNS for AI Tools — v1.0.0         ║
 ║                                        ║
 ║  Search 10,000 tools. Return only 1.  ║
@@ -141,7 +141,7 @@ def print_banner():
 
 def cmd_install():
     """
-    Install ToolDNS: create ~/.tooldns home directory, install deps, run setup.
+    Install ToolsDNS: create ~/.tooldns home directory, install deps, run setup.
 
     This is the first command a user runs after cloning the repo.
     It creates the persistent home directory, installs Python
@@ -152,7 +152,7 @@ def cmd_install():
     home = TOOLDNS_HOME
     repo_dir = Path(__file__).parent.parent.resolve()
 
-    print(f"📦 Installing ToolDNS...\n")
+    print(f"📦 Installing ToolsDNS...\n")
     print(f"   Home directory: {home}")
     print(f"   Repo directory: {repo_dir}")
 
@@ -274,7 +274,7 @@ def cmd_install():
 
 def cmd_update():
     """
-    Update ToolDNS: pull latest code from git and reinstall dependencies.
+    Update ToolsDNS: pull latest code from git and reinstall dependencies.
 
     Reads the saved repo path from ~/.tooldns/repo_path, runs git pull,
     and reinstalls dependencies to pick up any changes.
@@ -284,7 +284,7 @@ def cmd_update():
     repo_file = home / "repo_path"
 
     if not repo_file.exists():
-        print("❌ ToolDNS not installed. Run 'python3 -m tooldns.cli install' first.")
+        print("❌ ToolsDNS not installed. Run 'python3 -m tooldns.cli install' first.")
         return
 
     repo_dir = Path(repo_file.read_text().strip())
@@ -293,7 +293,7 @@ def cmd_update():
         print(f"   Update the path in {repo_file}")
         return
 
-    print(f"🔄 Updating ToolDNS...")
+    print(f"🔄 Updating ToolsDNS...")
     print(f"   Repo: {repo_dir}\n")
 
     # Git pull
@@ -327,7 +327,7 @@ def cmd_update():
         )
         print("   ✅ Dependencies up to date")
 
-    print("\n🎉 ToolDNS updated! Restart the server to apply changes.")
+    print("\n🎉 ToolsDNS updated! Restart the server to apply changes.")
 
 
 def cmd_setup():
@@ -358,7 +358,7 @@ def cmd_setup():
 
     # API Key
     print("1️⃣  API Key")
-    print("   This key protects your ToolDNS API.")
+    print("   This key protects your ToolsDNS API.")
     gen = input("   Generate a random key? [Y/n]: ").strip().lower()
     if gen != "n":
         key = "td_" + secrets.token_hex(24)
@@ -375,7 +375,7 @@ def cmd_setup():
 
     # Webhook (optional)
     print("\n3️⃣  Webhook URL (optional)")
-    print("   ToolDNS will POST here when a source goes down or recovers.")
+    print("   ToolsDNS will POST here when a source goes down or recovers.")
     print("   Works with Slack, Discord, PagerDuty, or any HTTP endpoint.")
     print("   Examples:")
     print("     Slack:   https://hooks.slack.com/services/T.../B.../...")
@@ -384,7 +384,7 @@ def cmd_setup():
     webhook = input("   Webhook URL (leave blank to skip): ").strip()
     if webhook:
         env_vars["TOOLDNS_WEBHOOK_URL"] = webhook
-        secret = input("   Webhook secret (optional, sent as X-ToolDNS-Secret header): ").strip()
+        secret = input("   Webhook secret (optional, sent as X-ToolsDNS-Secret header): ").strip()
         if secret:
             env_vars["TOOLDNS_WEBHOOK_SECRET"] = secret
 
@@ -687,7 +687,7 @@ def cmd_search(query: str):
 
 def cmd_status():
     """
-    Show ToolDNS system status: config, sources, tools, health.
+    Show ToolsDNS system status: config, sources, tools, health.
 
     Displays a comprehensive overview of the current state including
     home directory, database stats, source health, and sample tools.
@@ -696,7 +696,7 @@ def cmd_status():
     home = TOOLDNS_HOME
 
     print_banner()
-    print("📊 ToolDNS Status\n")
+    print("📊 ToolsDNS Status\n")
 
     # Home directory
     print(f"   Home:     {home}")
@@ -758,7 +758,7 @@ def cmd_status():
 
 def cmd_install_mcp():
     """
-    Interactive wizard to install a new MCP server into ToolDNS.
+    Interactive wizard to install a new MCP server into ToolsDNS.
 
     Guides the user through:
     1. Picking the package type (npx, pip, or custom command)
@@ -921,12 +921,12 @@ def cmd_install_mcp():
         print(f"   ⚠ Ingestion failed: {e}")
         print("   Run './tooldns.sh ingest' after verifying the server works.")
 
-    print(f"\n🎉 '{server_name}' is ready! Your agent can now search and use its tools via ToolDNS.")
+    print(f"\n🎉 '{server_name}' is ready! Your agent can now search and use its tools via ToolsDNS.")
 
 
 def cmd_new_skill():
     """
-    Create a new skill file in the ToolDNS skills directory.
+    Create a new skill file in the ToolsDNS skills directory.
 
     Skills are markdown files that teach the LLM how to call an API
     or perform a multi-step task. They live in ~/.tooldns/skills/ or
@@ -1017,14 +1017,14 @@ def cmd_ingest():
 
 
 def cmd_serve():
-    """Start the ToolDNS API server."""
+    """Start the ToolsDNS API server."""
     import uvicorn
     print_banner()
 
     # Resolve the repo directory for correct main.py import
     repo_dir = Path(__file__).parent.parent.resolve()
 
-    print(f"🚀 Starting ToolDNS server on {settings.host}:{settings.port}")
+    print(f"🚀 Starting ToolsDNS server on {settings.host}:{settings.port}")
     print(f"   Home: {settings.home}")
     print(f"   Repo: {repo_dir}")
     print(f"   API docs: http://localhost:{settings.port}/docs\n")
@@ -1052,7 +1052,7 @@ def main():
         install    Create ~/.tooldns, install deps, run setup
         update     Pull latest code and sync dependencies
         setup      Interactive config + auto-detect sources
-        integrate  Wire ToolDNS into nanobot/openclaw agents
+        integrate  Wire ToolsDNS into nanobot/openclaw agents
         add        Add a tool source interactively
         sources    List registered sources
         tools      List indexed tools
@@ -1068,7 +1068,7 @@ def main():
         print("  install      Create ~/.tooldns, install deps, run setup")
         print("  update       Pull latest code and sync dependencies")
         print("  setup        Interactive config + auto-detect sources")
-        print("  integrate    Wire ToolDNS into nanobot/openclaw agents")
+        print("  integrate    Wire ToolsDNS into nanobot/openclaw agents")
         print("  install-mcp  Install a new MCP server + set env vars")
         print("  new-skill    Create a new skill file template")
         print("  add          Add a tool source interactively")

@@ -41,7 +41,7 @@ also be open source.
 
 SPDX-License-Identifier: AGPL-3.0-or-later
 
-ToolDNS — DNS for AI Tools
+ToolsDNS — DNS for AI Tools
 Copyright (C) 2026  Syed Fahim
 
 This program is free software: you can redistribute it and/or modify
@@ -61,16 +61,16 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 COMMERCIAL LICENSE
 
-If you wish to use ToolDNS in a proprietary product, embed it in a
-closed-source application, or offer a hosted service based on ToolDNS
+If you wish to use ToolsDNS in a proprietary product, embed it in a
+closed-source application, or offer a hosted service based on ToolsDNS
 WITHOUT complying with the AGPL-3.0 terms, you must obtain a separate
 commercial license from the copyright holder.
 
-Contact: syed@tooldns.ai
-Website: https://tooldns.ai
+Contact: syed@toolsdns.ai
+Website: https://toolsdns.ai
 
 Commercial licenses are available for:
   - SaaS/hosted deployments that cannot open-source their modifications
-  - Embedding ToolDNS in proprietary software products
+  - Embedding ToolsDNS in proprietary software products
   - White-label distributions
   - OEM integrations

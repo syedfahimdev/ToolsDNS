@@ -1,5 +1,5 @@
 """
-main.py — FastAPI application entry point for ToolDNS.
+main.py — FastAPI application entry point for ToolsDNS.
 
 Initializes all components (database, embedder, search engine,
 ingestion pipeline) and starts the FastAPI server with the
@@ -180,7 +180,7 @@ async def _health_check_loop(monitor: HealthMonitor, interval_sec: int = 60):
 def _ensure_mcporter_system_config():
     """
     Write ~/.mcporter/mcporter.json on first run so agents can call
-    ToolDNS via `mcporter call tooldns ...` without --config flag.
+    ToolsDNS via `mcporter call tooldns ...` without --config flag.
 
     Only writes if tooldns is not already registered there.
     Safe to call on every startup — idempotent.
@@ -247,7 +247,7 @@ async def lifespan(app: FastAPI):
 
     The embedding model is preloaded to avoid first-request latency.
     """
-    logger.info("Starting ToolDNS...")
+    logger.info("Starting ToolsDNS...")
 
     # Initialize components
     db = ToolDatabase(settings.db_path)
@@ -260,7 +260,7 @@ async def lifespan(app: FastAPI):
     db.reset_stale_jobs()
 
     # First-run setup: write system-level mcporter config so agents can call
-    # ToolDNS via `mcporter call tooldns ...` without needing --config flag.
+    # ToolsDNS via `mcporter call tooldns ...` without needing --config flag.
     _ensure_mcporter_system_config()
     _clean_stale_sources(db, pipeline)
 
@@ -279,7 +279,7 @@ async def lifespan(app: FastAPI):
     tool_count = db.get_tool_count()
     source_count = len(db.get_all_sources())
     logger.info(
-        f"ToolDNS ready — {tool_count} tools from {source_count} sources"
+        f"ToolsDNS ready — {tool_count} tools from {source_count} sources"
     )
 
     # Start background tasks
@@ -299,15 +299,15 @@ async def lifespan(app: FastAPI):
     # Cleanup
     for task in tasks:
         task.cancel()
-    logger.info("ToolDNS shutting down.")
+    logger.info("ToolsDNS shutting down.")
 
 
 app = FastAPI(
-    title="ToolDNS",
+    title="ToolsDNS",
     description=(
         "DNS for AI Tools. Search 10,000 tools, return only the one you need. "
-        "Point ToolDNS at your MCP servers, skill files, or APIs. "
-        "When your LLM needs a tool, query ToolDNS — it finds the right one "
+        "Point ToolsDNS at your MCP servers, skill files, or APIs. "
+        "When your LLM needs a tool, query ToolsDNS — it finds the right one "
         "and returns only that schema, saving thousands of tokens."
     ),
     version="1.0.0",
@@ -340,7 +340,7 @@ if _os.path.exists(_static_dir):
 async def root():
     """Health check and welcome endpoint."""
     return {
-        "service": "ToolDNS",
+        "service": "ToolsDNS",
         "version": "1.0.0",
         "description": "DNS for AI Tools",
         "docs": "/docs"

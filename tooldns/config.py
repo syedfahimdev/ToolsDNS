@@ -1,11 +1,11 @@
 """
-config.py — Configuration management for ToolDNS.
+config.py — Configuration management for ToolsDNS.
 
 Loads settings from environment variables and .env file.
 All configuration is centralized here so every other module
 can import from this single source of truth.
 
-ToolDNS uses ~/.tooldns as its home directory for:
+ToolsDNS uses ~/.tooldns as its home directory for:
     - .env (configuration)
     - tooldns.db (database)
     - tooldns.log (log file)
@@ -13,7 +13,7 @@ ToolDNS uses ~/.tooldns as its home directory for:
 The home directory is created by `tooldns install`.
 
 Environment Variables:
-    TOOLDNS_HOME: Path to ToolDNS home directory (default: ~/.tooldns)
+    TOOLDNS_HOME: Path to ToolsDNS home directory (default: ~/.tooldns)
     TOOLDNS_API_KEY: API key for authenticating requests
     TOOLDNS_HOST: Server host (default: 0.0.0.0)
     TOOLDNS_PORT: Server port (default: 8787)
@@ -21,7 +21,7 @@ Environment Variables:
     TOOLDNS_DB_PATH: Path to SQLite database (default: ~/.tooldns/tooldns.db)
     TOOLDNS_REFRESH_INTERVAL: Auto-refresh interval in minutes (default: 15, 0 = disabled)
     TOOLDNS_LOG_LEVEL: Logging level (default: INFO)
-    TOOLDNS_APP_NAME: Branding name (default: ToolDNS)
+    TOOLDNS_APP_NAME: Branding name (default: ToolsDNS)
     TOOLDNS_GITHUB_URL: GitHub repo URL shown in UI/footer
     TOOLDNS_CONTACT_EMAIL: Contact email shown on pricing page
 """
@@ -33,7 +33,7 @@ from pydantic import ConfigDict
 from pydantic_settings import BaseSettings
 from dotenv import load_dotenv
 
-# Determine the ToolDNS home directory
+# Determine the ToolsDNS home directory
 TOOLDNS_HOME = Path(os.environ.get(
     "TOOLDNS_HOME",
     os.path.expanduser("~/.tooldns")
@@ -65,12 +65,12 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     model: str = ""  # LLM model name for cost calc (e.g. claude-sonnet-4-6)
     webhook_url: str = ""  # POST health alerts here (Slack/Discord/custom)
-    webhook_secret: str = ""  # Added as X-ToolDNS-Secret header if set
+    webhook_secret: str = ""  # Added as X-ToolsDNS-Secret header if set
     # Branding — override these in ~/.tooldns/.env to white-label
-    app_name: str = "ToolDNS"
+    app_name: str = "ToolsDNS"
     app_tagline: str = "DNS for AI Tools"
-    github_url: str = "https://github.com/syedfahimdev/tooldns"
-    contact_email: str = "hello@tooldns.ai"
+    github_url: str = "https://github.com/syedfahimdev/toolsdns"
+    contact_email: str = "hello@toolsdns.ai"
 
     model_config = ConfigDict(env_prefix="TOOLDNS_")
 
