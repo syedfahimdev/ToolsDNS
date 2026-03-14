@@ -209,13 +209,18 @@ class SearchEngine:
         scored_tools.sort(key=lambda x: x[1], reverse=True)
         top_results = scored_tools[:top_k]
 
-        # Build result objects
+        # Build result objects — deduplicate by tool name (keep highest score)
         results = []
+        seen_names: set[str] = set()
         for tool, confidence in top_results:
+            name = tool["name"]
+            if name in seen_names:
+                continue
+            seen_names.add(name)
             source_info = tool.get("source_info", {})
             results.append(SearchResult(
                 id=tool["id"],
-                name=tool["name"],
+                name=name,
                 description=tool["description"],
                 confidence=round(confidence, 4),
                 input_schema=tool.get("input_schema", {}),
@@ -308,10 +313,12 @@ class SearchEngine:
                 "instruction": f"Call this tool via the '{server}' MCP server."
             }
         elif "skill" in source_type:
+            skill_name = source_info.get("original_name", server)
             return {
                 "type": "skill",
-                "skill_source": server,
-                "instruction": "Use the skill template to construct the API call."
+                "skill_name": skill_name,
+                "fetch_instructions": f"/v1/skills/{skill_name}",
+                "instruction": f"Fetch GET /v1/skills/{skill_name} to get the full SKILL.md instructions, then follow them exactly to complete the task.",
             }
         elif "custom" in source_type:
             return {
