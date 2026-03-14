@@ -37,8 +37,13 @@ async def require_api_key(
     Raises:
         HTTPException: 401 if no token provided, 403 if token is invalid.
     """
-    # Dev mode: if using the default key, skip auth
+    # Dev mode: if using the default key, skip auth but warn
     if settings.api_key == "td_dev_key":
+        import logging
+        logging.getLogger("tooldns").warning(
+            "⚠ Auth disabled (using default td_dev_key). "
+            "Set TOOLDNS_API_KEY in ~/.tooldns/.env for production."
+        )
         return "dev"
 
     if not credentials:

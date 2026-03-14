@@ -287,9 +287,10 @@ def _step_update_agents(agents_path: Path):
 
 def _sanitize_credentials(srv_name: str, srv_config: dict) -> dict:
     """
-    Replace hardcoded API keys with ${ENV_VAR} references.
-    Prints the env var name and value so the user can add it to .env.
+    Replace hardcoded API keys and user-specific URLs with ${ENV_VAR} references.
+    Masks values when printing so raw credentials don't leak to stdout.
     """
+    import re
     config = copy.deepcopy(srv_config)
 
     known_vars = {
@@ -299,16 +300,28 @@ def _sanitize_credentials(srv_name: str, srv_config: dict) -> dict:
         "n8n-mcp": "N8N_MCP_INSTANCE_KEY",
     }
 
+    # Sanitize URL — if it contains UUIDs or user_id, it's user-specific
+    url = config.get("url", "")
+    uuid_pattern = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', re.I)
+    if url and (uuid_pattern.search(url) or "user_id=" in url):
+        env_var = f"{srv_name.upper().replace('-', '_')}_MCP_URL"
+        config["url"] = f"${{{env_var}}}"
+        masked_url = url[:30] + "***" if len(url) > 30 else url
+        print(f"     → {srv_name}: URL contains user-specific data → ${{{env_var}}}")
+        print(f"       Add to ~/.tooldns/.env: {env_var}={masked_url}")
+
+    # Sanitize headers
     headers = config.get("headers", {})
     for header_name, header_value in headers.items():
         if isinstance(header_value, str) and not header_value.startswith("${"):
             env_var = known_vars.get(srv_name,
                 f"{srv_name.upper().replace('-', '_')}_API_KEY")
             headers[header_name] = f"${{{env_var}}}"
+            masked = header_value[:4] + "***" + header_value[-4:] if len(header_value) > 8 else "****"
             print(f"     → {srv_name}: credential → ${{{env_var}}}")
-            print(f"       Add to ~/.tooldns/.env: {env_var}={header_value}")
+            print(f"       Add to ~/.tooldns/.env: {env_var}={masked}")
 
-    # Also check args for env var patterns
+    # Check args for credential-like values
     args = config.get("args", [])
     for i, arg in enumerate(args):
         if isinstance(arg, str) and not arg.startswith("${"):
