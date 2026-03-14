@@ -208,6 +208,19 @@ class IngestionPipeline:
                 config = source["config"]
                 config["name"] = source["name"]
                 config["type"] = source["type"]
+
+                # If the DB ID doesn't match the computed hash, the entry is stale
+                # (created by an old code path). Delete it before re-ingesting so
+                # the correct hash-based ID takes over and no duplicates form.
+                expected_id = self._make_source_id(config)
+                if source["id"] != expected_id:
+                    logger.info(
+                        f"Removing stale source ID {source['id']} for '{source['name']}' "
+                        f"(expected {expected_id})"
+                    )
+                    self.db.delete_source(source["id"])
+                    continue  # The correct entry will be created when ingest_local runs
+
                 count = self.ingest_source(config)
                 total += count
             except Exception as e:
@@ -311,8 +324,8 @@ class IngestionPipeline:
             int: Number of tools ingested.
         """
         config = {
-            "type": SourceType.MCP_CONFIG,
-            "name": "local",
+            "type": SourceType.MCP_CONFIG.value,
+            "name": "tooldns",
             "path": str(config_path),
             "config_key": "mcpServers",
         }
@@ -678,9 +691,47 @@ class IngestionPipeline:
                         "inputSchema": {},
                         "_source_server": config.get("name", "skills"),
                         "_source_type": "skill",
+                        "_skill_folder": str(item),
                     })
+                    logger.info(f"  → Skill: {name}")
                 except Exception as e:
                     logger.warning(f"Error parsing skill {item.name}: {e}")
+
+                # Auto-detect tool scripts inside the skill folder
+                for script in sorted(item.glob("*.py")):
+                    try:
+                        logger.info(f"  Found tool script: {item.name}/{script.name}")
+                        script_tools = self.fetcher.fetch_stdio(
+                            "python3", ["-u", str(script)], timeout=10
+                        )
+                        for t in script_tools:
+                            t["_source_server"] = config.get("name", "skills")
+                            t["_source_type"] = "skill_tool_stdio"
+                            t["_command"] = "python3"
+                            t["_args"] = [str(script)]
+                            t["_skill_folder"] = str(item)
+                        tools.extend(script_tools)
+                        logger.info(f"    → {len(script_tools)} MCP tools from {script.name}")
+                    except Exception as e:
+                        # Not an MCP server — try static parsing
+                        logger.debug(f"    {script.name} not MCP, trying static parse: {e}")
+                        try:
+                            sname, sdesc, sschema = self._parse_tool_py(
+                                script.read_text(encoding="utf-8"), script.stem
+                            )
+                            tools.append({
+                                "name": sname,
+                                "description": sdesc,
+                                "inputSchema": sschema,
+                                "_source_server": config.get("name", "skills"),
+                                "_source_type": "skill_tool_script",
+                                "_command": "python3",
+                                "_args": [str(script)],
+                                "_skill_folder": str(item),
+                            })
+                            logger.info(f"    → Static tool: {sname}")
+                        except Exception as e2:
+                            logger.warning(f"    Could not parse {script.name}: {e2}")
 
             # Pattern 2: flat .md file (e.g. github.md)
             elif item.is_file() and item.suffix == ".md" and not item.name.startswith("_"):
@@ -866,6 +917,8 @@ class IngestionPipeline:
             if tool.get("_url"):
                 source_info["url"] = tool["_url"]
                 source_info["headers"] = tool.get("_headers", {})
+            if tool.get("_skill_folder"):
+                source_info["skill_folder"] = tool["_skill_folder"]
 
             self.db.upsert_tool(
                 tool_id=tool_id,
@@ -911,11 +964,21 @@ class IngestionPipeline:
         Uses a hash of the source name and type so the same source
         can be re-registered without creating duplicates.
 
+        Note: In Python 3.12+, str(StrEnum.MEMBER) returns the class-qualified
+        name ("SourceType.MCP_CONFIG"), not the value ("mcp_config"). We
+        explicitly use .value to get the raw string so the hash is consistent
+        regardless of whether the type field holds a StrEnum or a plain string.
+
         Args:
             config: The source configuration dict.
 
         Returns:
             str: A stable source ID.
         """
-        key = f"{config.get('name', '')}:{config.get('type', '')}"
+        name = config.get("name", "")
+        stype = config.get("type", "")
+        # StrEnum in Python 3.12 doesn't coerce to value in f-strings
+        if hasattr(stype, "value"):
+            stype = stype.value
+        key = f"{name}:{stype}"
         return hashlib.md5(key.encode()).hexdigest()[:12]

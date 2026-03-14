@@ -347,7 +347,9 @@ async def call_tool(req: dict):
     source_type = source_info.get("source_type", "")
 
     # For skills, return the skill content — the LLM executes it
-    if "skill" in source_type:
+    # Use exact match so skill_tool_stdio/skill_tool_script fall through to MCP execution
+    _SKILL_CONTENT_TYPES = {"skill", "skill_directory", "skill_file"}
+    if source_type in _SKILL_CONTENT_TYPES:
         content = _load_skill_content(tool["name"], source_info)
         return {
             "type": "skill",
@@ -356,8 +358,8 @@ async def call_tool(req: dict):
             "instruction": "Follow the skill instructions above to complete the task."
         }
 
-    # For MCP tools, proxy the call to the original server
-    if "mcp" in source_type or source_type in ("streamableHttp", "sse"):
+    # For MCP tools and skill tool scripts, proxy the call to the server/script
+    if "mcp" in source_type or source_type in ("streamableHttp", "sse", "skill_tool_stdio", "skill_tool_script"):
         try:
             result = _proxy_mcp_call(tool, arguments)
             return {"type": "mcp_result", "result": result}
@@ -767,6 +769,133 @@ async def create_skill(req: CreateSkillRequest):
         "status": "created",
         "name": req.name,
         "file": str(skill_file),
+        "tools_indexed": tools_count,
+    }
+
+
+# -----------------------------------------------------------------------
+# Skill read / update (agent-safe editing)
+# -----------------------------------------------------------------------
+
+@router.get("/skills/{skill_name}")
+async def read_skill(skill_name: str):
+    """
+    Read a skill's SKILL.md content and list any tool scripts inside the folder.
+
+    Agents can call this before editing to see what's currently there.
+    Returns skill content + any .py tool scripts found in the folder.
+    """
+    import re as _re
+    from pathlib import Path
+    from tooldns.config import TOOLDNS_HOME
+
+    if not _re.match(r'^[a-zA-Z0-9_\-]+$', skill_name):
+        raise HTTPException(status_code=400, detail="Invalid skill name")
+
+    skill_dir = TOOLDNS_HOME / "skills" / skill_name
+    skill_file = skill_dir / "SKILL.md"
+
+    if not skill_file.exists():
+        raise HTTPException(status_code=404, detail=f"Skill not found: {skill_name}")
+
+    content = skill_file.read_text(encoding="utf-8")
+
+    # List tool scripts
+    tool_scripts = []
+    for script in sorted(skill_dir.glob("*.py")):
+        tool_scripts.append({
+            "name": script.name,
+            "size": script.stat().st_size,
+            "content": script.read_text(encoding="utf-8") if script.stat().st_size < 100_000 else None,
+        })
+
+    return {
+        "name": skill_name,
+        "content": content,
+        "file": str(skill_file),
+        "tool_scripts": tool_scripts,
+    }
+
+
+@router.put("/skills/{skill_name}")
+async def update_skill(skill_name: str, req: dict):
+    """
+    Safely update a skill's SKILL.md and/or a tool script.
+
+    Always creates a .bak backup before writing. Re-indexes immediately.
+    Validates names to prevent path traversal.
+
+    Request body:
+        {
+            "content": "new SKILL.md content",
+            "script_name": "tool.py",       (optional)
+            "script_content": "..."          (optional)
+        }
+    """
+    import re as _re
+    import shutil
+    from pathlib import Path
+    from tooldns.config import TOOLDNS_HOME
+
+    if not _re.match(r'^[a-zA-Z0-9_\-]+$', skill_name):
+        raise HTTPException(status_code=400, detail="Invalid skill name")
+
+    content = req.get("content", "")
+    script_name = req.get("script_name")
+    script_content = req.get("script_content")
+
+    skill_dir = TOOLDNS_HOME / "skills" / skill_name
+    if not skill_dir.exists():
+        raise HTTPException(status_code=404, detail=f"Skill not found: {skill_name}")
+
+    if len(content) > 500_000:
+        raise HTTPException(status_code=400, detail="Content too large (max 500KB)")
+
+    updated_files = []
+
+    # Update SKILL.md
+    if content:
+        skill_file = skill_dir / "SKILL.md"
+        if skill_file.exists():
+            shutil.copy2(skill_file, skill_dir / "SKILL.md.bak")
+        if not content.startswith("---"):
+            content = f"---\nname: {skill_name}\n---\n\n{content}"
+        skill_file.write_text(content, encoding="utf-8")
+        updated_files.append("SKILL.md")
+
+    # Update tool script
+    if script_name and script_content:
+        if not _re.match(r'^[a-zA-Z0-9_\-]+\.py$', script_name):
+            raise HTTPException(status_code=400, detail="Invalid script name — must end in .py")
+        if len(script_content) > 500_000:
+            raise HTTPException(status_code=400, detail="Script too large (max 500KB)")
+
+        script_file = skill_dir / script_name
+        # Path traversal check
+        if not str(script_file.resolve()).startswith(str(skill_dir.resolve())):
+            raise HTTPException(status_code=400, detail="Invalid script path")
+
+        if script_file.exists():
+            shutil.copy2(script_file, skill_dir / f"{script_name}.bak")
+        script_file.write_text(script_content, encoding="utf-8")
+        updated_files.append(script_name)
+
+    # Re-index
+    tools_count = 0
+    try:
+        source_config = {
+            "type": SourceType.SKILL_DIRECTORY,
+            "name": f"skills-{skill_name}",
+            "path": str(TOOLDNS_HOME / "skills"),
+        }
+        tools_count = _ingestion_pipeline.ingest_source(source_config)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Files updated but re-index failed: {e}")
+
+    return {
+        "status": "updated",
+        "name": skill_name,
+        "updated_files": updated_files,
         "tools_indexed": tools_count,
     }
 

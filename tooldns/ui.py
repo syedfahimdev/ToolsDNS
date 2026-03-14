@@ -398,7 +398,7 @@ async def create_skill_ui(
 
     try:
         count = _ingestion_pipeline.ingest_source({
-            "type": SourceType.SKILL_DIRECTORY,
+            "type": SourceType.SKILL_DIRECTORY.value,
             "name": f"skills-{name}",
             "path": str(skill_dir),
         })
@@ -757,7 +757,7 @@ async def settings_import_config(
         )
 
     source_config = {
-        "type": SourceType.MCP_CONFIG,
+        "type": SourceType.MCP_CONFIG.value,
         "name": f"import-{os.path.basename(os.path.dirname(path))}",
         "path": path,
         "config_key": config_key,
@@ -802,3 +802,305 @@ async def settings_delete_all_sources():
     conn.commit()
     conn.close()
     return RedirectResponse("/ui/settings?msg=success:All+sources+and+tools+deleted", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# Marketplace
+# ---------------------------------------------------------------------------
+
+@ui_router.get("/marketplace", response_class=HTMLResponse)
+async def marketplace_page(request: Request, category: str = "All", q: str = ""):
+    """MCP & Skills Marketplace — browse and one-click install."""
+    from tooldns.marketplace import MCP_SERVERS, SKILLS, CATEGORIES
+
+    installed_ids = {s["name"] for s in _database.get_all_sources()}
+
+    servers = MCP_SERVERS
+    skills = SKILLS
+
+    # Category filter
+    if category != "All" and category != "Skills":
+        servers = [s for s in servers if s["category"] == category]
+        skills = []
+    elif category == "Skills":
+        servers = []
+
+    # Text search
+    if q:
+        ql = q.lower()
+        servers = [s for s in servers if ql in s["name"].lower() or ql in s["description"].lower() or ql in s["category"].lower()]
+        skills = [s for s in skills if ql in s["name"].lower() or ql in s["description"].lower()]
+
+    return templates.TemplateResponse("marketplace.html", {
+        "request": request,
+        "servers": servers,
+        "skills": skills,
+        "installed_ids": installed_ids,
+        "category": category,
+        "categories": CATEGORIES,
+        "query": q,
+        "page": "marketplace",
+    })
+
+
+@ui_router.get("/marketplace/install-form/{server_id}", response_class=HTMLResponse)
+async def marketplace_install_form(server_id: str):
+    """HTMX: return inline install form for a marketplace server."""
+    from tooldns.marketplace import get_server
+    server = get_server(server_id)
+    if not server:
+        return HTMLResponse("<span class='badge badge-error'>Server not found</span>")
+
+    env_vars = server.get("env_vars", {})
+    env_inputs = ""
+    for key, default_val in env_vars.items():
+        placeholder = f"Your {key}" if not default_val else default_val
+        env_inputs += f"""
+        <div class="form-row">
+          <label>{key}</label>
+          <input type="text" name="env_{key}" placeholder="{placeholder}" class="form-input">
+        </div>"""
+
+    args_val = " ".join(server.get("args", []))
+    note = server.get("install_note", "")
+
+    return HTMLResponse(f"""
+    <form class="install-form" hx-post="/ui/marketplace/install" hx-target="closest .mkt-card-actions" hx-swap="innerHTML">
+      <input type="hidden" name="server_id" value="{server_id}">
+      {env_inputs}
+      <div class="form-row">
+        <label>Command args <span class="hint">(edit if needed)</span></label>
+        <input type="text" name="args_override" value="{args_val}" class="form-input code-input">
+      </div>
+      {"<p class='install-note'>" + note + "</p>" if note else ""}
+      <div class="install-form-actions">
+        <button type="submit" class="btn btn-primary btn-sm">Install</button>
+        <button type="button" class="btn btn-sm" onclick="this.closest('form').remove()">Cancel</button>
+      </div>
+    </form>""")
+
+
+@ui_router.post("/marketplace/install", response_class=HTMLResponse)
+async def marketplace_install(request: Request):
+    """Install a marketplace server — called from the inline install form."""
+    from tooldns.marketplace import get_server
+    form = await request.form()
+    server_id = form.get("server_id", "")
+    server = get_server(server_id)
+    if not server:
+        return HTMLResponse("<span class='badge badge-error'>Unknown server</span>")
+
+    # Collect env vars from form (prefixed with env_)
+    env_vars = {}
+    for key in form:
+        if key.startswith("env_"):
+            val = str(form[key]).strip()
+            if val:
+                env_vars[key[4:]] = val
+
+    # Args override
+    args_override = str(form.get("args_override", "")).strip()
+    args = args_override.split() if args_override else server.get("args", [])
+
+    # Save env vars
+    if env_vars:
+        from tooldns.config import TOOLDNS_HOME
+        env_path = TOOLDNS_HOME / ".env"
+        existing = {}
+        if env_path.exists():
+            for line in env_path.read_text().splitlines():
+                if "=" in line and not line.startswith("#"):
+                    k, _, v = line.partition("=")
+                    existing[k] = v
+        existing.update(env_vars)
+        with open(env_path, "w") as f:
+            for k, v in existing.items():
+                f.write(f"{k}={v}\n")
+        os.chmod(env_path, 0o600)
+        for k, v in env_vars.items():
+            os.environ[k] = v
+
+    # Register and ingest
+    try:
+        transport = server.get("transport", "stdio")
+        if transport == "stdio":
+            source_config = {
+                "type": "mcp_stdio",
+                "name": server_id,
+                "command": server["command"],
+                "args": args,
+            }
+        else:
+            source_config = {
+                "type": "mcp_http",
+                "name": server_id,
+                "url": server.get("url", ""),
+            }
+        count = _ingestion_pipeline.ingest_source(source_config)
+        return HTMLResponse(
+            f"<span class='badge badge-ok'>✓ Installed — {count} tools indexed</span>"
+        )
+    except Exception as e:
+        return HTMLResponse(
+            f"<span class='badge badge-error'>Error: {str(e)[:80]}</span>"
+        )
+
+
+@ui_router.post("/marketplace/install-quick", response_class=HTMLResponse)
+async def marketplace_install_quick(server_id: str = Form(...)):
+    """Install a marketplace server that needs no env vars."""
+    from tooldns.marketplace import get_server
+    server = get_server(server_id)
+    if not server:
+        return HTMLResponse("<span class='badge badge-error'>Unknown server</span>")
+
+    try:
+        transport = server.get("transport", "stdio")
+        if transport == "stdio":
+            source_config = {
+                "type": "mcp_stdio",
+                "name": server_id,
+                "command": server["command"],
+                "args": server.get("args", []),
+            }
+        else:
+            source_config = {
+                "type": "mcp_http",
+                "name": server_id,
+                "url": server.get("url", ""),
+            }
+        count = _ingestion_pipeline.ingest_source(source_config)
+        return HTMLResponse(
+            f"<span class='badge badge-ok'>✓ Installed — {count} tools indexed</span>"
+        )
+    except Exception as e:
+        return HTMLResponse(
+            f"<span class='badge badge-error'>Error: {str(e)[:80]}</span>"
+        )
+
+
+@ui_router.post("/marketplace/install-skill", response_class=HTMLResponse)
+async def marketplace_install_skill(skill_id: str = Form(...)):
+    """Install a pre-built skill from the marketplace."""
+    from tooldns.marketplace import get_skill
+    from tooldns.config import TOOLDNS_HOME
+    from tooldns.models import SourceType
+
+    skill = get_skill(skill_id)
+    if not skill:
+        return HTMLResponse("<span class='badge badge-error'>Skill not found</span>")
+
+    skill_dir = TOOLDNS_HOME / "skills"
+    skill_folder = skill_dir / skill_id
+    skill_folder.mkdir(parents=True, exist_ok=True)
+    (skill_folder / "SKILL.md").write_text(skill["content"], encoding="utf-8")
+
+    try:
+        count = _ingestion_pipeline.ingest_source({
+            "type": SourceType.SKILL_DIRECTORY.value,
+            "name": f"skills-{skill_id}",
+            "path": str(skill_dir),
+        })
+        return HTMLResponse(
+            f"<span class='badge badge-ok'>✓ Installed — {count} tools indexed</span>"
+        )
+    except Exception as e:
+        return HTMLResponse(
+            f"<span class='badge badge-error'>Error: {str(e)[:80]}</span>"
+        )
+
+
+@ui_router.get("/marketplace/search", response_class=HTMLResponse)
+async def marketplace_search(q: str = Query(""), category: str = Query("All")):
+    """HTMX partial: returns just the marketplace grid HTML for search/filter."""
+    from tooldns.marketplace import MCP_SERVERS, SKILLS
+
+    installed_ids = {s["name"] for s in _database.get_all_sources()}
+
+    servers = MCP_SERVERS
+    skills = SKILLS
+
+    if category != "All" and category != "Skills":
+        servers = [s for s in servers if s["category"] == category]
+        skills = []
+    elif category == "Skills":
+        servers = []
+
+    if q:
+        ql = q.lower()
+        servers = [s for s in servers if ql in s["name"].lower() or ql in s["description"].lower()]
+        skills = [s for s in skills if ql in s["name"].lower() or ql in s["description"].lower()]
+
+    # Build minimal grid HTML
+    def _server_card(s):
+        installed = s["id"] in installed_ids
+        installed_badge = "<span class='badge-installed'>✓ Installed</span>" if installed else ""
+        popular_badge = "<span class='badge-popular'>⭐ Popular</span>" if s.get("popular") else ""
+        if s.get("env_vars"):
+            action = f"""<button class="btn btn-primary btn-sm"
+                hx-get="/ui/marketplace/install-form/{s['id']}"
+                hx-target="#install-area-{s['id']}"
+                hx-swap="innerHTML">⚙ Configure &amp; Install</button>"""
+        else:
+            action = f"""<button class="btn btn-primary btn-sm"
+                hx-post="/ui/marketplace/install-quick"
+                hx-target="#install-area-{s['id']}"
+                hx-swap="innerHTML"
+                hx-vals='{{"server_id": "{s['id']}"}}'
+                >⚡ Install</button>"""
+        note = f"<div class='mkt-install-note has-env'>🔑 {s['install_note']}</div>" if s.get("install_note") else ""
+        pkg = f"<code style='font-size:11px'>{s['package']}</code>" if s.get("package") else ""
+        return f"""
+        <div class="mkt-card" id="mkt-card-{s['id']}">
+          <div class="mkt-card-header">
+            <div class="mkt-card-title-row">
+              <span class="mkt-icon">{s['icon']}</span>
+              <span class="mkt-name">{s['name']}</span>
+            </div>
+            <div class="mkt-card-badges">{popular_badge}{installed_badge}</div>
+          </div>
+          <p class="mkt-description">{s['description']}</p>
+          <div class="mkt-meta">
+            <span class="badge-category">{s['category']}</span>
+            <span class="badge-transport">{s['transport']}</span>
+            {pkg}
+          </div>
+          {note}
+          <div class="mkt-actions">{action}</div>
+          <div class="install-area" id="install-area-{s['id']}"></div>
+        </div>"""
+
+    def _skill_card(s):
+        installed = f"skills-{s['id']}" in installed_ids
+        installed_badge = "<span class='badge-installed'>✓ Installed</span>" if installed else ""
+        return f"""
+        <div class="mkt-card">
+          <div class="mkt-card-header">
+            <div class="mkt-card-title-row">
+              <span class="mkt-icon">{s['icon']}</span>
+              <span class="mkt-name">{s['name']}</span>
+            </div>
+            <div class="mkt-card-badges"><span class="badge-skill">Skill</span>{installed_badge}</div>
+          </div>
+          <p class="mkt-description">{s['description']}</p>
+          <div class="mkt-actions">
+            <button class="btn btn-primary btn-sm"
+              hx-post="/ui/marketplace/install-skill"
+              hx-target="#install-area-skill-{s['id']}"
+              hx-swap="innerHTML"
+              hx-vals='{{"skill_id": "{s['id']}"}}'>📥 Install Skill</button>
+          </div>
+          <div class="install-area" id="install-area-skill-{s['id']}"></div>
+        </div>"""
+
+    html = ""
+    if servers:
+        html += f"<div class='marketplace-section-title'>MCP Servers ({len(servers)})</div>"
+        html += "<div class='marketplace-grid'>" + "".join(_server_card(s) for s in servers) + "</div>"
+    if skills:
+        html += f"<div class='marketplace-section-title'>Pre-built Skills ({len(skills)})</div>"
+        html += "<div class='marketplace-grid'>" + "".join(_skill_card(s) for s in skills) + "</div>"
+    if not html:
+        html = "<div class='empty-state' style='padding:48px;text-align:center;color:var(--text-dim)'>No results found</div>"
+
+    return HTMLResponse(html)

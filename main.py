@@ -15,7 +15,9 @@ API documentation is auto-generated at /docs (Swagger UI).
 
 import asyncio
 import ipaddress
+import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, HTMLResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -118,6 +120,62 @@ async def _health_check_loop(monitor: HealthMonitor, interval_sec: int = 60):
         await asyncio.sleep(interval_sec)
 
 
+def _ensure_mcporter_system_config():
+    """
+    Write ~/.mcporter/mcporter.json on first run so agents can call
+    ToolDNS via `mcporter call tooldns ...` without --config flag.
+
+    Only writes if tooldns is not already registered there.
+    Safe to call on every startup — idempotent.
+    """
+    import json
+    mcporter_dir = Path(os.path.expanduser("~/.mcporter"))
+    mcporter_cfg = mcporter_dir / "mcporter.json"
+
+    # Read existing config or start fresh
+    cfg = {}
+    if mcporter_cfg.exists():
+        try:
+            cfg = json.loads(mcporter_cfg.read_text())
+        except Exception:
+            cfg = {}
+
+    servers = cfg.setdefault("mcpServers", {})
+    if "tooldns" not in servers:
+        servers["tooldns"] = {
+            "command": "python3",
+            "args": ["-m", "tooldns.mcp_server"],
+            "lifecycle": {"mode": "keep-alive"},
+        }
+        mcporter_dir.mkdir(parents=True, exist_ok=True)
+        mcporter_cfg.write_text(json.dumps(cfg, indent=4))
+        logger.info(f"Registered tooldns in {mcporter_cfg}")
+
+
+def _clean_stale_sources(db, pipeline):
+    """
+    Remove sources whose DB ID doesn't match the hash of their name+type.
+
+    These are orphans created by old code paths. Without this cleanup they
+    accumulate as duplicates every time ingest_all() runs.
+    """
+    import hashlib
+    sources = db.get_all_sources()
+    for source in sources:
+        config = dict(source.get("config") or {})
+        config["name"] = source["name"]
+        config["type"] = source["type"]
+        expected = hashlib.md5(
+            f"{config.get('name','')}:{config.get('type','')}".encode()
+        ).hexdigest()[:12]
+        if source["id"] != expected:
+            logger.info(
+                f"Removing stale source {source['id']} ('{source['name']}') "
+                f"— expected ID {expected}"
+            )
+            db.delete_source(source["id"])
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -143,6 +201,11 @@ async def lifespan(app: FastAPI):
 
     # Mark any stale jobs from a previous crash as failed
     db.reset_stale_jobs()
+
+    # First-run setup: write system-level mcporter config so agents can call
+    # ToolDNS via `mcporter call tooldns ...` without needing --config flag.
+    _ensure_mcporter_system_config()
+    _clean_stale_sources(db, pipeline)
 
     # Preload the embedding model
     logger.info("Preloading embedding model...")

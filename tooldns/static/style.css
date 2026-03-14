@@ -193,3 +193,46 @@ code { font-family: var(--mono); font-size: 12px; background: var(--surface2); p
 .settings-form { display: flex; flex-direction: column; gap: 12px; }
 .btn-danger { background: #7f1d1d; color: #fca5a5; border: 1px solid #991b1b; }
 .btn-danger:hover { background: #991b1b; }
+
+/* Marketplace */
+.mkt-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 20px; }
+.mkt-tab {
+  padding: 6px 14px; border-radius: 20px; border: 1px solid var(--border);
+  background: var(--surface2); color: var(--text-dim); cursor: pointer;
+  font-size: 13px; text-decoration: none; transition: all .15s;
+}
+.mkt-tab:hover { background: var(--border); color: var(--text); }
+.mkt-tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+.mkt-section-title { font-size: 13px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: .5px; margin: 24px 0 12px; }
+
+.mkt-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+
+.mkt-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 18px; display: flex;
+  flex-direction: column; gap: 10px; transition: border-color .15s;
+}
+.mkt-card:hover { border-color: var(--accent); }
+.mkt-card-header { display: flex; align-items: center; gap: 10px; }
+.mkt-icon { font-size: 24px; line-height: 1; flex-shrink: 0; }
+.mkt-name { font-weight: 600; font-size: 15px; flex: 1; }
+.mkt-badges { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
+.mkt-desc { color: var(--text-dim); font-size: 13px; line-height: 1.5; flex: 1; }
+.mkt-card-actions { margin-top: 4px; }
+.badge-popular { background: #2d1d00; color: var(--warn); }
+.badge-skill { background: #0d2347; color: #93c5fd; }
+.badge-stdio { background: #1a1d27; color: var(--text-dim); }
+.badge-http { background: #0d3320; color: #6ee7b7; }
+.badge-installed { background: #14532d; color: var(--ok); }
+
+.install-form { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; padding: 12px; background: var(--surface2); border-radius: var(--radius); border: 1px solid var(--border); }
+.install-form .form-input { width: 100%; padding: 7px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 12px; font-family: var(--font); }
+.install-form .form-input:focus { outline: none; border-color: var(--accent); }
+.install-form .code-input { font-family: var(--mono); }
+.install-form .form-row label { font-size: 12px; font-weight: 500; margin-bottom: 4px; display: block; }
+.install-form-actions { display: flex; gap: 8px; }
+.install-note { font-size: 11px; color: var(--text-dim); padding: 6px 8px; background: var(--bg); border-radius: 4px; border-left: 2px solid var(--accent); }
+
+.mkt-search { margin-bottom: 16px; }
+.mkt-info-banner { padding: 10px 16px; background: #1e1b4b; border: 1px solid #3730a3; border-radius: var(--radius); color: #a5b4fc; font-size: 13px; margin-bottom: 20px; }

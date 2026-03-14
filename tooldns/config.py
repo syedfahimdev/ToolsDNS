@@ -26,6 +26,7 @@ Environment Variables:
 import os
 import logging
 from pathlib import Path
+from pydantic import ConfigDict
 from pydantic_settings import BaseSettings
 from dotenv import load_dotenv
 
@@ -61,8 +62,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     model: str = ""  # LLM model name for cost calc (e.g. claude-sonnet-4-6)
 
-    class Config:
-        env_prefix = "TOOLDNS_"
+    model_config = ConfigDict(env_prefix="TOOLDNS_")
 
 
 # Singleton settings instance — import this from anywhere
