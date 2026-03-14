@@ -1,16 +1,18 @@
-"""
-cli.py — Interactive CLI for ToolDNS.
+"""cli.py — Interactive CLI for ToolDNS.
 
 Provides a command-line interface for setting up, managing,
 and using ToolDNS without running the HTTP server.
 
 Features:
+    - Install/update mechanism with ~/.tooldns home directory
     - Auto-detects known AI framework configs (nanobot, openclaw)
     - Interactive source management (add, list, remove)
     - Semantic tool search from the command line
     - Server management
 
 Commands:
+    tooldns install     — Create ~/.tooldns, install dependencies, run setup
+    tooldns update      — Pull latest code and sync ~/.tooldns
     tooldns setup       — Interactive first-time setup (auto-detects configs)
     tooldns add         — Add a source interactively
     tooldns sources     — List registered sources
@@ -20,18 +22,19 @@ Commands:
     tooldns serve       — Start the API server
 
 Usage:
-    python -m tooldns.cli setup
-    python -m tooldns.cli add
-    python -m tooldns.cli search "create a github issue"
-    python -m tooldns.cli serve
+    python3 -m tooldns.cli install
+    python3 -m tooldns.cli add
+    python3 -m tooldns.cli search "create a github issue"
+    python3 -m tooldns.cli serve
 """
 
 import sys
 import json
 import os
 import secrets
+import subprocess
 from pathlib import Path
-from tooldns.config import settings, logger
+from tooldns.config import settings, logger, TOOLDNS_HOME
 from tooldns.models import SourceType
 
 
@@ -136,6 +139,117 @@ def print_banner():
 # Commands
 # -------------------------------------------------------------------
 
+def cmd_install():
+    """
+    Install ToolDNS: create ~/.tooldns home directory, install deps, run setup.
+
+    This is the first command a user runs after cloning the repo.
+    It creates the persistent home directory, installs Python
+    dependencies, records the repo path for updates, and then
+    runs the interactive setup wizard.
+    """
+    print_banner()
+    home = TOOLDNS_HOME
+    repo_dir = Path(__file__).parent.parent.resolve()
+
+    print(f"📦 Installing ToolDNS...\n")
+    print(f"   Home directory: {home}")
+    print(f"   Repo directory: {repo_dir}")
+
+    # Create home directory
+    home.mkdir(parents=True, exist_ok=True)
+    print(f"   ✅ Created {home}")
+
+    # Save repo path so 'update' knows where to git pull
+    repo_file = home / "repo_path"
+    repo_file.write_text(str(repo_dir))
+    print(f"   ✅ Repo path saved")
+
+    # Install dependencies
+    print(f"\n⏳ Installing Python dependencies...")
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "install",
+         "--break-system-packages", "-q", "-r",
+         str(repo_dir / "requirements.txt")],
+        capture_output=True, text=True
+    )
+    if result.returncode == 0:
+        print("   ✅ Dependencies installed")
+    else:
+        # Try without --break-system-packages
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-q", "-r",
+             str(repo_dir / "requirements.txt")],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            print("   ✅ Dependencies installed")
+        else:
+            print(f"   ⚠ Dependency install issue: {result.stderr[:200]}")
+
+    # Run setup
+    print()
+    cmd_setup()
+
+
+def cmd_update():
+    """
+    Update ToolDNS: pull latest code from git and reinstall dependencies.
+
+    Reads the saved repo path from ~/.tooldns/repo_path, runs git pull,
+    and reinstalls dependencies to pick up any changes.
+    """
+    print_banner()
+    home = TOOLDNS_HOME
+    repo_file = home / "repo_path"
+
+    if not repo_file.exists():
+        print("❌ ToolDNS not installed. Run 'python3 -m tooldns.cli install' first.")
+        return
+
+    repo_dir = Path(repo_file.read_text().strip())
+    if not repo_dir.exists():
+        print(f"❌ Repo not found at {repo_dir}")
+        print(f"   Update the path in {repo_file}")
+        return
+
+    print(f"🔄 Updating ToolDNS...")
+    print(f"   Repo: {repo_dir}\n")
+
+    # Git pull
+    print("⏳ Pulling latest code...")
+    result = subprocess.run(
+        ["git", "pull"],
+        cwd=str(repo_dir),
+        capture_output=True, text=True
+    )
+    if result.returncode == 0:
+        print(f"   ✅ {result.stdout.strip()}")
+    else:
+        print(f"   ❌ Git pull failed: {result.stderr[:200]}")
+        return
+
+    # Reinstall dependencies
+    print("\n⏳ Updating dependencies...")
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "install",
+         "--break-system-packages", "-q", "-r",
+         str(repo_dir / "requirements.txt")],
+        capture_output=True, text=True
+    )
+    if result.returncode == 0:
+        print("   ✅ Dependencies up to date")
+    else:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-q", "-r",
+             str(repo_dir / "requirements.txt")],
+            capture_output=True, text=True
+        )
+        print("   ✅ Dependencies up to date")
+
+    print("\n🎉 ToolDNS updated! Restart the server to apply changes.")
+
+
 def cmd_setup():
     """
     Interactive first-time setup wizard with auto-detection.
@@ -145,13 +259,22 @@ def cmd_setup():
     2. Setting the server port
     3. Auto-detecting known AI framework configs
     4. Ingesting detected sources
-    5. Writing the .env file
+    5. Writing the .env file to ~/.tooldns/
     """
-    print_banner()
-    print("Welcome to ToolDNS setup!\n")
+    home = TOOLDNS_HOME
+    home.mkdir(parents=True, exist_ok=True)
 
-    env_path = Path(__file__).parent.parent / ".env"
+    env_path = home / ".env"
     env_vars = {}
+
+    # Check if already configured
+    if env_path.exists():
+        print("   ℹ️  Existing config found at", env_path)
+        reuse = input("   Keep existing config? [Y/n]: ").strip().lower()
+        if reuse != "n":
+            print("   ✅ Keeping existing config")
+            _run_auto_detect()
+            return
 
     # API Key
     print("1️⃣  API Key")
@@ -170,24 +293,31 @@ def cmd_setup():
     if port:
         env_vars["TOOLDNS_PORT"] = port
 
-    # Database
-    print("\n3️⃣  Database Path")
-    db = input(f"   Path [{settings.db_path}]: ").strip()
-    if db:
-        env_vars["TOOLDNS_DB_PATH"] = db
-
-    # Write .env
+    # Write .env to home directory
     with open(env_path, "w") as f:
         for k, v in env_vars.items():
             f.write(f"{k}={v}\n")
     print(f"\n✅ Config saved to {env_path}")
 
-    # Auto-detect configs
-    print("\n4️⃣  Auto-detecting AI framework configs...")
+    # Auto-detect
+    _run_auto_detect()
+
+    print("\n🎉 Setup complete! Start the server with:")
+    print("   python3 -m tooldns.cli serve")
+
+
+def _run_auto_detect():
+    """
+    Auto-detect AI framework configs and offer to ingest them.
+
+    Scans for known configs (nanobot, openclaw), shows what was
+    found, and offers one-click ingestion.
+    """
+    print("\n🔍 Auto-detecting AI framework configs...")
     detected = detect_configs()
 
     if detected:
-        print(f"\n   🔍 Found {len(detected)} config(s):\n")
+        print(f"\n   Found {len(detected)} config(s):\n")
         for i, cfg in enumerate(detected, 1):
             servers = ", ".join(cfg["server_names"])
             print(f"   {i}) {cfg['name']} — {cfg['description']}")
@@ -212,16 +342,12 @@ def cmd_setup():
                 except Exception as e:
                     print(f"   ❌ {cfg['name']}: {e}")
         else:
-            print("   Skipped. You can add sources later with 'tooldns add'.")
+            print("   Skipped. Run 'tooldns add' later.")
     else:
         print("   No known configs found.")
         add = input("\n   Add a source manually? [Y/n]: ").strip().lower()
         if add != "n":
             cmd_add()
-
-    print("\n🎉 Setup complete! Start the server with:")
-    print("   python3 -m tooldns.cli serve")
-    print("   or: python3 main.py")
 
 
 def cmd_add():
@@ -435,8 +561,19 @@ def cmd_serve():
     """Start the ToolDNS API server."""
     import uvicorn
     print_banner()
+
+    # Resolve the repo directory for correct main.py import
+    repo_dir = Path(__file__).parent.parent.resolve()
+
     print(f"🚀 Starting ToolDNS server on {settings.host}:{settings.port}")
+    print(f"   Home: {settings.home}")
+    print(f"   Repo: {repo_dir}")
     print(f"   API docs: http://localhost:{settings.port}/docs\n")
+
+    # Ensure the repo dir is in the Python path so main.py can be found
+    if str(repo_dir) not in sys.path:
+        sys.path.insert(0, str(repo_dir))
+
     uvicorn.run(
         "main:app",
         host=settings.host,
@@ -450,10 +587,12 @@ def main():
     CLI entry point. Dispatches to the appropriate command handler.
 
     Usage:
-        python -m tooldns.cli <command> [args]
+        python3 -m tooldns.cli <command> [args]
 
     Commands:
-        setup     Interactive first-time setup (auto-detects configs)
+        install   Create ~/.tooldns, install deps, run setup
+        update    Pull latest code and sync dependencies
+        setup     Interactive config + auto-detect sources
         add       Add a tool source interactively
         sources   List registered sources
         tools     List indexed tools
@@ -463,9 +602,11 @@ def main():
     """
     if len(sys.argv) < 2:
         print_banner()
-        print("Usage: python -m tooldns.cli <command>\n")
+        print("Usage: python3 -m tooldns.cli <command>\n")
         print("Commands:")
-        print("  setup     Interactive first-time setup (auto-detects configs)")
+        print("  install   Create ~/.tooldns, install deps, run setup")
+        print("  update    Pull latest code and sync dependencies")
+        print("  setup     Interactive config + auto-detect sources")
         print("  add       Add a tool source interactively")
         print("  sources   List registered sources")
         print("  tools     List indexed tools [--source NAME]")
@@ -476,7 +617,11 @@ def main():
 
     cmd = sys.argv[1]
 
-    if cmd == "setup":
+    if cmd == "install":
+        cmd_install()
+    elif cmd == "update":
+        cmd_update()
+    elif cmd == "setup":
         cmd_setup()
     elif cmd == "add":
         cmd_add()
@@ -501,7 +646,7 @@ def main():
         cmd_serve()
     else:
         print(f"Unknown command: {cmd}")
-        print("Run 'python -m tooldns.cli' for help.")
+        print("Run 'python3 -m tooldns.cli' for help.")
 
 
 if __name__ == "__main__":
