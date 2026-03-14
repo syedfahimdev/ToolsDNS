@@ -284,7 +284,11 @@ class MCPFetcher:
         Raises:
             RuntimeError: If the server returns an error or is unreachable.
         """
-        h = {"Content-Type": "application/json", **(headers or {})}
+        h = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            **(headers or {})
+        }
         logger.info(f"Connecting to HTTP MCP server: {url}")
 
         try:
