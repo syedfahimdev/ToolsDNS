@@ -61,7 +61,7 @@ With ToolsDNS:     LLM searches → gets 1-2 relevant schemas (~200 tokens)
 ### Installation
 
 ```bash
-git clone https://github.com/syedfahimdev/toolsdns.git
+git clone https://github.com/syedfahimdev/ToolsDNS.git
 cd tooldns
 pip install -r requirements.txt
 ```

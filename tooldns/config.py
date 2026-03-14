@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     # Branding — override these in ~/.tooldns/.env to white-label
     app_name: str = "ToolsDNS"
     app_tagline: str = "DNS for AI Tools"
-    github_url: str = "https://github.com/syedfahimdev/toolsdns"
+    github_url: str = "https://github.com/syedfahimdev/ToolsDNS"
     contact_email: str = "hello@toolsdns.ai"
 
     model_config = ConfigDict(env_prefix="TOOLDNS_")

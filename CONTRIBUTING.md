@@ -5,7 +5,7 @@ Thank you for helping make ToolsDNS better! Here's how to get started.
 ## Quick Start
 
 ```bash
-git clone https://github.com/syedfahimdev/toolsdns
+git clone https://github.com/syedfahimdev/ToolsDNS
 cd tooldns
 pip install -e ".[dev]"
 python -m tooldns.cli setup
