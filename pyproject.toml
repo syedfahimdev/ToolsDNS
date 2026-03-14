@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tooldns"
+version = "1.0.0"
+description = "DNS for AI Tools — search 10,000 tools, return only 1"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "httpx",
+    "pydantic",
+    "pydantic-settings",
+    "python-dotenv",
+    "sentence-transformers",
+]
+
+[tool.setuptools.packages.find]
+include = ["tooldns*"]

@@ -249,6 +249,24 @@ def cmd_install():
         else:
             print(f"   ⚠ Dependency install issue: {result.stderr[:200]}")
 
+    # Install tooldns as a package so 'python3 -m tooldns.mcp_server' works globally
+    print("⏳ Installing tooldns package...")
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "install",
+         "--break-system-packages", "-q", "-e", str(repo_dir)],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        # Try without --break-system-packages
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-q", "-e", str(repo_dir)],
+            capture_output=True, text=True
+        )
+    if result.returncode == 0:
+        print("   ✅ tooldns package installed (python3 -m tooldns.mcp_server)")
+    else:
+        print(f"   ⚠ Package install issue: {result.stderr[:200]}")
+
     # Run setup
     print()
     cmd_setup()
