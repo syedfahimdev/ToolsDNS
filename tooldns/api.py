@@ -13,6 +13,9 @@ Each endpoint validates input via Pydantic models (see models.py)
 and requires a valid API key (see auth.py).
 """
 
+import uuid
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException
 from tooldns.auth import require_api_key
 from tooldns.models import (
@@ -27,9 +30,10 @@ router = APIRouter(prefix="/v1", dependencies=[Depends(require_api_key)])
 _search_engine = None
 _ingestion_pipeline = None
 _database = None
+_health_monitor = None
 
 
-def init_api(search_engine, ingestion_pipeline, database):
+def init_api(search_engine, ingestion_pipeline, database, health_monitor=None):
     """
     Inject dependencies into the API module.
 
@@ -40,11 +44,13 @@ def init_api(search_engine, ingestion_pipeline, database):
         search_engine: The SearchEngine instance.
         ingestion_pipeline: The IngestionPipeline instance.
         database: The ToolDatabase instance.
+        health_monitor: Optional HealthMonitor instance.
     """
-    global _search_engine, _ingestion_pipeline, _database
+    global _search_engine, _ingestion_pipeline, _database, _health_monitor
     _search_engine = search_engine
     _ingestion_pipeline = ingestion_pipeline
     _database = database
+    _health_monitor = health_monitor
 
 
 # -----------------------------------------------------------------------
@@ -772,18 +778,69 @@ async def create_skill(req: CreateSkillRequest):
 @router.post("/ingest")
 async def refresh_all():
     """
-    Re-ingest all registered sources.
+    Re-ingest all registered sources (async).
 
-    Refreshes the tool index by re-fetching tools from every
-    registered source. Use this after adding new tools to an
-    MCP server or updating skill files.
+    Returns a job_id immediately. Poll GET /v1/ingest/{job_id} for status.
+    Ingestion runs in a background thread so the server stays responsive.
     """
+    job_id = str(uuid.uuid4())
+    _database.create_job(job_id)
+    asyncio.create_task(_run_ingest_job(job_id))
+    return {"job_id": job_id, "status": "queued"}
+
+
+async def _run_ingest_job(job_id: str):
+    """Background coroutine that runs ingestion in a thread pool."""
+    _database.update_job(job_id, "running")
     try:
-        total = _ingestion_pipeline.ingest_all()
-        return {
-            "status": "success",
-            "total_tools_ingested": total,
-            "sources_refreshed": len(_database.get_all_sources())
-        }
+        loop = asyncio.get_event_loop()
+        total = await loop.run_in_executor(None, _ingestion_pipeline.ingest_all)
+        _database.update_job(job_id, "completed", total_tools=total)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        _database.update_job(job_id, "failed", error=str(e))
+
+
+@router.get("/ingest/{job_id}")
+async def get_ingest_job(job_id: str):
+    """
+    Get the status of an async ingestion job.
+
+    Args:
+        job_id: The job ID returned by POST /v1/ingest.
+
+    Returns:
+        dict: Job status, total_tools, error (if any).
+    """
+    job = _database.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+# -----------------------------------------------------------------------
+# Health
+# -----------------------------------------------------------------------
+
+@router.get("/health")
+async def tool_health():
+    """
+    Get health status for all sources and tools.
+
+    Returns counts by status (healthy/degraded/down/unknown) and
+    per-source health details. Updated every 60 seconds by the
+    background health monitor.
+    """
+    return _database.get_health_summary()
+
+
+@router.post("/health/check")
+async def trigger_health_check():
+    """
+    Trigger an immediate health check (async).
+
+    Runs the health monitor in the background and returns immediately.
+    """
+    if _health_monitor:
+        asyncio.create_task(_health_monitor.check_all())
+        return {"status": "health check triggered"}
+    return {"status": "health monitor not configured"}

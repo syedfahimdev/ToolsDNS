@@ -1,0 +1,266 @@
+{% extends "base.html" %}
+{% block title %} — Token Savings{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Token Savings Analytics</h1>
+  <span class="hint" style="font-size:13px;color:var(--text-dim)">
+    Real token counts via tiktoken — not estimates
+  </span>
+</div>
+
+<!-- Current model selector -->
+<section class="card">
+  <h2>Model Pricing Calculator</h2>
+
+  {% if current_model and not current_price %}
+  <div class="alert alert-error" style="margin-bottom:14px">
+    Detected model <code>{{ current_model }}</code> but no price found.
+    Type or paste the exact model ID below (e.g. <code>claude-sonnet-4-6</code>).
+  </div>
+  {% elif not current_model %}
+  <div class="alert" style="background:#1e293b;border:1px solid #334155;margin-bottom:14px">
+    No model detected automatically.
+    Set it below or add <code>TOOLDNS_MODEL=your-model</code> to <code>~/.tooldns/.env</code>.
+  </div>
+  {% endif %}
+
+  <div class="model-selector-row">
+    <div style="flex:1;display:flex;flex-direction:column;gap:10px">
+      <div class="form-row">
+        <label>Your LLM Model
+          <span class="hint">— type to calculate cost savings dynamically</span>
+        </label>
+        <input type="text" id="model-input"
+          value="{{ current_model }}"
+          placeholder="e.g. claude-sonnet-4-6, gpt-4o, gemini-1.5-pro"
+          hx-get="/ui/stats/model-update"
+          hx-trigger="keyup changed delay:400ms"
+          hx-target="#model-calc-result"
+          hx-include="[name='model']"
+          name="model"
+          class="search-input">
+      </div>
+      <form method="post" action="/ui/stats/set-model" style="display:flex;gap:8px;align-items:center">
+        <input type="hidden" name="model" id="model-save-hidden">
+        <button type="submit" class="btn btn-sm btn-primary"
+          onclick="document.getElementById('model-save-hidden').value=document.getElementById('model-input').value">
+          Save as default
+        </button>
+        <span class="hint">Saves to ~/.tooldns/.env so future searches log costs automatically</span>
+      </form>
+    </div>
+    <div id="model-calc-result" class="model-calc-box">
+      {% if current_price %}
+      <div class="model-result">
+        <div class="model-stat">
+          <span class="model-stat-num">${{ "%.4f"|format(stats.total_cost_saved_usd) }}</span>
+          <span class="model-stat-label">Total saved ({{ stats.total_searches }} searches)</span>
+        </div>
+        <div class="model-stat">
+          <span class="model-stat-num">${{ "%.6f"|format(stats.avg_cost_saved_usd) }}</span>
+          <span class="model-stat-label">Saved per search</span>
+        </div>
+        <div class="model-stat">
+          <span class="model-stat-num">${{ "%.2f"|format(current_price) }}</span>
+          <span class="model-stat-label">Per 1M input tokens</span>
+        </div>
+      </div>
+      {% else %}
+      <div class="no-data">Enter your model name to see cost savings</div>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+<!-- Overall stats -->
+<div class="stats-grid">
+  <div class="stat-card">
+    <div class="stat-number">{{ stats.total_searches }}</div>
+    <div class="stat-label">Total Searches</div>
+  </div>
+  <div class="stat-card stat-ok">
+    <div class="stat-number">{{ "{:,}".format(stats.total_tokens_saved) }}</div>
+    <div class="stat-label">Total Tokens Saved</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-number">{{ "{:,}".format(stats.avg_tokens_saved) }}</div>
+    <div class="stat-label">Avg Tokens Saved / Search</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-number">{{ stats.avg_search_time_ms }}ms</div>
+    <div class="stat-label">Avg Search Time</div>
+  </div>
+</div>
+
+<!-- Token flow breakdown -->
+{% if stats.total_searches > 0 %}
+<section class="card">
+  <h2>Token Flow — All Time</h2>
+  <div class="token-flow">
+    <div class="token-block token-block-full">
+      <div class="token-block-label">Without ToolDNS</div>
+      <div class="token-block-value">{{ "{:,}".format(stats.total_tokens_would_have_used) }} tokens</div>
+      <div class="token-block-sub">All tool schemas loaded every call</div>
+    </div>
+    <div class="token-arrow">→</div>
+    <div class="token-block token-block-used">
+      <div class="token-block-label">With ToolDNS</div>
+      <div class="token-block-value">{{ "{:,}".format(stats.total_tokens_actually_used) }} tokens</div>
+      <div class="token-block-sub">Only relevant tools returned</div>
+    </div>
+    <div class="token-arrow">＝</div>
+    <div class="token-block token-block-saved">
+      <div class="token-block-label">Saved</div>
+      <div class="token-block-value">{{ "{:,}".format(stats.total_tokens_saved) }} tokens</div>
+      {% if stats.total_tokens_would_have_used > 0 %}
+      <div class="token-block-sub">
+        {{ "%.1f"|format(stats.total_tokens_saved / stats.total_tokens_would_have_used * 100) }}% reduction
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</section>
+{% endif %}
+
+<!-- Per-model breakdown (from actual logged searches) -->
+{% if stats.per_model %}
+<section class="card">
+  <h2>Savings by Model <span class="hint">(from your actual searches)</span></h2>
+  <table class="tool-table">
+    <thead>
+      <tr>
+        <th>Model</th>
+        <th>$/1M tokens</th>
+        <th>Searches</th>
+        <th>Tokens Saved</th>
+        <th>Avg / Search</th>
+        <th>Cost Saved</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for m in stats.per_model %}
+    <tr>
+      <td><code>{{ m.model_name or 'unknown' }}</code></td>
+      <td>
+        {% if m.price_per_million > 0 %}
+          ${{ "%.2f"|format(m.price_per_million) }}
+        {% else %}
+          <span class="text-dim">unknown</span>
+        {% endif %}
+      </td>
+      <td>{{ m.searches }}</td>
+      <td>{{ "{:,}".format(m.tokens_saved) }}</td>
+      <td>{{ "{:,}".format(m.avg_tokens_saved) }}</td>
+      <td>
+        {% if m.price_per_million > 0 %}
+          <span class="cost-saved">${{ "%.4f"|format(m.cost_saved_usd) }}</span>
+        {% else %}
+          <span class="text-dim">—</span>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+<!-- What-if cost calculator for all known models -->
+<section class="card">
+  <h2>What-If Calculator — {{ "{:,}".format(stats.total_tokens_saved) }} tokens saved across all searches</h2>
+  <p class="hint-text">How much you would have saved if you used each model.</p>
+  <table class="tool-table">
+    <thead>
+      <tr><th>Model</th><th>$/1M tokens</th><th>Total Saved</th><th>Per Search</th></tr>
+    </thead>
+    <tbody>
+    {% for w in what_if %}
+    <tr {% if current_model and current_model.lower() in w.model %}class="row-highlight"{% endif %}>
+      <td>
+        <code>{{ w.model }}</code>
+        {% if current_model and current_model.lower() in w.model %}
+          <span class="badge badge-ok" style="margin-left:6px">current</span>
+        {% endif %}
+      </td>
+      <td>${{ "%.2f"|format(w.price_per_million) }}</td>
+      <td><span class="cost-saved">${{ "%.4f"|format(w.cost_saved) }}</span></td>
+      <td>
+        {% if stats.total_searches > 0 %}
+          ${{ "%.6f"|format(w.cost_saved / stats.total_searches) }}
+        {% else %}—{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<!-- Daily savings chart -->
+{% if stats.daily %}
+<section class="card">
+  <h2>Daily Token Savings (last 14 days)</h2>
+  <div class="bar-chart">
+    {% set max_tokens = stats.daily | map(attribute='tokens_saved') | max %}
+    {% for day in stats.daily %}
+    <div class="bar-group">
+      <div class="bar-wrap">
+        <div class="bar-fill"
+          style="height: {{ (day.tokens_saved / max_tokens * 120)|int if max_tokens > 0 else 0 }}px"
+          title="{{ day.day }}: {{ '{:,}'.format(day.tokens_saved) }} tokens saved in {{ day.searches }} searches">
+        </div>
+      </div>
+      <div class="bar-label">{{ day.day[5:] }}</div>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+<!-- Recent search log -->
+<section class="card">
+  <h2>Recent Searches</h2>
+  {% if stats.recent_searches %}
+  <table class="tool-table">
+    <thead>
+      <tr>
+        <th>Query</th>
+        <th>Tools</th>
+        <th>Returned</th>
+        <th>Tokens (full)</th>
+        <th>Tokens (used)</th>
+        <th>Saved</th>
+        <th>Model</th>
+        <th>Cost Saved</th>
+        <th>Time</th>
+        <th>When</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for s in stats.recent_searches %}
+    <tr>
+      <td class="query-cell" title="{{ s.query }}">{{ s.query[:40] }}{% if s.query|length > 40 %}…{% endif %}</td>
+      <td>{{ s.total_tools }}</td>
+      <td>{{ s.returned }}</td>
+      <td class="text-dim">{{ "{:,}".format(s.tokens_full) }}</td>
+      <td class="text-dim">{{ "{:,}".format(s.tokens_used) }}</td>
+      <td><span class="cost-saved">{{ "{:,}".format(s.tokens_saved) }}</span></td>
+      <td><span class="src">{{ s.model or '?' }}</span></td>
+      <td>
+        {% if s.cost_saved > 0 %}
+          <span class="cost-saved">${{ "%.5f"|format(s.cost_saved) }}</span>
+        {% else %}
+          <span class="text-dim">—</span>
+        {% endif %}
+      </td>
+      <td class="text-dim">{{ s.time_ms }}ms</td>
+      <td class="ts">{{ s.at[11:16] }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">No searches logged yet. Searches are recorded when your agent calls ToolDNS.</div>
+  {% endif %}
+</section>
+{% endblock %}

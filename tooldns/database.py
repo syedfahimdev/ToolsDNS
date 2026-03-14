@@ -67,9 +67,11 @@ class ToolDatabase:
         Create database tables if they don't already exist.
 
         Tables:
-            tools: Stores tool metadata, input schemas, source info, and embeddings.
+            tools: Tool metadata, input schemas, source info, embeddings, health.
             tools_fts: FTS5 virtual table for BM25 keyword search.
             sources: Tracks registered tool sources and their refresh status.
+            embedding_cache: Caches description→vector mappings by model.
+            ingestion_jobs: Tracks async ingestion job status.
         """
         conn = self._get_conn()
         conn.execute("PRAGMA journal_mode=WAL")
@@ -82,9 +84,15 @@ class ToolDatabase:
                 source_info TEXT DEFAULT '{}',
                 tags TEXT DEFAULT '[]',
                 embedding TEXT DEFAULT '[]',
+                health_status TEXT DEFAULT 'unknown',
                 indexed_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # Migration: add health_status column if missing (for existing databases)
+        try:
+            conn.execute("ALTER TABLE tools ADD COLUMN health_status TEXT DEFAULT 'unknown'")
+        except Exception:
+            pass  # Column already exists
 
         conn.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS tools_fts
@@ -99,10 +107,58 @@ class ToolDatabase:
                 config TEXT DEFAULT '{}',
                 tools_count INTEGER DEFAULT 0,
                 status TEXT DEFAULT 'active',
+                health_status TEXT DEFAULT 'unknown',
                 last_refreshed TEXT,
+                last_health_check TEXT,
                 error TEXT
             )
         """)
+        # Migration: add health columns to sources if missing
+        for col in ["health_status TEXT DEFAULT 'unknown'", "last_health_check TEXT"]:
+            try:
+                conn.execute(f"ALTER TABLE sources ADD COLUMN {col}")
+            except Exception:
+                pass
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS embedding_cache (
+                description_hash TEXT NOT NULL,
+                model_name TEXT NOT NULL,
+                embedding TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (description_hash, model_name)
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ingestion_jobs (
+                job_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL DEFAULT 'pending',
+                source_name TEXT,
+                total_tools INTEGER DEFAULT 0,
+                error TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS search_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                query TEXT NOT NULL,
+                total_tools_in_index INTEGER NOT NULL,
+                tools_returned INTEGER NOT NULL,
+                tokens_full_index INTEGER NOT NULL,
+                tokens_returned INTEGER NOT NULL,
+                tokens_saved INTEGER NOT NULL,
+                model_name TEXT DEFAULT '',
+                price_per_million REAL DEFAULT 0,
+                cost_saved_usd REAL DEFAULT 0,
+                search_time_ms REAL DEFAULT 0,
+                searched_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         conn.commit()
         conn.close()
         logger.info(f"Database initialized at {self.db_path}")
@@ -485,3 +541,326 @@ class ToolDatabase:
         conn.commit()
         conn.close()
         return True
+
+    # -----------------------------------------------------------------------
+    # Embedding cache — persistent vector cache (Feature 1)
+    # -----------------------------------------------------------------------
+
+    def get_cached_embedding(self, description_hash: str, model_name: str) -> Optional[list[float]]:
+        """
+        Look up a cached embedding by description hash and model name.
+
+        Returns the cached vector if found, or None if not cached yet.
+        The hash is computed from the tool description — if the description
+        changes, the hash changes and the cache is missed (correct behavior).
+
+        Args:
+            description_hash: SHA-256 hex digest of the tool description text.
+            model_name: The embedding model used (e.g., "all-MiniLM-L6-v2").
+
+        Returns:
+            list[float] or None: The cached embedding vector, or None.
+        """
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT embedding FROM embedding_cache WHERE description_hash = ? AND model_name = ?",
+            [description_hash, model_name]
+        ).fetchone()
+        conn.close()
+        if row:
+            return json.loads(row["embedding"])
+        return None
+
+    def set_cached_embedding(self, description_hash: str, model_name: str,
+                              embedding: list[float]) -> None:
+        """
+        Store an embedding in the persistent cache.
+
+        Args:
+            description_hash: SHA-256 hex digest of the tool description text.
+            model_name: The embedding model used.
+            embedding: The embedding vector to cache.
+        """
+        conn = self._get_conn()
+        conn.execute("""
+            INSERT OR REPLACE INTO embedding_cache (description_hash, model_name, embedding, created_at)
+            VALUES (?, ?, ?, ?)
+        """, [description_hash, model_name, json.dumps(embedding), datetime.utcnow().isoformat()])
+        conn.commit()
+        conn.close()
+
+    def clear_embedding_cache(self) -> int:
+        """
+        Delete all cached embeddings. Useful when switching models.
+
+        Returns:
+            int: Number of cache entries deleted.
+        """
+        conn = self._get_conn()
+        cursor = conn.execute("DELETE FROM embedding_cache")
+        count = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return count
+
+    def get_embedding_cache_stats(self) -> dict:
+        """Get embedding cache statistics."""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT COUNT(*) as count, COUNT(DISTINCT model_name) as models FROM embedding_cache"
+        ).fetchone()
+        conn.close()
+        return {"cached_embeddings": row["count"], "models": row["models"]}
+
+    # -----------------------------------------------------------------------
+    # Ingestion jobs — async job tracking (Feature 4)
+    # -----------------------------------------------------------------------
+
+    def create_job(self, job_id: str, source_name: Optional[str] = None) -> None:
+        """Create a new ingestion job record."""
+        conn = self._get_conn()
+        now = datetime.utcnow().isoformat()
+        conn.execute("""
+            INSERT INTO ingestion_jobs (job_id, status, source_name, created_at, updated_at)
+            VALUES (?, 'pending', ?, ?, ?)
+        """, [job_id, source_name, now, now])
+        conn.commit()
+        conn.close()
+
+    def update_job(self, job_id: str, status: str, total_tools: int = 0,
+                   error: Optional[str] = None) -> None:
+        """Update an ingestion job's status and results."""
+        conn = self._get_conn()
+        conn.execute("""
+            UPDATE ingestion_jobs
+            SET status = ?, total_tools = ?, error = ?, updated_at = ?
+            WHERE job_id = ?
+        """, [status, total_tools, error, datetime.utcnow().isoformat(), job_id])
+        conn.commit()
+        conn.close()
+
+    def get_job(self, job_id: str) -> Optional[dict]:
+        """Get an ingestion job by ID."""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT job_id, status, source_name, total_tools, error, created_at, updated_at "
+            "FROM ingestion_jobs WHERE job_id = ?",
+            [job_id]
+        ).fetchone()
+        conn.close()
+        if not row:
+            return None
+        return {
+            "job_id": row["job_id"],
+            "status": row["status"],
+            "source_name": row["source_name"],
+            "total_tools": row["total_tools"],
+            "error": row["error"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def reset_stale_jobs(self) -> None:
+        """Mark any 'running' jobs as 'failed' (called at startup after a crash)."""
+        conn = self._get_conn()
+        conn.execute("""
+            UPDATE ingestion_jobs SET status = 'failed', error = 'Server restarted during job'
+            WHERE status IN ('pending', 'running')
+        """)
+        conn.commit()
+        conn.close()
+
+    # -----------------------------------------------------------------------
+    # Health status — tool and source health tracking (Feature 2)
+    # -----------------------------------------------------------------------
+
+    def set_source_health(self, source_id: str, health_status: str) -> None:
+        """Update health status for a source."""
+        conn = self._get_conn()
+        conn.execute("""
+            UPDATE sources SET health_status = ?, last_health_check = ? WHERE id = ?
+        """, [health_status, datetime.utcnow().isoformat(), source_id])
+        conn.commit()
+        conn.close()
+
+    def set_tools_health_by_source(self, source_name: str, health_status: str) -> None:
+        """Update health status for all tools belonging to a source."""
+        conn = self._get_conn()
+        conn.execute(
+            "UPDATE tools SET health_status = ? "
+            "WHERE json_extract(source_info, '$.source_name') = ?",
+            [health_status, source_name]
+        )
+        conn.commit()
+        conn.close()
+
+    def get_health_summary(self) -> dict:
+        """
+        Get a summary of health status across all sources and tools.
+
+        Returns:
+            dict: Counts by status plus per-source health.
+        """
+        conn = self._get_conn()
+
+        # Tool counts by health status
+        tool_rows = conn.execute(
+            "SELECT health_status, COUNT(*) as count FROM tools GROUP BY health_status"
+        ).fetchall()
+        tool_counts = {row["health_status"]: row["count"] for row in tool_rows}
+
+        # Source health
+        source_rows = conn.execute(
+            "SELECT id, name, type, health_status, last_health_check, tools_count, status, error "
+            "FROM sources ORDER BY name"
+        ).fetchall()
+        sources = [{
+            "id": row["id"],
+            "name": row["name"],
+            "type": row["type"],
+            "health_status": row["health_status"] or "unknown",
+            "last_health_check": row["last_health_check"],
+            "tools_count": row["tools_count"],
+            "status": row["status"],
+            "error": row["error"],
+        } for row in source_rows]
+
+        conn.close()
+
+        total = sum(tool_counts.values())
+        return {
+            "total_tools": total,
+            "healthy": tool_counts.get("healthy", 0),
+            "degraded": tool_counts.get("degraded", 0),
+            "down": tool_counts.get("down", 0),
+            "unknown": tool_counts.get("unknown", 0),
+            "sources": sources,
+        }
+
+    # -----------------------------------------------------------------------
+    # Search log — per-search token savings tracking
+    # -----------------------------------------------------------------------
+
+    def log_search(self, query: str, total_tools_in_index: int,
+                   tools_returned: int, tokens_full_index: int,
+                   tokens_returned: int, tokens_saved: int,
+                   model_name: str, price_per_million: float,
+                   cost_saved_usd: float, search_time_ms: float) -> None:
+        """Record a search event with real token counts and cost savings."""
+        conn = self._get_conn()
+        conn.execute("""
+            INSERT INTO search_log
+            (query, total_tools_in_index, tools_returned,
+             tokens_full_index, tokens_returned, tokens_saved,
+             model_name, price_per_million, cost_saved_usd,
+             search_time_ms, searched_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, [
+            query, total_tools_in_index, tools_returned,
+            tokens_full_index, tokens_returned, tokens_saved,
+            model_name, price_per_million, cost_saved_usd,
+            search_time_ms, datetime.utcnow().isoformat()
+        ])
+        conn.commit()
+        conn.close()
+
+    def get_search_stats(self) -> dict:
+        """
+        Aggregate token savings statistics across all logged searches.
+
+        Returns:
+            dict: Total and average savings, cost breakdown, per-model stats,
+                  recent search history, and savings over time buckets.
+        """
+        conn = self._get_conn()
+
+        # Overall totals
+        totals = conn.execute("""
+            SELECT
+                COUNT(*) as total_searches,
+                SUM(tokens_saved) as total_tokens_saved,
+                SUM(cost_saved_usd) as total_cost_saved_usd,
+                AVG(tokens_saved) as avg_tokens_saved,
+                AVG(cost_saved_usd) as avg_cost_saved_usd,
+                AVG(search_time_ms) as avg_search_time_ms,
+                SUM(tokens_full_index) as total_tokens_would_have_used,
+                SUM(tokens_returned) as total_tokens_actually_used
+            FROM search_log
+        """).fetchone()
+
+        # Per-model breakdown
+        model_rows = conn.execute("""
+            SELECT
+                model_name,
+                price_per_million,
+                COUNT(*) as searches,
+                SUM(tokens_saved) as tokens_saved,
+                SUM(cost_saved_usd) as cost_saved_usd,
+                AVG(tokens_saved) as avg_tokens_saved
+            FROM search_log
+            WHERE model_name != ''
+            GROUP BY model_name, price_per_million
+            ORDER BY cost_saved_usd DESC
+        """).fetchall()
+
+        # Recent searches (last 20)
+        recent_rows = conn.execute("""
+            SELECT query, total_tools_in_index, tools_returned,
+                   tokens_full_index, tokens_returned, tokens_saved,
+                   model_name, cost_saved_usd, search_time_ms, searched_at
+            FROM search_log
+            ORDER BY searched_at DESC
+            LIMIT 20
+        """).fetchall()
+
+        # Savings by day (last 14 days)
+        daily_rows = conn.execute("""
+            SELECT
+                substr(searched_at, 1, 10) as day,
+                COUNT(*) as searches,
+                SUM(tokens_saved) as tokens_saved,
+                SUM(cost_saved_usd) as cost_saved_usd
+            FROM search_log
+            WHERE searched_at >= datetime('now', '-14 days')
+            GROUP BY day
+            ORDER BY day ASC
+        """).fetchall()
+
+        conn.close()
+
+        return {
+            "total_searches": totals["total_searches"] or 0,
+            "total_tokens_saved": totals["total_tokens_saved"] or 0,
+            "total_cost_saved_usd": round(totals["total_cost_saved_usd"] or 0, 6),
+            "avg_tokens_saved": int(totals["avg_tokens_saved"] or 0),
+            "avg_cost_saved_usd": round(totals["avg_cost_saved_usd"] or 0, 6),
+            "avg_search_time_ms": round(totals["avg_search_time_ms"] or 0, 1),
+            "total_tokens_would_have_used": totals["total_tokens_would_have_used"] or 0,
+            "total_tokens_actually_used": totals["total_tokens_actually_used"] or 0,
+            "per_model": [{
+                "model_name": r["model_name"],
+                "price_per_million": r["price_per_million"],
+                "searches": r["searches"],
+                "tokens_saved": r["tokens_saved"],
+                "cost_saved_usd": round(r["cost_saved_usd"], 6),
+                "avg_tokens_saved": int(r["avg_tokens_saved"]),
+            } for r in model_rows],
+            "recent_searches": [{
+                "query": r["query"],
+                "total_tools": r["total_tools_in_index"],
+                "returned": r["tools_returned"],
+                "tokens_full": r["tokens_full_index"],
+                "tokens_used": r["tokens_returned"],
+                "tokens_saved": r["tokens_saved"],
+                "model": r["model_name"],
+                "cost_saved": round(r["cost_saved_usd"], 6),
+                "time_ms": round(r["search_time_ms"], 1),
+                "at": r["searched_at"],
+            } for r in recent_rows],
+            "daily": [{
+                "day": r["day"],
+                "searches": r["searches"],
+                "tokens_saved": r["tokens_saved"],
+                "cost_saved_usd": round(r["cost_saved_usd"], 6),
+            } for r in daily_rows],
+        }

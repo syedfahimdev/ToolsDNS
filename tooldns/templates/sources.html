@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% block title %} — Sources{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Sources</h1>
+</div>
+
+{% if msg %}
+<div class="alert {% if msg.startswith('success') %}alert-ok{% else %}alert-error{% endif %}">
+  {{ msg.split(':', 1)[1].replace('+', ' ') if ':' in msg else msg }}
+</div>
+{% endif %}
+
+<!-- Add MCP Server Form -->
+<section class="card">
+  <h2>Add MCP Server</h2>
+  <form method="post" action="/ui/sources/add-mcp" class="mcp-form">
+
+    <div class="form-row">
+      <label>Server Name <span class="hint">(letters, numbers, hyphens only)</span></label>
+      <input type="text" name="name" required placeholder="e.g. github, slack, my-tool"
+             pattern="[a-zA-Z0-9_\-]+" title="Only letters, numbers, hyphens, underscores">
+    </div>
+
+    <div class="form-row">
+      <label>Transport Type</label>
+      <div class="radio-group">
+        <label><input type="radio" name="transport" value="stdio" checked
+               onchange="toggleTransport(this.value)"> stdio (npx, python3, etc.)</label>
+        <label><input type="radio" name="transport" value="http"
+               onchange="toggleTransport(this.value)"> HTTP / SSE</label>
+      </div>
+    </div>
+
+    <!-- stdio fields -->
+    <div id="stdio-fields">
+      <div class="form-row">
+        <label>Command <span class="hint">e.g. npx, python3, uvx</span></label>
+        <input type="text" name="command" placeholder="npx">
+      </div>
+      <div class="form-row">
+        <label>Arguments <span class="hint">space-separated, e.g. -y @modelcontextprotocol/server-github</span></label>
+        <input type="text" name="args" placeholder="-y @modelcontextprotocol/server-github">
+      </div>
+    </div>
+
+    <!-- HTTP fields -->
+    <div id="http-fields" style="display:none">
+      <div class="form-row">
+        <label>Server URL</label>
+        <input type="url" name="url" placeholder="https://mcp.example.com/sse">
+      </div>
+      <div class="form-row">
+        <label>HTTP Headers <span class="hint">KEY=VALUE, one per line</span></label>
+        <textarea name="headers_raw" rows="3" placeholder="x-api-key=your-key-here&#10;Authorization=Bearer token"></textarea>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <label>Environment Variables <span class="hint">KEY=VALUE, one per line — saved to ~/.tooldns/.env</span></label>
+      <textarea name="env_vars_raw" rows="4" placeholder="GITHUB_TOKEN=ghp_xxx&#10;SLACK_TOKEN=xoxb-xxx"></textarea>
+    </div>
+
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">Add Server + Index Tools</button>
+    </div>
+  </form>
+</section>
+
+<!-- Skill Creator shortcut -->
+<section class="card">
+  <h2>Add Skill</h2>
+  <p class="hint-text">Skills are markdown files that teach your agent how to perform a task.</p>
+  <a href="/ui/skills/new" class="btn">+ Create New Skill</a>
+</section>
+
+<!-- Existing Sources -->
+<section class="card">
+  <div class="section-header">
+    <h2>All Sources ({{ sources|length }})</h2>
+    <button hx-post="/ui/ingest-all" hx-target="#ingest-status2" class="btn btn-sm">↺ Re-ingest All</button>
+    <span id="ingest-status2"></span>
+  </div>
+
+  <table class="tool-table">
+    <thead>
+      <tr><th>Name</th><th>Type</th><th>Tools</th><th>Status</th><th>Health</th><th>Last Refresh</th><th>Actions</th></tr>
+    </thead>
+    <tbody>
+    {% for s in sources %}
+    <tr id="source-{{ s.id }}">
+      <td><strong>{{ s.name }}</strong>{% if s.error %}<br><small class="err">{{ s.error[:60] }}</small>{% endif %}</td>
+      <td><span class="badge badge-type">{{ s.type }}</span></td>
+      <td>{{ s.tools_count }}</td>
+      <td>
+        {% if s.status == 'active' %}<span class="badge badge-ok">active</span>
+        {% elif s.status == 'error' %}<span class="badge badge-error">error</span>
+        {% else %}<span class="badge">{{ s.status }}</span>{% endif %}
+      </td>
+      <td>
+        {% set hs = s.health_status or 'unknown' %}
+        {% if hs == 'healthy' %}<span class="badge badge-ok">healthy</span>
+        {% elif hs == 'degraded' %}<span class="badge badge-warn">degraded</span>
+        {% elif hs == 'down' %}<span class="badge badge-error">down</span>
+        {% else %}<span class="badge">unknown</span>{% endif %}
+      </td>
+      <td class="ts">{{ s.last_refreshed[:16] if s.last_refreshed else '—' }}</td>
+      <td class="actions">
+        <button hx-post="/ui/sources/{{ s.id }}/refresh"
+                hx-target="#source-{{ s.id }} td:nth-child(3)"
+                class="btn btn-sm">↺</button>
+        <button hx-post="/ui/sources/{{ s.id }}/delete"
+                hx-target="#source-{{ s.id }}"
+                hx-swap="outerHTML"
+                hx-confirm="Delete {{ s.name }} and all its tools?"
+                class="btn btn-sm btn-danger">✕</button>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="7" class="empty">No sources yet. Add one above.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<script>
+function toggleTransport(val) {
+  document.getElementById('stdio-fields').style.display = val === 'stdio' ? 'block' : 'none';
+  document.getElementById('http-fields').style.display = val === 'http' ? 'block' : 'none';
+}
+</script>
+{% endblock %}

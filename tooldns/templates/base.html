@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ToolDNS{% block title %}{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://unpkg.com/htmx.org@2.0.3/dist/htmx.min.js"></script>
+</head>
+<body>
+  <nav>
+    <div class="nav-brand">🔍 ToolDNS</div>
+    <div class="nav-links">
+      <a href="/ui" class="{% if page == 'dashboard' %}active{% endif %}">Dashboard</a>
+      <a href="/ui/sources" class="{% if page == 'sources' %}active{% endif %}">Sources</a>
+      <a href="/ui/tools" class="{% if page == 'tools' %}active{% endif %}">Tools</a>
+      <a href="/ui/health" class="{% if page == 'health' %}active{% endif %}">Health</a>
+      <a href="/ui/stats" class="{% if page == 'stats' %}active{% endif %}">📊 Savings</a>
+      <a href="/ui/skills/new" class="{% if page == 'skills' %}active{% endif %}">+ Skill</a>
+    </div>
+  </nav>
+
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer>
+    ToolDNS — DNS for AI Tools &nbsp;|&nbsp; <a href="/docs">API Docs</a>
+  </footer>
+</body>
+</html>

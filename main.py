@@ -14,20 +14,79 @@ API documentation is auto-generated at /docs (Swagger UI).
 """
 
 import asyncio
+import ipaddress
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from starlette.middleware.base import BaseHTTPMiddleware
 from tooldns.config import settings, logger
 from tooldns.database import ToolDatabase
 from tooldns.embedder import get_embedder
 from tooldns.search import SearchEngine
 from tooldns.ingestion import IngestionPipeline
+from tooldns.health import HealthMonitor
 from tooldns.api import router, init_api
+from tooldns.ui import ui_router, init_ui
 
-# Rate limiter — keyed by IP (all requests go through localhost so key by API key header instead)
+# ---------------------------------------------------------------------------
+# Network access control middleware
+# ---------------------------------------------------------------------------
+
+# Tailscale always uses 100.64.0.0/10
+_TAILSCALE_NETWORK = ipaddress.ip_network("100.64.0.0/10")
+_LOCALHOST = {"127.0.0.1", "::1"}
+
+
+def _is_tailscale(ip: str) -> bool:
+    try:
+        return ipaddress.ip_address(ip) in _TAILSCALE_NETWORK
+    except ValueError:
+        return False
+
+
+class NetworkACLMiddleware(BaseHTTPMiddleware):
+    """
+    Enforce network-based access control:
+      - /ui/*  paths: Tailscale (100.64.0.0/10) OR localhost
+      - /v1/*  paths: localhost only
+      - /health, /: localhost OR Tailscale (monitoring)
+      - Everything else: block from non-localhost non-Tailscale IPs
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        client_ip = request.client.host if request.client else "unknown"
+        path = request.url.path
+        is_local = client_ip in _LOCALHOST
+        is_ts = _is_tailscale(client_ip)
+
+        # /v1/* (API) — localhost only
+        if path.startswith("/v1/"):
+            if not is_local:
+                return JSONResponse(
+                    {"detail": "API access restricted to localhost"},
+                    status_code=403
+                )
+
+        # /ui/* — Tailscale or localhost
+        elif path.startswith("/ui") or path.startswith("/static"):
+            if not (is_local or is_ts):
+                return HTMLResponse(
+                    "<h1>403 Forbidden</h1><p>UI is accessible via Tailscale only.</p>",
+                    status_code=403
+                )
+
+        # Everything else (/, /health, /docs) — allow local + Tailscale, block public
+        else:
+            if not (is_local or is_ts):
+                return JSONResponse({"detail": "Access denied"}, status_code=403)
+
+        return await call_next(request)
+
+
+# Rate limiter — keyed by API key header
 def _get_key(request: Request) -> str:
     auth = request.headers.get("Authorization", "")
     return auth or get_remote_address(request)
@@ -36,24 +95,27 @@ limiter = Limiter(key_func=_get_key, default_limits=["120/minute"])
 
 
 async def _auto_refresh(pipeline: IngestionPipeline, interval_min: int):
-    """
-    Background task that periodically re-ingests all registered sources.
-
-    Runs in a loop, sleeping for `interval_min` minutes between each
-    refresh cycle. Errors are logged but never crash the refresh loop.
-
-    Args:
-        pipeline: The IngestionPipeline instance.
-        interval_min: Minutes between each refresh cycle.
-    """
+    """Background task: re-ingest all sources every interval_min minutes."""
     while True:
         await asyncio.sleep(interval_min * 60)
         try:
             logger.info("Auto-refresh: re-ingesting all sources...")
-            total = pipeline.ingest_all()
+            loop = asyncio.get_event_loop()
+            total = await loop.run_in_executor(None, pipeline.ingest_all)
             logger.info(f"Auto-refresh complete: {total} tools indexed")
         except Exception as e:
             logger.error(f"Auto-refresh error: {e}")
+
+
+async def _health_check_loop(monitor: HealthMonitor, interval_sec: int = 60):
+    """Background task: check source health every interval_sec seconds."""
+    await asyncio.sleep(10)  # Wait for server to fully start
+    while True:
+        try:
+            await monitor.check_all()
+        except Exception as e:
+            logger.error(f"Health check error: {e}")
+        await asyncio.sleep(interval_sec)
 
 
 @asynccontextmanager
@@ -77,13 +139,21 @@ async def lifespan(app: FastAPI):
     embedder = get_embedder()
     search_engine = SearchEngine(db, embedder)
     pipeline = IngestionPipeline(db, embedder)
+    health_monitor = HealthMonitor(db)
+
+    # Mark any stale jobs from a previous crash as failed
+    db.reset_stale_jobs()
 
     # Preload the embedding model
     logger.info("Preloading embedding model...")
     embedder.preload()
 
-    # Inject into API routes
-    init_api(search_engine, pipeline, db)
+    cache_stats = db.get_embedding_cache_stats()
+    logger.info(f"Embedding cache: {cache_stats['cached_embeddings']} vectors cached")
+
+    # Inject into API and UI routes
+    init_api(search_engine, pipeline, db, health_monitor)
+    init_ui(db, pipeline, health_monitor)
 
     tool_count = db.get_tool_count()
     source_count = len(db.get_all_sources())
@@ -91,21 +161,19 @@ async def lifespan(app: FastAPI):
         f"ToolDNS ready — {tool_count} tools from {source_count} sources"
     )
 
-    # Start auto-refresh if interval is set
-    refresh_task = None
+    # Start background tasks
+    tasks = []
     if settings.refresh_interval > 0:
-        logger.info(
-            f"Auto-refresh enabled: every {settings.refresh_interval} min"
-        )
-        refresh_task = asyncio.create_task(
-            _auto_refresh(pipeline, settings.refresh_interval)
-        )
+        logger.info(f"Auto-refresh enabled: every {settings.refresh_interval} min")
+        tasks.append(asyncio.create_task(_auto_refresh(pipeline, settings.refresh_interval)))
+
+    tasks.append(asyncio.create_task(_health_check_loop(health_monitor, 60)))
 
     yield  # App is running
 
     # Cleanup
-    if refresh_task:
-        refresh_task.cancel()
+    for task in tasks:
+        task.cancel()
     logger.info("ToolDNS shutting down.")
 
 
@@ -124,11 +192,23 @@ app = FastAPI(
     redoc_url=None,
 )
 
+# Attach access control middleware (network ACL: Tailscale for UI, localhost for API)
+app.add_middleware(NetworkACLMiddleware)
+
 # Attach rate limiter
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+from fastapi.staticfiles import StaticFiles
+import os as _os
+
 app.include_router(router)
+app.include_router(ui_router)
+
+# Mount static files (CSS, JS) for the web UI
+_static_dir = _os.path.join(_os.path.dirname(__file__), "tooldns", "static")
+if _os.path.exists(_static_dir):
+    app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 
 
 @app.get("/")

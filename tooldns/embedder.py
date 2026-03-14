@@ -1,20 +1,17 @@
 """
 embedder.py — Embedding engine for ToolDNS.
 
-Generates vector embeddings from tool descriptions using sentence-transformers.
-These embeddings enable semantic search — finding tools by meaning, not keywords.
+Supports two backends:
+  1. sentence-transformers (default) — fully local, no extra setup
+  2. Ollama — local HTTP API, supports larger/better models
 
-The default model (all-MiniLM-L6-v2) is:
-    - ~23MB in size
-    - Produces 384-dimensional vectors
-    - Runs 100% locally on CPU (no API calls, no cost)
-    - Fast enough for real-time search (<10ms per embedding)
+Select the backend via TOOLDNS_EMBEDDING_MODEL:
+  - "all-MiniLM-L6-v2"         → sentence-transformers (default)
+  - "ollama/nomic-embed-text"   → Ollama (run: ollama serve)
+  - "ollama/mxbai-embed-large"  → Ollama large model
 
-Usage:
-    from tooldns.embedder import Embedder
-    embedder = Embedder()
-    vector = embedder.embed("create a github issue")
-    vectors = embedder.embed_batch(["tool 1 description", "tool 2 description"])
+Both backends expose the same Embedder interface so all callers
+(search, ingestion) work without any changes.
 """
 
 from tooldns.config import settings, logger
@@ -22,101 +19,141 @@ from tooldns.config import settings, logger
 _embedder_instance = None
 
 
+# ---------------------------------------------------------------------------
+# Backends
+# ---------------------------------------------------------------------------
+
+class _SentenceTransformerBackend:
+    """Local embedding via sentence-transformers (default)."""
+
+    def __init__(self, model_name: str):
+        self.model_name = model_name
+        self._model = None
+
+    def _load(self):
+        if self._model is None:
+            logger.info(f"Loading sentence-transformer model: {self.model_name}")
+            from sentence_transformers import SentenceTransformer
+            self._model = SentenceTransformer(self.model_name)
+            logger.info("Embedding model loaded successfully")
+
+    def embed(self, text: str) -> list[float]:
+        self._load()
+        return self._model.encode(text, normalize_embeddings=True).tolist()
+
+    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        self._load()
+        return [e.tolist() for e in self._model.encode(texts, normalize_embeddings=True)]
+
+    def preload(self):
+        self._load()
+
+
+class _OllamaBackend:
+    """
+    Embedding via Ollama local HTTP API.
+
+    Use this for larger/better models like nomic-embed-text or
+    mxbai-embed-large. Requires Ollama to be running:
+        ollama serve
+        ollama pull nomic-embed-text
+
+    Note: Ollama's /api/embeddings endpoint is single-input only,
+    so embed_batch() makes sequential HTTP calls. This is slower
+    than sentence-transformers batching but acceptable for ingestion.
+    """
+
+    def __init__(self, model_name: str, base_url: str = "http://localhost:11434"):
+        self.model_name = model_name
+        self.base_url = base_url.rstrip("/")
+        self._check_connection()
+
+    def _check_connection(self):
+        import httpx
+        try:
+            resp = httpx.get(f"{self.base_url}/api/tags", timeout=5)
+            resp.raise_for_status()
+            logger.info(f"Ollama connected at {self.base_url}, model: {self.model_name}")
+        except Exception as e:
+            raise RuntimeError(
+                f"Cannot connect to Ollama at {self.base_url}: {e}\n"
+                f"Make sure Ollama is running: 'ollama serve'\n"
+                f"And the model is pulled: 'ollama pull {self.model_name}'"
+            )
+
+    def embed(self, text: str) -> list[float]:
+        import httpx
+        resp = httpx.post(
+            f"{self.base_url}/api/embeddings",
+            json={"model": self.model_name, "prompt": text},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json()["embedding"]
+
+    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        # Ollama doesn't support batch — sequential calls
+        return [self.embed(t) for t in texts]
+
+    def preload(self):
+        # Warm up with a short string to verify model is loaded
+        self.embed("warmup")
+        logger.info(f"Ollama model '{self.model_name}' ready")
+
+
+# ---------------------------------------------------------------------------
+# Public Embedder class
+# ---------------------------------------------------------------------------
+
 class Embedder:
     """
     Generates semantic embeddings for tool descriptions.
 
-    Uses sentence-transformers to convert text into fixed-size
-    float vectors. These vectors capture the semantic meaning
-    of the text, enabling similarity search.
+    Selects the backend automatically based on settings.embedding_model:
+    - Names starting with "ollama/" use the Ollama backend.
+    - All other names use sentence-transformers.
 
-    The model is loaded lazily on first use and cached in memory
-    for subsequent calls. This avoids the ~2 second load time
-    on every embedding request.
+    The public embed() and embed_batch() interface is identical
+    regardless of which backend is active.
 
     Attributes:
-        model_name: Name of the sentence-transformer model.
-        model: The loaded SentenceTransformer model instance.
+        model_name: Full model name including backend prefix (e.g., "ollama/nomic-embed-text").
     """
 
     def __init__(self, model_name: str = None):
-        """
-        Initialize the embedder with a specific model.
+        raw_name = model_name or settings.embedding_model
+        self.model_name = raw_name
 
-        The model is NOT loaded here — it's loaded lazily on first
-        embed() call. This keeps server startup fast.
-
-        Args:
-            model_name: Sentence-transformer model name.
-                        Default: settings.embedding_model (all-MiniLM-L6-v2).
-        """
-        self.model_name = model_name or settings.embedding_model
-        self.model = None
-
-    def _load_model(self):
-        """
-        Lazy-load the embedding model into memory.
-
-        Downloads the model on first run (~23MB) and caches it locally.
-        Subsequent loads use the cached version (~200ms).
-        """
-        if self.model is None:
-            logger.info(f"Loading embedding model: {self.model_name}")
-            from sentence_transformers import SentenceTransformer
-            self.model = SentenceTransformer(self.model_name)
-            logger.info("Embedding model loaded successfully")
+        if raw_name.startswith("ollama/"):
+            ollama_model = raw_name[len("ollama/"):]
+            self._backend = _OllamaBackend(ollama_model)
+        else:
+            self._backend = _SentenceTransformerBackend(raw_name)
 
     def embed(self, text: str) -> list[float]:
-        """
-        Generate an embedding vector for a single text string.
-
-        Converts the input text into a 384-dimensional float vector
-        that captures its semantic meaning. Normalized so cosine
-        similarity can be computed as a simple dot product.
-
-        Args:
-            text: The text to embed (e.g., a tool description).
-
-        Returns:
-            list[float]: 384-dimensional embedding vector.
-        """
-        self._load_model()
-        return self.model.encode(text, normalize_embeddings=True).tolist()
+        """Generate an embedding for a single text string."""
+        return self._backend.embed(text)
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        """
-        Generate embeddings for multiple texts in a single batch.
-
-        More efficient than calling embed() in a loop because
-        sentence-transformers batches the computation internally.
-
-        Args:
-            texts: List of texts to embed.
-
-        Returns:
-            list[list[float]]: List of embedding vectors, one per input text.
-        """
-        self._load_model()
-        embeddings = self.model.encode(texts, normalize_embeddings=True)
-        return [e.tolist() for e in embeddings]
+        """Generate embeddings for a batch of texts."""
+        return self._backend.embed_batch(texts)
 
     def preload(self):
         """
-        Explicitly load the model into memory.
+        Explicitly load/warm-up the model at server startup.
 
-        Call this during server startup to avoid the first-request
-        latency hit. The model takes ~2 seconds to load.
+        Call this during startup to avoid first-request latency.
+        sentence-transformers takes ~2s to load; Ollama warmup is instant.
         """
-        self._load_model()
+        self._backend.preload()
 
 
 def get_embedder() -> Embedder:
     """
     Get the global singleton Embedder instance.
 
-    Creates the instance on first call and returns the cached
-    instance on subsequent calls. This ensures only one copy
-    of the model is ever loaded into memory.
+    Returns the same instance on every call so the model is only
+    loaded once per process.
 
     Returns:
         Embedder: The shared embedder instance.

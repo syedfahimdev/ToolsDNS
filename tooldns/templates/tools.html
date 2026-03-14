@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %} — Tools{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Tools <span class="count-badge">{{ total }}</span></h1>
+</div>
+
+<!-- Search + Filter -->
+<section class="card">
+  <div class="search-filter-row">
+    <input type="text" name="q" value="{{ query }}"
+      placeholder="Search tools by description…"
+      hx-get="/ui/tools/search"
+      hx-trigger="keyup changed delay:300ms"
+      hx-target="#tool-tbody"
+      hx-include="[name='q'],[name='source']"
+      class="search-input">
+
+    <select name="source"
+      hx-get="/ui/tools/search"
+      hx-trigger="change"
+      hx-target="#tool-tbody"
+      hx-include="[name='q'],[name='source']"
+      class="source-filter">
+      <option value="">All sources</option>
+      {% for s in sources %}
+      <option value="{{ s.name }}" {% if s.name == selected_source %}selected{% endif %}>{{ s.name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <table class="tool-table">
+    <thead>
+      <tr><th>Tool</th><th>Description</th><th>Source</th><th>Match</th></tr>
+    </thead>
+    <tbody id="tool-tbody">
+      {% for t in tools %}
+      <tr>
+        <td><code>{{ t.name }}</code></td>
+        <td class="desc">{{ t.description[:120] }}</td>
+        <td><span class="src">{{ t.source }}</span></td>
+        <td>{{ t.confidence }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="empty">No tools found</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if total > 50 %}
+  <p class="hint-text">Showing first 50 of {{ total }} tools. Use search to narrow down.</p>
+  {% endif %}
+</section>
+{% endblock %}

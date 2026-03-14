@@ -818,12 +818,30 @@ class IngestionPipeline:
         if not raw_tools:
             return 0
 
-        # Batch embed all descriptions at once (more efficient)
+        # Build descriptions and check embedding cache
         descriptions = [
             f"{t.get('name', '')}: {t.get('description', '')}"
             for t in raw_tools
         ]
-        embeddings = self.embedder.embed_batch(descriptions)
+
+        # Persistent vector cache: compute hash per description, only embed cache misses
+        desc_hashes = [hashlib.sha256(d.encode()).hexdigest() for d in descriptions]
+        model_name = self.embedder.model_name
+        cached = [self.db.get_cached_embedding(h, model_name) for h in desc_hashes]
+
+        # Identify which descriptions need new embeddings
+        missing_idx = [i for i, c in enumerate(cached) if c is None]
+        if missing_idx:
+            missing_texts = [descriptions[i] for i in missing_idx]
+            new_embeddings = self.embedder.embed_batch(missing_texts)
+            for i, embedding in zip(missing_idx, new_embeddings):
+                self.db.set_cached_embedding(desc_hashes[i], model_name, embedding)
+                cached[i] = embedding
+            logger.info(f"Embedded {len(missing_idx)} new tools, {len(descriptions) - len(missing_idx)} from cache")
+        else:
+            logger.info(f"All {len(descriptions)} embeddings served from cache")
+
+        embeddings = cached
 
         count = 0
         for tool, embedding in zip(raw_tools, embeddings):
