@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %} — Edit Source{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Edit Source: {{ source.name }}</h1>
+</div>
+
+{% if msg %}
+<div class="alert {% if msg.startswith('success') %}alert-ok{% else %}alert-error{% endif %}">
+  {{ msg.split(':', 1)[1].replace('+', ' ') if ':' in msg else msg }}
+</div>
+{% endif %}
+
+<section class="card">
+  <form method="post" action="/ui/sources/{{ source.id }}/edit" class="mcp-form">
+
+    <div class="form-row">
+      <label>Source Name</label>
+      <input type="text" value="{{ source.name }}" disabled class="search-input" style="opacity:0.5">
+      <span class="hint">Name cannot be changed — delete and re-add to rename</span>
+    </div>
+
+    <div class="form-row">
+      <label>Type</label>
+      <span class="badge badge-type">{{ source.type }}</span>
+    </div>
+
+    {% if source.type in ['mcp_stdio', 'mcp_config'] %}
+    <div class="form-row">
+      <label>Command</label>
+      <input type="text" name="command" value="{{ source.config.get('command', '') }}"
+             class="search-input" placeholder="python3, npx, uvx">
+    </div>
+    <div class="form-row">
+      <label>Arguments <span class="hint">space-separated</span></label>
+      <input type="text" name="args"
+             value="{{ source.config.get('args', []) | join(' ') }}"
+             class="search-input">
+    </div>
+    {% endif %}
+
+    {% if source.type == 'mcp_http' %}
+    <div class="form-row">
+      <label>Server URL</label>
+      <input type="url" name="url" value="{{ source.config.get('url', '') }}"
+             class="search-input">
+    </div>
+    <div class="form-row">
+      <label>HTTP Headers <span class="hint">KEY=VALUE, one per line</span></label>
+      <textarea name="headers_raw" rows="3" style="width:100%;font-family:monospace;font-size:13px;background:#0a0e1a;color:#e2e8f0;border:1px solid #1e293b;padding:10px;border-radius:6px">{% for k,v in (source.config.get('headers') or {}).items() %}{{ k }}={{ v }}
+{% endfor %}</textarea>
+    </div>
+    {% endif %}
+
+    {% if source.type == 'mcp_config' %}
+    <div class="form-row">
+      <label>Config File Path</label>
+      <input type="text" name="path" value="{{ source.config.get('path', '') }}"
+             class="search-input">
+    </div>
+    <div class="form-row">
+      <label>Config Key <span class="hint">dot-separated path to mcpServers section</span></label>
+      <input type="text" name="config_key" value="{{ source.config.get('config_key', 'mcpServers') }}"
+             class="search-input">
+    </div>
+    {% endif %}
+
+    <div class="form-row">
+      <label>Environment Variables <span class="hint">KEY=VALUE, one per line</span></label>
+      <textarea name="env_vars_raw" rows="4" style="width:100%;font-family:monospace;font-size:13px;background:#0a0e1a;color:#e2e8f0;border:1px solid #1e293b;padding:10px;border-radius:6px" placeholder="API_KEY=your-key-here"></textarea>
+      <span class="hint">New vars only — existing vars in ~/.tooldns/.env are not shown here for security</span>
+    </div>
+
+    <div class="form-actions" style="display:flex;gap:8px">
+      <button type="submit" class="btn btn-primary">Save + Re-ingest</button>
+      <a href="/ui/sources" class="btn">Cancel</a>
+    </div>
+  </form>
+</section>
+{% endblock %}

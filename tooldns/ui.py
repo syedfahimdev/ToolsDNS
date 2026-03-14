@@ -512,3 +512,293 @@ async def set_model(model: str = Form(...)):
     os.chmod(env_path, 0o600)
     os.environ["TOOLDNS_MODEL"] = model.strip()
     return RedirectResponse(f"/ui/stats?saved=1", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# Source editing
+# ---------------------------------------------------------------------------
+
+@ui_router.get("/sources/{source_id}/edit", response_class=HTMLResponse)
+async def edit_source_page(request: Request, source_id: str, msg: str = ""):
+    """Edit a source's connection config."""
+    source = _database.get_source(source_id)
+    if not source:
+        return RedirectResponse("/ui/sources?msg=error:Source+not+found", status_code=303)
+    return templates.TemplateResponse("edit_source.html", {
+        "request": request,
+        "source": source,
+        "msg": msg,
+        "page": "sources",
+    })
+
+
+@ui_router.post("/sources/{source_id}/edit")
+async def save_source_edit(
+    source_id: str,
+    command: str = Form(""),
+    args: str = Form(""),
+    url: str = Form(""),
+    headers_raw: str = Form(""),
+    path: str = Form(""),
+    config_key: str = Form("mcpServers"),
+    env_vars_raw: str = Form(""),
+):
+    """Save edited source config and re-ingest."""
+    from tooldns.config import TOOLDNS_HOME
+
+    source = _database.get_source(source_id)
+    if not source:
+        return RedirectResponse("/ui/sources?msg=error:Source+not+found", status_code=303)
+
+    # Save new env vars
+    if env_vars_raw.strip():
+        env_path = TOOLDNS_HOME / ".env"
+        existing = {}
+        if env_path.exists():
+            for line in env_path.read_text().splitlines():
+                if "=" in line and not line.startswith("#"):
+                    k, _, v = line.partition("=")
+                    existing[k] = v
+        for line in env_vars_raw.strip().splitlines():
+            if "=" in line and not line.startswith("#"):
+                k, _, v = line.partition("=")
+                existing[k.strip()] = v.strip()
+        with open(env_path, "w") as f:
+            for k, v in existing.items():
+                f.write(f"{k}={v}\n")
+        os.chmod(env_path, 0o600)
+
+    # Build updated config
+    config = dict(source["config"])
+    stype = source["type"]
+    if stype == "mcp_stdio":
+        config["command"] = command.strip()
+        config["args"] = args.strip().split() if args.strip() else []
+    elif stype == "mcp_http":
+        config["url"] = url.strip()
+        if headers_raw.strip():
+            hdrs = {}
+            for line in headers_raw.strip().splitlines():
+                if "=" in line:
+                    k, _, v = line.partition("=")
+                    hdrs[k.strip()] = v.strip()
+            config["headers"] = hdrs
+    elif stype == "mcp_config":
+        config["path"] = path.strip()
+        config["config_key"] = config_key.strip()
+
+    config["name"] = source["name"]
+    config["type"] = stype
+
+    try:
+        count = _ingestion_pipeline.ingest_source(config)
+        return RedirectResponse(
+            f"/ui/sources?msg=success:Updated+{source['name']}+({count}+tools)",
+            status_code=303
+        )
+    except Exception as e:
+        return RedirectResponse(
+            f"/ui/sources/{source_id}/edit?msg=error:{str(e)[:80].replace(' ', '+')}",
+            status_code=303
+        )
+
+
+# ---------------------------------------------------------------------------
+# Settings page
+# ---------------------------------------------------------------------------
+
+def _detect_model() -> tuple[str, str]:
+    """
+    Auto-detect the active LLM model.
+
+    Returns (model_name, source) — source is a human-readable label.
+    Skips aliases like 'auto-fastest' that don't map to real model IDs.
+    """
+    import json as _json
+
+    SKIP_ALIASES = {"auto-fastest", "auto", "default", "latest", "fastest"}
+
+    # 1. Explicit env override
+    m = os.environ.get("TOOLDNS_MODEL", "").strip()
+    if m and m.lower() not in SKIP_ALIASES:
+        return m, "TOOLDNS_MODEL env var"
+
+    # 2. Nanobot config (~/.nanobot/config.json)
+    try:
+        cfg = _json.load(open(os.path.expanduser("~/.nanobot/config.json")))
+        m = cfg.get("model", "") or ((cfg.get("agents", {}).get("defaults") or {}).get("model", ""))
+        if m and m.lower() not in SKIP_ALIASES:
+            return m, "~/.nanobot/config.json"
+    except Exception:
+        pass
+
+    # 3. OpenClaw config — use first anthropic model listed
+    try:
+        for cfg_path in [
+            os.path.expanduser("~/.openclaw/openclaw.json"),
+            os.path.expanduser("~/.openclaw/workspace/openclaw.json"),
+        ]:
+            if not os.path.exists(cfg_path):
+                continue
+            cfg = _json.load(open(cfg_path))
+            providers = cfg.get("models", {}).get("providers", {})
+            for provider_name, provider in providers.items():
+                for model_entry in provider.get("models", []):
+                    mid = model_entry.get("id", "")
+                    if mid and mid.lower() not in SKIP_ALIASES:
+                        return mid, f"openclaw ({provider_name})"
+    except Exception:
+        pass
+
+    return "", ""
+
+
+def _read_env_file() -> tuple[dict, str]:
+    """Read ~/.tooldns/.env and return (dict, raw_text)."""
+    from tooldns.config import TOOLDNS_HOME
+    env_path = TOOLDNS_HOME / ".env"
+    if not env_path.exists():
+        return {}, ""
+    raw = env_path.read_text()
+    env = {}
+    for line in raw.splitlines():
+        if "=" in line and not line.startswith("#"):
+            k, _, v = line.partition("=")
+            env[k.strip()] = v.strip()
+    return env, raw
+
+
+def _save_env_key(key: str, value: str):
+    """Update a single key in ~/.tooldns/.env."""
+    from tooldns.config import TOOLDNS_HOME
+    env_path = TOOLDNS_HOME / ".env"
+    env, _ = _read_env_file()
+    env[key] = value
+    with open(env_path, "w") as f:
+        for k, v in env.items():
+            f.write(f"{k}={v}\n")
+    os.chmod(env_path, 0o600)
+    os.environ[key] = value
+
+
+@ui_router.get("/settings", response_class=HTMLResponse)
+async def settings_page(request: Request, msg: str = ""):
+    """Settings — model, API key, env vars, framework imports."""
+    env, env_raw = _read_env_file()
+    detected_model, detected_source = _detect_model()
+
+    # Detect framework configs present on this machine
+    framework_configs = []
+    candidates = [
+        ("~/.nanobot/config.json", "mcpServers", "Nanobot"),
+        ("~/.openclaw/workspace/config/mcporter.json", "mcpServers", "OpenClaw (mcporter)"),
+        ("~/.tooldns/config.json", "mcpServers", "ToolDNS local"),
+    ]
+    for path_str, key, label in candidates:
+        path = os.path.expanduser(path_str)
+        if os.path.exists(path):
+            framework_configs.append({"path": path, "key": key, "label": label})
+
+    return templates.TemplateResponse("settings.html", {
+        "request": request,
+        "env": env,
+        "env_raw": env_raw,
+        "detected_model": detected_model,
+        "detected_source": detected_source,
+        "framework_configs": framework_configs,
+        "msg": msg,
+        "page": "settings",
+    })
+
+
+@ui_router.post("/settings/save")
+async def settings_save(
+    model: str = Form(""),
+    api_key: str = Form(""),
+):
+    """Save model and/or API key to .env."""
+    if model.strip():
+        _save_env_key("TOOLDNS_MODEL", model.strip())
+    if api_key.strip():
+        _save_env_key("TOOLDNS_API_KEY", api_key.strip())
+    return RedirectResponse("/ui/settings?msg=success:Settings+saved", status_code=303)
+
+
+@ui_router.post("/settings/save-env")
+async def settings_save_env(env_raw: str = Form(...)):
+    """Overwrite ~/.tooldns/.env with edited content."""
+    from tooldns.config import TOOLDNS_HOME
+    env_path = TOOLDNS_HOME / ".env"
+    env_path.write_text(env_raw)
+    os.chmod(env_path, 0o600)
+    # Reload into current process
+    for line in env_raw.splitlines():
+        if "=" in line and not line.startswith("#"):
+            k, _, v = line.partition("=")
+            os.environ[k.strip()] = v.strip()
+    return RedirectResponse("/ui/settings?msg=success:Environment+variables+saved", status_code=303)
+
+
+@ui_router.post("/settings/import-config")
+async def settings_import_config(
+    config_path: str = Form(...),
+    config_key: str = Form("mcpServers"),
+):
+    """Import MCP servers from a framework config file."""
+    import uuid, asyncio
+    from tooldns.api import _run_ingest_job
+    from tooldns.models import SourceType
+
+    path = os.path.expanduser(config_path.strip())
+    if not os.path.exists(path):
+        return RedirectResponse(
+            f"/ui/settings?msg=error:File+not+found:+{config_path[:60].replace(' ', '+')}",
+            status_code=303
+        )
+
+    source_config = {
+        "type": SourceType.MCP_CONFIG,
+        "name": f"import-{os.path.basename(os.path.dirname(path))}",
+        "path": path,
+        "config_key": config_key,
+    }
+    try:
+        count = _ingestion_pipeline.ingest_source(source_config)
+        return RedirectResponse(
+            f"/ui/settings?msg=success:Imported+{count}+tools+from+{os.path.basename(path)}",
+            status_code=303
+        )
+    except Exception as e:
+        return RedirectResponse(
+            f"/ui/settings?msg=error:{str(e)[:80].replace(' ', '+')}",
+            status_code=303
+        )
+
+
+@ui_router.post("/settings/clear-cache")
+async def settings_clear_cache():
+    """Clear the embedding cache."""
+    _database.clear_embedding_cache()
+    return RedirectResponse("/ui/settings?msg=success:Embedding+cache+cleared", status_code=303)
+
+
+@ui_router.post("/settings/clear-stats")
+async def settings_clear_stats():
+    """Delete all search_log entries."""
+    import sqlite3
+    conn = _database._get_conn()
+    conn.execute("DELETE FROM search_log")
+    conn.commit()
+    conn.close()
+    return RedirectResponse("/ui/settings?msg=success:Search+stats+cleared", status_code=303)
+
+
+@ui_router.post("/settings/delete-all-sources")
+async def settings_delete_all_sources():
+    """Delete all sources and their tools."""
+    conn = _database._get_conn()
+    conn.execute("DELETE FROM sources")
+    conn.execute("DELETE FROM tools")
+    conn.commit()
+    conn.close()
+    return RedirectResponse("/ui/settings?msg=success:All+sources+and+tools+deleted", status_code=303)

@@ -188,3 +188,8 @@ code { font-family: var(--mono); font-size: 12px; background: var(--surface2); p
 .bar-fill { width: 24px; background: var(--accent); border-radius: 4px 4px 0 0; min-height: 2px; transition: height .3s; cursor: pointer; }
 .bar-fill:hover { background: var(--accent-hover); }
 .bar-label { font-size: 10px; color: var(--text-dim); white-space: nowrap; }
+
+/* Settings page */
+.settings-form { display: flex; flex-direction: column; gap: 12px; }
+.btn-danger { background: #7f1d1d; color: #fca5a5; border: 1px solid #991b1b; }
+.btn-danger:hover { background: #991b1b; }

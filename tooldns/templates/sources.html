@@ -109,12 +109,13 @@
       <td class="actions">
         <button hx-post="/ui/sources/{{ s.id }}/refresh"
                 hx-target="#source-{{ s.id }} td:nth-child(3)"
-                class="btn btn-sm">↺</button>
+                class="btn btn-sm" title="Re-ingest">↺</button>
+        <a href="/ui/sources/{{ s.id }}/edit" class="btn btn-sm" title="Edit">✎</a>
         <button hx-post="/ui/sources/{{ s.id }}/delete"
                 hx-target="#source-{{ s.id }}"
                 hx-swap="outerHTML"
                 hx-confirm="Delete {{ s.name }} and all its tools?"
-                class="btn btn-sm btn-danger">✕</button>
+                class="btn btn-sm btn-danger" title="Delete">✕</button>
       </td>
     </tr>
     {% else %}

@@ -56,6 +56,10 @@ class IngestionPipeline:
     # Server types that use HTTP transport (sent as POST requests)
     HTTP_SERVER_TYPES = {"streamableHttp", "sse"}
 
+    # Server names that ToolDNS must never index — these are self-referential
+    # and would pollute the index with ToolDNS's own meta-tools.
+    SELF_SERVER_NAMES = {"tooldns", "tooldns-mcp", "tool-dns"}
+
     def __init__(self, db: ToolDatabase, embedder: Embedder):
         """
         Initialize the ingestion pipeline.
@@ -544,12 +548,12 @@ class IngestionPipeline:
                 f"No MCP servers found at '{config_key}' in {config_path}"
             )
 
-        skip_servers = set(config.get("skip_servers", []))
+        skip_servers = set(config.get("skip_servers", [])) | self.SELF_SERVER_NAMES
 
         all_tools = []
         for server_name, server_config in mcp_section.items():
             if server_name in skip_servers:
-                logger.info(f"Skipping MCP server: {server_name}")
+                logger.info(f"Skipping MCP server (excluded): {server_name}")
                 continue
             logger.info(f"Fetching tools from MCP server: {server_name}")
             try:

@@ -92,35 +92,57 @@ class SearchEngine:
             self._cached_tool_count = tool_count
         return self._cached_index_tokens
 
+    # Model aliases that don't map to real pricing — treat as unknown
+    _MODEL_ALIASES = {"auto-fastest", "auto", "default", "latest", "fastest"}
+
     def _get_model(self) -> str:
         """
         Detect which LLM model is being used.
 
-        Checks TOOLDNS_MODEL env var first, then reads nanobot's
-        config.json, then falls back to empty string (unknown).
+        Checks TOOLDNS_MODEL env var first, then nanobot config,
+        then openclaw config. Skips aliases like 'auto-fastest' that
+        don't map to real model IDs or pricing.
 
         Returns:
-            str: Model name, e.g. "claude-sonnet-4-6".
+            str: Model name, e.g. "claude-sonnet-4-6", or "" if unknown.
         """
-        # Explicit override — env var or settings
+        def _valid(m: str) -> bool:
+            return bool(m) and m.lower() not in self._MODEL_ALIASES
+
+        # 1. Explicit override — env var or settings
         model = os.environ.get("TOOLDNS_MODEL", "").strip() or settings.model.strip()
-        if model:
+        if _valid(model):
             return model
 
-        # Try reading nanobot config
+        # 2. Nanobot config
         try:
             nanobot_cfg = os.path.expanduser("~/.nanobot/config.json")
             with open(nanobot_cfg) as f:
                 cfg = json.load(f)
-            model = cfg.get("model", "")
-            if not model:
-                # Check agents.defaults
-                agents = cfg.get("agents", {})
-                model = (agents.get("defaults") or {}).get("model", "")
-            if model:
+            model = cfg.get("model", "") or (
+                (cfg.get("agents", {}).get("defaults") or {}).get("model", "")
+            )
+            if _valid(model):
                 return model
         except Exception:
             pass
+
+        # 3. OpenClaw config — first real model from any provider
+        for cfg_path in [
+            "~/.openclaw/openclaw.json",
+            "~/.openclaw/workspace/openclaw.json",
+        ]:
+            try:
+                with open(os.path.expanduser(cfg_path)) as f:
+                    cfg = json.load(f)
+                providers = cfg.get("models", {}).get("providers", {})
+                for provider in providers.values():
+                    for entry in provider.get("models", []):
+                        mid = entry.get("id", "")
+                        if _valid(mid):
+                            return mid
+            except Exception:
+                pass
 
         return ""
 
