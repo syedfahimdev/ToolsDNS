@@ -61,7 +61,7 @@ KNOWN_FRAMEWORKS = [
 ]
 
 # Servers that should stay in the agent config (lightweight / local)
-KEEP_SERVERS = {"tooldns", "raw-skills", "nanobot-skills"}
+KEEP_SERVERS = {"tooldns"}
 
 
 # -----------------------------------------------------------------------
