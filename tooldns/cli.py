@@ -164,20 +164,63 @@ def cmd_install():
     print(f"   ✅ Created {home}/skills/ (drop skill folders here)")
     print(f"   ✅ Created {home}/tools/  (drop .py tool files here)")
 
-    # Create example config.json if it doesn't exist
+    # Create/update config.json with auto-detected skill paths
     config_file = home / "config.json"
+    existing_config = {}
+    if config_file.exists():
+        try:
+            existing_config = json.loads(config_file.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    # Auto-detect skill directories
+    skill_dirs = []
+    known_skill_paths = [
+        Path.home() / ".agents" / "skills",
+        Path.home() / ".nanobot" / "skills",
+    ]
+    for sp in known_skill_paths:
+        if sp.exists() and any(sp.iterdir()):
+            skill_dirs.append(str(sp))
+
     if not config_file.exists():
-        config_file.write_text(json.dumps({
-            "mcpServers": {
-                "_example": {
+        # Create fresh config with examples and detected paths
+        config_data = {
+            "mcpServers": {},
+            "skillPaths": skill_dirs,
+            "_examples": {
+                "streamableHttp": {
                     "type": "streamableHttp",
-                    "url": "https://your-mcp-server.com/mcp",
-                    "headers": {"Authorization": "Bearer ${YOUR_API_KEY}"},
-                    "_note": "Remove this entry and add your own MCP servers. Use ${ENV_VAR} for credentials."
+                    "url": "https://your-server.com/mcp",
+                    "headers": {"Authorization": "Bearer ${YOUR_API_KEY}"}
+                },
+                "sse": {
+                    "type": "sse",
+                    "url": "https://your-sse-server.com/mcp",
+                    "headers": {"x-api-key": "${YOUR_API_KEY}"}
+                },
+                "stdio_npx": {
+                    "command": "npx",
+                    "args": ["-y", "your-mcp-package"]
                 }
             }
-        }, indent=2))
-        print(f"   ✅ Created example config.json (add your MCP servers)")
+        }
+        config_file.write_text(json.dumps(config_data, indent=2))
+        print(f"   ✅ Created config.json (supports streamableHttp, sse, stdio/npx)")
+    else:
+        # Update existing config with newly detected skill paths
+        current_paths = set(existing_config.get("skillPaths", []))
+        new_paths = [p for p in skill_dirs if p not in current_paths]
+        if new_paths:
+            existing_config.setdefault("skillPaths", []).extend(new_paths)
+            config_file.write_text(json.dumps(existing_config, indent=2))
+            print(f"   ✅ Added {len(new_paths)} skill path(s) to config.json")
+
+    if skill_dirs:
+        for sd in skill_dirs:
+            skill_count = sum(1 for d in Path(sd).iterdir()
+                            if d.is_dir() and (d / "SKILL.md").exists())
+            print(f"   📁 Found skills: {sd} ({skill_count} skills)")
 
     # Save repo path so 'update' knows where to git pull
     repo_file = home / "repo_path"

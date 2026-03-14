@@ -225,12 +225,13 @@ class IngestionPipeline:
 
     def ingest_local(self) -> int:
         """
-        Ingest tools from ~/.tooldns/ local directories.
+        Ingest tools from ~/.tooldns/ local directories and external paths.
 
-        Scans three locations:
+        Scans:
             1. config.json — custom MCP servers (with ${VAR} env var resolution)
-            2. skills/<name>/SKILL.md — skill description files
-            3. tools/*.py — custom Python tool definitions
+            2. config.json skillPaths — external skill directories
+            3. ~/.tooldns/skills/<name>/SKILL.md — local skill files
+            4. ~/.tooldns/tools/*.py — custom Python tool definitions
 
         Returns:
             int: Total tools ingested from local directories.
@@ -239,17 +240,38 @@ class IngestionPipeline:
         home = TOOLDNS_HOME
         total = 0
 
-        # 1. Custom MCP config
+        # 1. Custom MCP config + skill paths from config.json
         config_file = home / "config.json"
         if config_file.exists():
             try:
-                count = self._ingest_local_config(config_file)
-                total += count
-                logger.info(f"Local config.json: {count} tools")
+                config_data = json.loads(config_file.read_text(encoding="utf-8"))
+
+                # Ingest MCP servers from config
+                if config_data.get("mcpServers"):
+                    count = self._ingest_local_config(config_file)
+                    total += count
+                    logger.info(f"Local config.json: {count} MCP tools")
+
+                # Ingest external skill directories
+                for skill_path_str in config_data.get("skillPaths", []):
+                    skill_path = Path(os.path.expanduser(skill_path_str))
+                    if skill_path.exists():
+                        try:
+                            # Use parent+folder name to avoid collisions
+                            sname = f"skills-{skill_path.parent.name}-{skill_path.name}"
+                            count = self._ingest_local_skills(
+                                skill_path, source_name=sname
+                            )
+                            total += count
+                            logger.info(f"External skills ({skill_path}): {count} tools")
+                        except Exception as e:
+                            logger.error(f"External skills error ({skill_path}): {e}")
+                    else:
+                        logger.warning(f"Skill path not found: {skill_path}")
             except Exception as e:
                 logger.error(f"Local config.json error: {e}")
 
-        # 2. Skills directory
+        # 2. Built-in skills directory
         skills_dir = home / "skills"
         if skills_dir.exists():
             try:
@@ -292,50 +314,63 @@ class IngestionPipeline:
         }
         return self.ingest_source(config)
 
-    def _ingest_local_skills(self, skills_dir: Path) -> int:
+    def _ingest_local_skills(self, skills_dir: Path,
+                              source_name: str = "local-skills") -> int:
         """
         Ingest skills from ~/.tooldns/skills/<name>/SKILL.md files.
 
-        Each skill is a subfolder containing a SKILL.md file.
-        The SKILL.md front matter (YAML) is parsed for name and description.
-        The rest of the file is used as the full description for embedding.
+        Each skill can be:
+            - A subfolder with SKILL.md: skills/my-skill/SKILL.md
+            - A flat .md file: skills/my-skill.md
 
-        Expected structure:
-            skills/
-              my-skill/
-                SKILL.md   (with name: and description: in YAML frontmatter)
+        The YAML front matter is parsed for name and description.
 
         Args:
             skills_dir: Path to the skills directory.
+            source_name: Source name for tracking (default: "local-skills").
 
         Returns:
             int: Number of skills ingested as tools.
         """
-        source_name = "local-skills"
         self.db.delete_tools_by_source(source_name)
 
         tools = []
-        for skill_folder in sorted(skills_dir.iterdir()):
-            if not skill_folder.is_dir():
-                continue
 
-            skill_file = skill_folder / "SKILL.md"
-            if not skill_file.exists():
-                continue
+        # Pattern 1: Folder-based skills (my-skill/SKILL.md)
+        for item in sorted(skills_dir.iterdir()):
+            if item.is_dir():
+                skill_file = item / "SKILL.md"
+                if not skill_file.exists():
+                    continue
+                try:
+                    content = skill_file.read_text(encoding="utf-8")
+                    name, description = self._parse_skill_md(content, item.name)
+                    tools.append({
+                        "name": name,
+                        "description": description,
+                        "inputSchema": {},
+                        "_source_server": source_name,
+                        "_source_type": "skill",
+                    })
+                    logger.info(f"  → Skill: {name}")
+                except Exception as e:
+                    logger.warning(f"  ✗ Skill {item.name}: {e}")
 
-            try:
-                content = skill_file.read_text(encoding="utf-8")
-                name, description = self._parse_skill_md(content, skill_folder.name)
-                tools.append({
-                    "name": name,
-                    "description": description,
-                    "inputSchema": {},
-                    "_source_server": "local-skills",
-                    "_source_type": "skill",
-                })
-                logger.info(f"  → Skill: {name}")
-            except Exception as e:
-                logger.warning(f"  ✗ Skill {skill_folder.name}: {e}")
+            # Pattern 2: Flat .md files (my-skill.md)
+            elif item.is_file() and item.suffix == ".md" and item.name != "_index.md":
+                try:
+                    content = item.read_text(encoding="utf-8")
+                    name, description = self._parse_skill_md(content, item.stem)
+                    tools.append({
+                        "name": name,
+                        "description": description,
+                        "inputSchema": {},
+                        "_source_server": source_name,
+                        "_source_type": "skill",
+                    })
+                    logger.info(f"  → Skill: {name}")
+                except Exception as e:
+                    logger.warning(f"  ✗ Skill {item.name}: {e}")
 
         return self._index_tools(tools, source_name, "skill_directory")
 
