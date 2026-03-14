@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -e ".[dev]" 2>/dev/null || pip install -e .
+      - name: Check imports
+        run: |
+          python3 -c "from tooldns.ui import ui_router; print('ui OK')"
+          python3 -c "from tooldns.api import router; print('api OK')"
+          python3 -c "from tooldns.auth import require_api_key, init_auth; print('auth OK')"
+          python3 -c "from tooldns.discover import discover_from_url; print('discover OK')"
+      - name: Test discover module
+        run: |
+          python3 -c "
+          from tooldns.discover import discover_from_url
+          r = discover_from_url('https://smithery.ai/server/@modelcontextprotocol/server-github')
+          assert r.get('detected_type') == 'Smithery MCP Server', r
+          r = discover_from_url('https://www.npmjs.com/package/@modelcontextprotocol/server-filesystem')
+          assert r.get('detected_type') == 'npm MCP Package', r
+          print('All discover tests passed')
+          "
