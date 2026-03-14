@@ -739,6 +739,257 @@ def cmd_status():
     print("   All good! ✅" if tool_count > 0 else "   ⚠️  No tools indexed. Run 'tooldns add'.")
 
 
+def cmd_install_mcp():
+    """
+    Interactive wizard to install a new MCP server into ToolDNS.
+
+    Guides the user through:
+    1. Picking the package type (npx, pip, or custom command)
+    2. Installing the package
+    3. Setting required environment variables
+    4. Adding the server to ~/.tooldns/config.json
+    5. Ingesting its tools
+    """
+    import subprocess as sp
+
+    print("\n📦 Install a New MCP Server\n")
+    print("   This will install the package, save credentials, and index its tools.\n")
+
+    # Step 1: Package type
+    print("   What kind of MCP server?")
+    print("   1) npm / npx  (e.g., @modelcontextprotocol/server-github)")
+    print("   2) pip / Python  (e.g., tooldns)")
+    print("   3) Custom command  (already installed, just configure it)")
+    print()
+    pkg_type = input("   Choice [1-3]: ").strip()
+
+    command = ""
+    args = []
+    server_name = ""
+    transport = "stdio"
+    url = ""
+
+    if pkg_type == "1":
+        pkg = input("   npm package name (e.g., @modelcontextprotocol/server-github): ").strip()
+        if not pkg:
+            print("   ❌ Package name required.")
+            return
+        server_name = input(f"   Short name for this server [{pkg.split('/')[-1]}]: ").strip() or pkg.split("/")[-1]
+        print(f"\n   ⏳ Installing {pkg}...")
+        result = sp.run(["npm", "install", "-g", pkg], capture_output=True, text=True)
+        if result.returncode == 0:
+            print(f"   ✅ Installed {pkg}")
+        else:
+            print(f"   ⚠ npm install failed: {result.stderr[:200]}")
+            print("   Continuing with configuration anyway...")
+        command = "npx"
+        args = ["-y", pkg]
+
+    elif pkg_type == "2":
+        pkg = input("   pip package name (e.g., mcp-server-fetch): ").strip()
+        if not pkg:
+            print("   ❌ Package name required.")
+            return
+        server_name = input(f"   Short name for this server [{pkg.replace('-', '_')}]: ").strip() or pkg.replace("-", "_")
+        print(f"\n   ⏳ Installing {pkg}...")
+        result = sp.run([sys.executable, "-m", "pip", "install", "--break-system-packages", "-q", pkg],
+                       capture_output=True, text=True)
+        if result.returncode != 0:
+            result = sp.run([sys.executable, "-m", "pip", "install", "-q", pkg],
+                           capture_output=True, text=True)
+        if result.returncode == 0:
+            print(f"   ✅ Installed {pkg}")
+        else:
+            print(f"   ⚠ pip install failed: {result.stderr[:200]}")
+            print("   Continuing with configuration anyway...")
+        command = sys.executable
+        args_str = input(f"   Python module or script to run (e.g., -m mcp_server_fetch): ").strip()
+        args = args_str.split() if args_str else ["-m", pkg.replace("-", "_")]
+
+    elif pkg_type == "3":
+        server_name = input("   Short name for this server: ").strip()
+        if not server_name:
+            print("   ❌ Server name required.")
+            return
+        print("   Transport type?")
+        print("   1) stdio (local subprocess)")
+        print("   2) HTTP (remote URL)")
+        t = input("   Choice [1/2]: ").strip()
+        if t == "2":
+            transport = "http"
+            url = input("   Server URL: ").strip()
+        else:
+            command = input("   Command (e.g., python3, node, npx): ").strip()
+            args_str = input("   Arguments (space-separated): ").strip()
+            args = args_str.split() if args_str else []
+    else:
+        print("   ❌ Invalid choice.")
+        return
+
+    if not server_name:
+        print("   ❌ Server name required.")
+        return
+
+    # Step 2: Environment variables
+    print(f"\n   🔑 Environment Variables for '{server_name}'")
+    print("   Enter any API keys or tokens this server needs.")
+    print("   They'll be saved to ~/.tooldns/.env and referenced as ${VAR_NAME}.\n")
+
+    env_vars = {}
+    while True:
+        var_name = input("   Variable name (empty to skip/finish): ").strip().upper()
+        if not var_name:
+            break
+        var_value = input(f"   {var_name}=: ").strip()
+        if var_value:
+            env_vars[var_name] = var_value
+
+    # Save env vars
+    if env_vars:
+        env_path = TOOLDNS_HOME / ".env"
+        existing = {}
+        if env_path.exists():
+            for line in env_path.read_text().splitlines():
+                if "=" in line and not line.startswith("#"):
+                    k, v = line.split("=", 1)
+                    existing[k.strip()] = v.strip()
+        existing.update(env_vars)
+        env_path.write_text("\n".join(f"{k}={v}" for k, v in existing.items()) + "\n")
+        print(f"   ✅ Saved {len(env_vars)} variable(s) to {env_path}")
+
+        # Also export them for the current process so ingestion works immediately
+        import os
+        for k, v in env_vars.items():
+            os.environ[k] = v
+
+    # Step 3: Add to config.json
+    config_file = TOOLDNS_HOME / "config.json"
+    config_data = {}
+    if config_file.exists():
+        try:
+            config_data = json.loads(config_file.read_text())
+        except Exception:
+            pass
+
+    mcp_servers = config_data.setdefault("mcpServers", {})
+
+    if transport == "http":
+        mcp_servers[server_name] = {"type": "streamableHttp", "url": url}
+    else:
+        # Replace actual env var values with ${VAR} references in args
+        safe_args = []
+        for arg in args:
+            for var_name, var_value in env_vars.items():
+                if var_value and var_value in arg:
+                    arg = arg.replace(var_value, f"${{{var_name}}}")
+            safe_args.append(arg)
+        mcp_servers[server_name] = {"command": command, "args": safe_args}
+
+    config_file.write_text(json.dumps(config_data, indent=2))
+    print(f"   ✅ Added '{server_name}' to {config_file}")
+
+    # Step 4: Ingest
+    print(f"\n   ⏳ Indexing tools from '{server_name}'...")
+    try:
+        _, _, _, pipeline = get_components()
+        source_config = {
+            "type": "mcp_config",
+            "name": f"local-{server_name}",
+            "path": str(config_file),
+            "config_key": "mcpServers",
+        }
+        count = pipeline.ingest_source(source_config)
+        print(f"   ✅ Indexed {count} tools from '{server_name}'")
+    except Exception as e:
+        print(f"   ⚠ Ingestion failed: {e}")
+        print("   Run './tooldns.sh ingest' after verifying the server works.")
+
+    print(f"\n🎉 '{server_name}' is ready! Your agent can now search and use its tools via ToolDNS.")
+
+
+def cmd_new_skill():
+    """
+    Create a new skill file in the ToolDNS skills directory.
+
+    Skills are markdown files that teach the LLM how to call an API
+    or perform a multi-step task. They live in ~/.tooldns/skills/ or
+    any path listed under skillPaths in config.json.
+    """
+    print("\n✏️  Create a New Skill\n")
+
+    # Determine where to save
+    config_file = TOOLDNS_HOME / "config.json"
+    skill_dirs = [TOOLDNS_HOME / "skills"]
+
+    if config_file.exists():
+        try:
+            cfg = json.loads(config_file.read_text())
+            for sp_str in cfg.get("skillPaths", []):
+                p = Path(os.path.expanduser(sp_str))
+                if p.exists() and p not in skill_dirs:
+                    skill_dirs.append(p)
+        except Exception:
+            pass
+
+    if len(skill_dirs) > 1:
+        print("   Where should this skill be saved?")
+        for i, d in enumerate(skill_dirs, 1):
+            print(f"   {i}) {d}")
+        choice = input(f"   Choice [1-{len(skill_dirs)}]: ").strip()
+        try:
+            skill_dir = skill_dirs[int(choice) - 1]
+        except (ValueError, IndexError):
+            skill_dir = skill_dirs[0]
+    else:
+        skill_dir = skill_dirs[0]
+
+    skill_dir.mkdir(parents=True, exist_ok=True)
+
+    # Skill details
+    name = input("\n   Skill name (e.g., github, send-report): ").strip()
+    if not name:
+        print("   ❌ Name required.")
+        return
+    description = input("   One-line description: ").strip() or f"Skill: {name}"
+
+    # Write template
+    skill_folder = skill_dir / name
+    skill_folder.mkdir(exist_ok=True)
+    skill_file = skill_folder / "SKILL.md"
+
+    template = f"""---
+name: {name}
+description: {description}
+---
+
+# {name.title()}
+
+{description}
+
+## How to use
+
+WHEN: Describe when the agent should use this skill
+TEMPLATE:
+  EXTRACT:
+    param1: Description of param1
+    param2: Description of param2
+  EXAMPLE:
+    param1: example value
+    param2: example value
+
+## Instructions
+
+Write step-by-step instructions here for what the LLM should do.
+Include any API endpoints, request formats, or external calls needed.
+"""
+
+    skill_file.write_text(template)
+    print(f"\n   ✅ Created: {skill_file}")
+    print(f"\n   Edit the file to add your skill instructions:")
+    print(f"   nano {skill_file}")
+    print(f"\n   Then run './tooldns.sh ingest' to index it.")
+
+
 def cmd_ingest():
     """Re-ingest all registered sources."""
     _, _, _, pipeline = get_components()
@@ -797,17 +1048,19 @@ def main():
         print_banner()
         print("Usage: python3 -m tooldns.cli <command>\n")
         print("Commands:")
-        print("  install    Create ~/.tooldns, install deps, run setup")
-        print("  update     Pull latest code and sync dependencies")
-        print("  setup      Interactive config + auto-detect sources")
-        print("  integrate  Wire ToolDNS into nanobot/openclaw agents")
-        print("  add        Add a tool source interactively")
-        print("  sources    List registered sources")
-        print("  tools      List indexed tools [--source NAME]")
-        print("  search     Search for a tool")
-        print("  status     Show system status and health")
-        print("  ingest     Re-ingest all sources")
-        print("  serve      Start the API server")
+        print("  install      Create ~/.tooldns, install deps, run setup")
+        print("  update       Pull latest code and sync dependencies")
+        print("  setup        Interactive config + auto-detect sources")
+        print("  integrate    Wire ToolDNS into nanobot/openclaw agents")
+        print("  install-mcp  Install a new MCP server + set env vars")
+        print("  new-skill    Create a new skill file template")
+        print("  add          Add a tool source interactively")
+        print("  sources      List registered sources")
+        print("  tools        List indexed tools [--source NAME]")
+        print("  search       Search for a tool")
+        print("  status       Show system status and health")
+        print("  ingest       Re-ingest all sources")
+        print("  serve        Start the API server")
         return
 
     cmd = sys.argv[1]
@@ -822,6 +1075,10 @@ def main():
         from tooldns.integrate import run_integrate
         print_banner()
         run_integrate()
+    elif cmd == "install-mcp":
+        cmd_install_mcp()
+    elif cmd == "new-skill":
+        cmd_new_skill()
     elif cmd == "add":
         cmd_add()
     elif cmd == "sources":

@@ -28,6 +28,7 @@ Usage:
 
 import json
 import time
+import numpy as np
 from tooldns.config import logger
 from tooldns.database import ToolDatabase
 from tooldns.embedder import Embedder
@@ -173,7 +174,7 @@ class SearchEngine:
 
     def _cosine_similarity(self, vec_a: list[float], vec_b: list[float]) -> float:
         """
-        Compute cosine similarity between two vectors.
+        Compute cosine similarity between two vectors using numpy.
 
         Since our embeddings are already L2-normalized (from sentence-transformers
         with normalize_embeddings=True), cosine similarity equals the dot product.
@@ -187,7 +188,7 @@ class SearchEngine:
         """
         if len(vec_a) != len(vec_b):
             return 0.0
-        return sum(a * b for a, b in zip(vec_a, vec_b))
+        return float(np.dot(vec_a, vec_b))
 
     def _build_call_instructions(self, source_info: dict) -> dict:
         """

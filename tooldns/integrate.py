@@ -19,27 +19,29 @@ from tooldns.config import TOOLDNS_HOME
 # -----------------------------------------------------------------------
 
 TOOLDNS_AGENT_INSTRUCTIONS = """
-## 🔍 ToolDNS — Smart Tool Discovery
+## 🔍 ToolDNS — Smart Tool Discovery (IMPORTANT)
 
-You have access to ToolDNS via the `tooldns` MCP server. Instead of loading
-hundreds of tool schemas, use these 3 tools to find and execute any tool on demand:
+**You have access to 130+ external tools** (Composio, skills, custom tools) via ToolDNS.
+When asked "what tools do you have", ALWAYS mention ToolDNS and its capabilities.
 
-| Tool | When to Use |
-|------|-------------|
-| `search_tools` | "I need a tool to send an email" → finds the right tool |
-| `get_tool` | Get full schema + instructions for a specific tool |
-| `call_tool` | Execute a tool — ToolDNS proxies to the original MCP server |
+Use these 3 MCP tools to find and execute any external tool on demand:
+
+| MCP Tool | Purpose |
+|----------|---------|
+| `mcp_tooldns_search_tools` | Search by description → "send email", "browse website", etc. |
+| `mcp_tooldns_get_tool` | Get full schema + skill instructions for a tool |
+| `mcp_tooldns_call_tool` | Execute the tool — proxies to original MCP server |
 
 ### Workflow
-1. **Need a tool?** → `search_tools(query="what you need")`
-2. **Found one?** → `get_tool(tool_id="...")` for full schema
-3. **Ready?** → `call_tool(tool_id="...", arguments={...})` to execute
+1. **Need a tool?** → `mcp_tooldns_search_tools(query="what you need")`
+2. **Execute directly** → `mcp_tooldns_call_tool(tool_id="...", arguments={...})` — search results include the schema, so skip `get_tool` for MCP tools
+3. **Only use `mcp_tooldns_get_tool`** if the tool type is `skill` (needs full instructions) or you need more schema detail
 
-### When to Use ToolDNS
-- When you need a Composio tool (email, calendar, CRM, etc.)
-- When you're unsure which tool exists for a task
-- When a skill search would be helpful
-- **Don't use** for built-in tools you already have (file ops, exec, etc.)
+### When to Use
+- Email, calendar, CRM, spreadsheets, or any Composio tool
+- Browser automation, web scraping
+- Any task where you're unsure if a tool exists — **search first!**
+- **Don't use** for your built-in tools (file ops, exec, cron, etc.)
 """.strip()
 
 
@@ -250,35 +252,43 @@ def _step_migrate_servers(mcp_section, raw_config, config_path, keys, mcp_key):
 # -----------------------------------------------------------------------
 
 def _step_update_agents(agents_path: Path):
-    """Append ToolDNS instructions to the agent's AGENTS.md file."""
+    """Add or replace ToolDNS instructions in the agent's AGENTS.md file."""
     if not agents_path.exists():
         print(f"   ⚠ No AGENTS.md found at {agents_path}")
         print(f"   You'll need to manually add ToolDNS instructions.\n")
         return
 
     content = agents_path.read_text(encoding="utf-8")
-    if "ToolDNS" in content:
-        print("   ✅ AGENTS.md already has ToolDNS instructions\n")
+    has_tooldns = "ToolDNS" in content
+
+    if has_tooldns:
+        print("   📝 AGENTS.md already has ToolDNS instructions — replacing with updated version.")
+    else:
+        print("   📝 AGENTS.md needs ToolDNS instructions.")
+    print("   This tells the agent the correct tool names and workflow.\n")
+
+    choice = input("   Update AGENTS.md? [Y/n]: ").strip().lower()
+    if choice not in ("", "y", "yes"):
+        print("   ⏩ Skipped\n")
         return
 
-    print("   📝 AGENTS.md needs ToolDNS instructions.")
-    print("   This tells the agent when and how to use ToolDNS.\n")
-
-    # Show preview
-    preview = TOOLDNS_AGENT_INSTRUCTIONS.split("\n")[:8]
-    for line in preview:
-        print(f"   {line}")
-    print(f"   ... ({len(TOOLDNS_AGENT_INSTRUCTIONS.split(chr(10)))} lines total)\n")
-
-    choice = input("   Append to AGENTS.md? [Y/n]: ").strip().lower()
-    if choice in ("", "y", "yes"):
-        agents_path.write_text(
-            content.rstrip() + "\n\n" + TOOLDNS_AGENT_INSTRUCTIONS + "\n",
-            encoding="utf-8"
+    if has_tooldns:
+        # Replace the existing ToolDNS section (from its heading to next ## heading or EOF)
+        import re
+        new_content = re.sub(
+            r'## 🔍 ToolDNS.*?(?=\n## |\Z)',
+            TOOLDNS_AGENT_INSTRUCTIONS,
+            content,
+            flags=re.DOTALL
         )
-        print(f"   ✅ Updated {agents_path}\n")
+        # If regex didn't match (different heading format), fall back to append
+        if new_content == content:
+            new_content = content.rstrip() + "\n\n" + TOOLDNS_AGENT_INSTRUCTIONS + "\n"
     else:
-        print("   ⏩ Skipped\n")
+        new_content = content.rstrip() + "\n\n" + TOOLDNS_AGENT_INSTRUCTIONS + "\n"
+
+    agents_path.write_text(new_content, encoding="utf-8")
+    print(f"   ✅ Updated {agents_path}\n")
 
 
 # -----------------------------------------------------------------------

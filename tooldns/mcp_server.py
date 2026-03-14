@@ -100,6 +100,77 @@ TOOLS = [
             },
             "required": ["tool_id"]
         }
+    },
+    {
+        "name": "register_mcp_server",
+        "description": (
+            "Register a new MCP server into ToolDNS. "
+            "Saves credentials to ~/.tooldns/.env, adds the server to "
+            "~/.tooldns/config.json, and indexes its tools immediately. "
+            "Use this when the user wants to add a new tool server."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Short identifier for the server (e.g. 'github', 'slack')"
+                },
+                "command": {
+                    "type": "string",
+                    "description": "Executable for stdio servers (e.g. 'npx', 'python3')"
+                },
+                "args": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Arguments for stdio servers (e.g. ['-y', '@mcp/github'])"
+                },
+                "url": {
+                    "type": "string",
+                    "description": "URL for HTTP/SSE MCP servers"
+                },
+                "headers": {
+                    "type": "object",
+                    "description": "HTTP headers for HTTP servers (e.g. auth tokens)"
+                },
+                "env_vars": {
+                    "type": "object",
+                    "description": "Environment variables to save (e.g. {'GITHUB_TOKEN': 'ghp_...'})"
+                }
+            },
+            "required": ["name"]
+        }
+    },
+    {
+        "name": "create_skill",
+        "description": (
+            "Create a new skill file in the ToolDNS skills directory. "
+            "A skill is a markdown file that teaches the agent how to call "
+            "an API or perform a multi-step task. The skill is indexed "
+            "immediately after creation so it can be found via search_tools."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Skill name, used as the folder name (e.g. 'send-report')"
+                },
+                "description": {
+                    "type": "string",
+                    "description": "One-line description of what the skill does"
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Full markdown content of the SKILL.md file"
+                },
+                "skill_path": {
+                    "type": "string",
+                    "description": "Optional: path to a specific skill directory (defaults to ~/.tooldns/skills/)"
+                }
+            },
+            "required": ["name", "description", "content"]
+        }
     }
 ]
 
@@ -151,16 +222,28 @@ def handle_search_tools(args: dict) -> list[dict]:
     if not results:
         return [{"type": "text", "text": f"No tools found for: {query}"}]
 
-    lines = [f"Found {len(results)} tool(s) for \"{query}\":\n"]
+    total = result.get("total_tools_indexed", 0)
+    tokens_saved = result.get("tokens_saved", 0)
+    search_ms = result.get("search_time_ms", 0)
+
+    lines = [
+        f"Found {len(results)} tool(s) for \"{query}\" "
+        f"(searched {total} tools in {search_ms:.0f}ms, ~{tokens_saved} tokens saved):\n"
+    ]
     for r in results:
-        lines.append(f"• **{r['name']}** (ID: `{r['id']}`, {r['confidence']:.0%})")
-        lines.append(f"  {r['description'][:120]}")
+        schema = r.get("input_schema", {})
         how = r.get("how_to_call", {})
-        if how.get("instruction"):
-            lines.append(f"  → {how['instruction']}")
+        source_type = how.get("type", "")
+        lines.append(f"• **{r['name']}** (ID: `{r['id']}`, confidence: {r['confidence']:.0%})")
+        lines.append(f"  {r['description'][:120]}")
+        if schema:
+            lines.append(f"  Schema: {json.dumps(schema)[:200]}")
         lines.append("")
 
-    lines.append("Use `get_tool` for full schema or `call_tool` to execute.")
+    if all(r.get("how_to_call", {}).get("type") == "mcp" for r in results):
+        lines.append("These are MCP tools — call them directly with `call_tool(tool_id, arguments)`. Skip `get_tool` unless you need full schema details.")
+    else:
+        lines.append("Use `get_tool` for skills (need full instructions), or `call_tool` to execute directly.")
     return [{"type": "text", "text": "\n".join(lines)}]
 
 
@@ -221,10 +304,75 @@ def handle_call_tool(args: dict) -> list[dict]:
     return [{"type": "text", "text": json.dumps(result, indent=2)}]
 
 
+def handle_register_mcp_server(args: dict) -> list[dict]:
+    """Handle register_mcp_server calls."""
+    name = args.get("name", "")
+    if not name:
+        return [{"type": "text", "text": "Error: name is required"}]
+    if not args.get("command") and not args.get("url"):
+        return [{"type": "text", "text": "Error: either command or url is required"}]
+
+    body = {
+        "name": name,
+        "command": args.get("command"),
+        "args": args.get("args", []),
+        "url": args.get("url"),
+        "headers": args.get("headers"),
+        "env_vars": args.get("env_vars"),
+        "ingest": True,
+    }
+    result = _api_request("POST", "/v1/register-mcp", body)
+
+    if "error" in result:
+        return [{"type": "text", "text": f"Registration error: {result['error']}"}]
+
+    lines = [f"✅ MCP server '{result['name']}' registered ({result['transport']})"]
+    if result.get("env_vars_saved"):
+        lines.append(f"  Credentials saved: {', '.join(result['env_vars_saved'])}")
+    lines.append(f"  Tools indexed: {result['tools_indexed']}")
+    if result.get("ingest_error"):
+        lines.append(f"  ⚠ Indexing warning: {result['ingest_error']}")
+    lines.append(f"  Config: {result['config_file']}")
+
+    return [{"type": "text", "text": "\n".join(lines)}]
+
+
+def handle_create_skill(args: dict) -> list[dict]:
+    """Handle create_skill calls."""
+    name = args.get("name", "")
+    description = args.get("description", "")
+    content = args.get("content", "")
+
+    if not name or not content:
+        return [{"type": "text", "text": "Error: name and content are required"}]
+
+    body = {
+        "name": name,
+        "description": description,
+        "content": content,
+        "skill_path": args.get("skill_path"),
+        "ingest": True,
+    }
+    result = _api_request("POST", "/v1/skills", body)
+
+    if "error" in result:
+        return [{"type": "text", "text": f"Skill creation error: {result['error']}"}]
+
+    lines = [
+        f"✅ Skill '{result['name']}' created",
+        f"  File: {result['file']}",
+        f"  Tools indexed: {result['tools_indexed']}",
+        f"  It can now be found via search_tools(query=\"{description}\")",
+    ]
+    return [{"type": "text", "text": "\n".join(lines)}]
+
+
 HANDLERS = {
     "search_tools": handle_search_tools,
     "get_tool": handle_get_tool,
     "call_tool": handle_call_tool,
+    "register_mcp_server": handle_register_mcp_server,
+    "create_skill": handle_create_skill,
 }
 
 

@@ -17,7 +17,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from tooldns.auth import require_api_key
 from tooldns.models import (
     SearchRequest, SearchResponse,
-    SourceRequest, SourceResponse, SourceType
+    SourceRequest, SourceResponse, SourceType,
+    RegisterMCPRequest, CreateSkillRequest
 )
 
 router = APIRouter(prefix="/v1", dependencies=[Depends(require_api_key)])
@@ -197,8 +198,7 @@ async def get_tool(tool_id: str):
     import json as json_mod
 
     # Find the tool in the database
-    tools = _database.get_all_tools()
-    tool = next((t for t in tools if t["id"] == tool_id), None)
+    tool = _database.get_tool_by_id(tool_id)
 
     if not tool:
         raise HTTPException(status_code=404, detail=f"Tool not found: {tool_id}")
@@ -332,8 +332,7 @@ async def call_tool(req: dict):
         raise HTTPException(status_code=400, detail="tool_id is required")
 
     # Find the tool
-    tools = _database.get_all_tools()
-    tool = next((t for t in tools if t["id"] == tool_id), None)
+    tool = _database.get_tool_by_id(tool_id)
 
     if not tool:
         raise HTTPException(status_code=404, detail=f"Tool not found: {tool_id}")
@@ -370,10 +369,10 @@ async def call_tool(req: dict):
 
 def _proxy_mcp_call(tool: dict, arguments: dict) -> dict:
     """
-    Forward a tool call to the original MCP server via HTTP.
+    Forward a tool call to the original MCP server.
 
-    Sends a tools/call JSON-RPC request to the MCP server
-    that originally provided this tool.
+    Supports both stdio and HTTP transports. Uses transport info
+    stored in source_info during ingestion to route the call correctly.
 
     Args:
         tool: The full tool record from the database.
@@ -382,60 +381,123 @@ def _proxy_mcp_call(tool: dict, arguments: dict) -> dict:
     Returns:
         dict: The MCP server's response.
     """
-    import httpx
-    import os
+    from tooldns.fetcher import MCPFetcher
 
     source_info = tool.get("source_info", {})
-    server = source_info.get("server", "")
     original_name = source_info.get("original_name", tool["name"])
+    source_type = source_info.get("source_type", "")
 
-    # Look up the server config from registered sources
-    sources = _database.get_all_sources()
-    server_url = None
-    server_headers = {}
+    fetcher = MCPFetcher()
 
-    for src in sources:
-        config = src.get("config", {})
-        # The source config might contain the original server URL
-        if "path" in config:
-            # MCP config file — need to read it to find the server
-            from pathlib import Path
-            import json as json_mod
+    # --- stdio execution (spawn process on demand) ---
+    if source_type == "stdio" or source_info.get("command"):
+        command = source_info.get("command")
+        args = source_info.get("args", [])
 
-            config_path = Path(os.path.expanduser(config.get("path", "")))
-            if config_path.exists():
-                raw = json_mod.loads(config_path.read_text())
-                config_key = config.get("config_key", "tools.mcpServers")
-                mcp_section = raw
-                for key in config_key.split("."):
-                    mcp_section = mcp_section.get(key, {})
+        if not command:
+            # Fall back: look it up from the registered source config
+            command, args = _lookup_stdio_config(source_info, _database)
 
-                if server in mcp_section:
-                    srv = mcp_section[server]
-                    server_url = srv.get("url", "")
-                    server_headers = srv.get("headers", {})
-                    # Resolve env vars
-                    server_url = _resolve_env(server_url)
-                    server_headers = {
-                        k: _resolve_env(v)
-                        for k, v in server_headers.items()
-                    }
-                    break
+        if not command:
+            raise RuntimeError(
+                f"Cannot execute stdio tool '{original_name}': "
+                f"command not found in source_info. Re-ingest the source to fix this."
+            )
+
+        return fetcher.call_stdio(command, args, original_name, arguments)
+
+    # --- HTTP execution ---
+    server_url = source_info.get("url", "")
+    server_headers = source_info.get("headers", {})
+
+    if not server_url:
+        # Fall back: look it up from the registered source config
+        server_url, server_headers = _lookup_http_config(source_info, _database)
 
     if not server_url:
         raise RuntimeError(
-            f"Cannot find server URL for '{server}'. "
-            f"The tool's MCP server may not be HTTP-based."
+            f"Cannot execute tool '{original_name}': no URL or command found. "
+            f"Source type '{source_type}' — re-ingest the source to fix this."
         )
 
-    # Send tools/call request
+    return _http_tool_call(server_url, server_headers, original_name, arguments)
+
+
+def _lookup_stdio_config(source_info: dict, database) -> tuple:
+    """Look up command+args from registered source configs for a stdio tool."""
+    import os
+    from pathlib import Path
+
+    server = source_info.get("server", "")
+    sources = database.get_all_sources()
+
+    for src in sources:
+        config = src.get("config", {})
+        if "path" in config:
+            config_path = Path(os.path.expanduser(config.get("path", "")))
+            if not config_path.exists():
+                continue
+            try:
+                import json as json_mod
+                raw = json_mod.loads(config_path.read_text())
+                config_key = config.get("config_key", "tools.mcpServers")
+                section = raw
+                for key in config_key.split("."):
+                    section = section.get(key, {})
+                if server in section:
+                    srv = section[server]
+                    if srv.get("command"):
+                        return srv["command"], srv.get("args", [])
+            except Exception:
+                continue
+
+    return None, []
+
+
+def _lookup_http_config(source_info: dict, database) -> tuple:
+    """Look up URL+headers from registered source configs for an HTTP tool."""
+    import os
+    from pathlib import Path
+
+    server = source_info.get("server", "")
+    sources = database.get_all_sources()
+
+    for src in sources:
+        config = src.get("config", {})
+        if "path" in config:
+            config_path = Path(os.path.expanduser(config.get("path", "")))
+            if not config_path.exists():
+                continue
+            try:
+                import json as json_mod
+                raw = json_mod.loads(config_path.read_text())
+                config_key = config.get("config_key", "tools.mcpServers")
+                section = raw
+                for key in config_key.split("."):
+                    section = section.get(key, {})
+                if server in section:
+                    srv = section[server]
+                    url = _resolve_env(srv.get("url", ""))
+                    headers = {k: _resolve_env(v) for k, v in srv.get("headers", {}).items()}
+                    if url:
+                        return url, headers
+            except Exception:
+                continue
+
+    return None, {}
+
+
+def _http_tool_call(server_url: str, server_headers: dict,
+                    tool_name: str, arguments: dict) -> dict:
+    """Send a tools/call request to an HTTP MCP server."""
+    import httpx
+
     h = {
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
         **server_headers
     }
 
-    # Get session first
     init_resp = httpx.post(
         server_url, headers=h,
         json={
@@ -453,26 +515,23 @@ def _proxy_mcp_call(tool: dict, arguments: dict) -> dict:
     if session_id:
         h["mcp-session-id"] = session_id
 
-    # Send initialized notification
     httpx.post(
         server_url, headers=h,
         json={"jsonrpc": "2.0", "method": "notifications/initialized"},
         timeout=10
     )
 
-    # Call the tool
     resp = httpx.post(
         server_url, headers=h,
         json={
             "jsonrpc": "2.0", "id": 2,
             "method": "tools/call",
-            "params": {"name": original_name, "arguments": arguments}
+            "params": {"name": tool_name, "arguments": arguments}
         },
         timeout=60
     )
     resp.raise_for_status()
 
-    # Parse response (could be JSON or SSE)
     content_type = resp.headers.get("content-type", "")
     if "text/event-stream" in content_type:
         import json as json_mod
@@ -501,6 +560,193 @@ def _resolve_env(val):
             return os.environ.get(m.group(1), "")
         return re.sub(r'\$\{(\w+)\}', replacer, val)
     return val
+
+
+# -----------------------------------------------------------------------
+# Agent-facing: Register MCP server
+# -----------------------------------------------------------------------
+
+@router.post("/register-mcp")
+async def register_mcp(req: RegisterMCPRequest):
+    """
+    Register a new MCP server into ToolDNS — callable by AI agents.
+
+    Saves env vars, updates ~/.tooldns/config.json, and optionally
+    ingests the server's tools immediately. No interactive prompts.
+
+    Example (stdio):
+        POST /v1/register-mcp
+        {
+            "name": "github",
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-github"],
+            "env_vars": {"GITHUB_TOKEN": "ghp_xxxx"},
+            "ingest": true
+        }
+
+    Example (HTTP):
+        POST /v1/register-mcp
+        {
+            "name": "composio",
+            "url": "https://mcp.composio.dev/...",
+            "headers": {"x-api-key": "..."},
+            "ingest": true
+        }
+    """
+    import os
+    import json as json_mod
+    from pathlib import Path
+    from tooldns.config import TOOLDNS_HOME
+
+    if not req.name:
+        raise HTTPException(status_code=400, detail="name is required")
+    if not req.command and not req.url:
+        raise HTTPException(status_code=400, detail="either command or url is required")
+
+    # 1. Save env vars to ~/.tooldns/.env
+    saved_vars = []
+    if req.env_vars:
+        env_path = TOOLDNS_HOME / ".env"
+        existing = {}
+        if env_path.exists():
+            for line in env_path.read_text().splitlines():
+                if "=" in line and not line.startswith("#"):
+                    k, v = line.split("=", 1)
+                    existing[k.strip()] = v.strip()
+        existing.update(req.env_vars)
+        env_path.write_text(
+            "\n".join(f"{k}={v}" for k, v in existing.items()) + "\n"
+        )
+        # Export for this process so ingestion works immediately
+        for k, v in req.env_vars.items():
+            os.environ[k] = v
+        saved_vars = list(req.env_vars.keys())
+
+    # 2. Add server to ~/.tooldns/config.json
+    config_file = TOOLDNS_HOME / "config.json"
+    config_data = {}
+    if config_file.exists():
+        try:
+            config_data = json_mod.loads(config_file.read_text())
+        except Exception:
+            pass
+
+    mcp_servers = config_data.setdefault("mcpServers", {})
+
+    if req.url:
+        entry = {"type": "streamableHttp", "url": req.url}
+        if req.headers:
+            entry["headers"] = req.headers
+    else:
+        # Replace literal env var values in args with ${VAR} references
+        safe_args = list(req.args or [])
+        if req.env_vars:
+            for i, arg in enumerate(safe_args):
+                for var_name, var_value in req.env_vars.items():
+                    if var_value and var_value in arg:
+                        safe_args[i] = arg.replace(var_value, f"${{{var_name}}}")
+        entry = {"command": req.command, "args": safe_args}
+
+    mcp_servers[req.name] = entry
+    config_file.write_text(json_mod.dumps(config_data, indent=2))
+
+    # 3. Ingest tools
+    tools_count = 0
+    ingest_error = None
+    if req.ingest:
+        try:
+            source_config = {
+                "type": SourceType.MCP_CONFIG,
+                "name": f"agent-{req.name}",
+                "path": str(config_file),
+                "config_key": "mcpServers",
+                "skip_servers": [s for s in mcp_servers if s != req.name],
+            }
+            tools_count = _ingestion_pipeline.ingest_source(source_config)
+        except Exception as e:
+            ingest_error = str(e)
+
+    return {
+        "status": "registered",
+        "name": req.name,
+        "transport": "http" if req.url else "stdio",
+        "env_vars_saved": saved_vars,
+        "config_file": str(config_file),
+        "tools_indexed": tools_count,
+        "ingest_error": ingest_error,
+    }
+
+
+# -----------------------------------------------------------------------
+# Agent-facing: Create skill
+# -----------------------------------------------------------------------
+
+@router.post("/skills")
+async def create_skill(req: CreateSkillRequest):
+    """
+    Create a new skill file — callable by AI agents.
+
+    Writes a SKILL.md file to the ToolDNS skills directory (or a
+    specified path) and re-indexes skills immediately. Agents can
+    compose the markdown content themselves and POST it here.
+
+    Example:
+        POST /v1/skills
+        {
+            "name": "send-report",
+            "description": "Sends a weekly report via email",
+            "content": "---\\nname: send-report\\n...\\n",
+            "ingest": true
+        }
+    """
+    import os
+    from pathlib import Path
+    from tooldns.config import TOOLDNS_HOME
+
+    if not req.name:
+        raise HTTPException(status_code=400, detail="name is required")
+    if not req.content:
+        raise HTTPException(status_code=400, detail="content is required")
+
+    # Determine target directory
+    if req.skill_path:
+        skill_dir = Path(os.path.expanduser(req.skill_path))
+    else:
+        skill_dir = TOOLDNS_HOME / "skills"
+
+    skill_dir.mkdir(parents=True, exist_ok=True)
+
+    # Write skill file (support both folder/SKILL.md and flat .md)
+    skill_folder = skill_dir / req.name
+    skill_folder.mkdir(exist_ok=True)
+    skill_file = skill_folder / "SKILL.md"
+
+    # Ensure frontmatter has name + description
+    content = req.content
+    if not content.startswith("---"):
+        content = f"---\nname: {req.name}\ndescription: {req.description}\n---\n\n{content}"
+
+    skill_file.write_text(content, encoding="utf-8")
+
+    # Re-ingest skills
+    tools_count = 0
+    if req.ingest:
+        try:
+            source_config = {
+                "type": SourceType.SKILL_DIRECTORY,
+                "name": f"skills-{req.name}",
+                "path": str(skill_dir),
+            }
+            tools_count = _ingestion_pipeline.ingest_source(source_config)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Skill written but indexing failed: {e}")
+
+    return {
+        "status": "created",
+        "name": req.name,
+        "file": str(skill_file),
+        "tools_indexed": tools_count,
+    }
 
 
 # -----------------------------------------------------------------------

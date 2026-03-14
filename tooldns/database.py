@@ -72,6 +72,7 @@ class ToolDatabase:
             sources: Tracks registered tool sources and their refresh status.
         """
         conn = self._get_conn()
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS tools (
                 id TEXT PRIMARY KEY,
@@ -183,6 +184,39 @@ class ToolDatabase:
                 "indexed_at": row["indexed_at"]
             })
         return results
+
+    def get_tool_by_id(self, tool_id: str) -> Optional[dict]:
+        """
+        Get a single tool by its ID directly.
+
+        Uses a direct SQL lookup instead of fetching all tools,
+        making it O(1) instead of O(n).
+
+        Args:
+            tool_id: The tool's unique identifier.
+
+        Returns:
+            dict or None: The tool data (without embedding), or None if not found.
+        """
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT id, name, description, input_schema, source_info, "
+            "tags, indexed_at FROM tools WHERE id = ?",
+            [tool_id]
+        ).fetchone()
+        conn.close()
+
+        if not row:
+            return None
+        return {
+            "id": row["id"],
+            "name": row["name"],
+            "description": row["description"],
+            "input_schema": json.loads(row["input_schema"]),
+            "source_info": json.loads(row["source_info"]),
+            "tags": json.loads(row["tags"]),
+            "indexed_at": row["indexed_at"]
+        }
 
     def get_all_tools(self) -> list[dict]:
         """

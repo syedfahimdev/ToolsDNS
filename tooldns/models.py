@@ -208,6 +208,54 @@ class SourceRequest(BaseModel):
     tool_schema: Optional[dict] = None
 
 
+class RegisterMCPRequest(BaseModel):
+    """
+    Request body for POST /v1/register-mcp — agents add a new MCP server.
+
+    AI agents call this to register an MCP server into ToolDNS without
+    any interactive prompts. The server is added to ~/.tooldns/config.json,
+    env vars are written to ~/.tooldns/.env, and tools are indexed immediately.
+
+    Attributes:
+        name: Short identifier for this server (e.g., "github", "slack").
+        command: Executable for stdio servers (e.g., "npx", "python3").
+        args: Arguments for stdio servers (e.g., ["-y", "@mcp/github"]).
+        url: URL for HTTP/SSE servers.
+        headers: HTTP headers for HTTP servers (e.g., auth tokens).
+        env_vars: Environment variables to save (e.g., {"GITHUB_TOKEN": "ghp_..."}).
+        ingest: Whether to index the server's tools immediately (default: true).
+    """
+    name: str
+    command: Optional[str] = None
+    args: Optional[list[str]] = None
+    url: Optional[str] = None
+    headers: Optional[dict[str, str]] = None
+    env_vars: Optional[dict[str, str]] = None
+    ingest: bool = True
+
+
+class CreateSkillRequest(BaseModel):
+    """
+    Request body for POST /v1/skills — agents create a new skill file.
+
+    AI agents call this to write a skill markdown file into the ToolDNS
+    skills directory. The skill is indexed immediately after creation.
+
+    Attributes:
+        name: Skill name, used as the folder name (e.g., "send-report").
+        description: One-line description of what the skill does.
+        content: Full markdown content of the SKILL.md file.
+        skill_path: Optional path to a specific skill directory. Defaults
+                    to ~/.tooldns/skills/.
+        ingest: Whether to re-index skills immediately (default: true).
+    """
+    name: str
+    description: str
+    content: str
+    skill_path: Optional[str] = None
+    ingest: bool = True
+
+
 class SourceResponse(BaseModel):
     """
     Response body for source-related endpoints.

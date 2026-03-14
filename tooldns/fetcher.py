@@ -260,6 +260,91 @@ class MCPFetcher:
 
         raise TimeoutError(f"No response from MCP server within {timeout}s")
 
+    def call_stdio(self, command: str, args: list[str],
+                   tool_name: str, arguments: dict,
+                   timeout: int = 60, env: Optional[dict] = None) -> dict:
+        """
+        Execute a tool on a stdio-based MCP server.
+
+        Spawns the server, performs the MCP handshake, sends a tools/call
+        request, and returns the result. The process is terminated after
+        the call completes.
+
+        Args:
+            command: The command to run (e.g., "python3", "node", "npx").
+            args: Command arguments.
+            tool_name: The name of the tool to call.
+            arguments: The arguments to pass to the tool.
+            timeout: Max seconds to wait per response (default: 60).
+            env: Optional extra environment variables.
+
+        Returns:
+            dict: The tool's result from the MCP server.
+
+        Raises:
+            RuntimeError: If the server errors or can't be started.
+        """
+        import os
+        proc_env = {**os.environ, **(env or {})}
+
+        logger.info(f"Calling stdio MCP tool: {tool_name} via {command} {' '.join(args)}")
+
+        try:
+            proc = subprocess.Popen(
+                [command] + args,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=proc_env
+            )
+        except FileNotFoundError:
+            raise RuntimeError(
+                f"Command not found: {command}. "
+                f"Make sure the MCP server is installed."
+            )
+
+        try:
+            # Handshake
+            self._stdio_send(proc, self._make_init_request(req_id=1))
+            init_resp = self._stdio_recv(proc, timeout)
+            if "error" in init_resp:
+                raise RuntimeError(f"MCP initialize failed: {init_resp['error']}")
+
+            self._stdio_send(proc, self._make_initialized_notification())
+            time.sleep(0.1)
+
+            # Call the tool
+            call_req = {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": tool_name, "arguments": arguments}
+            }
+            self._stdio_send(proc, call_req)
+            result_resp = self._stdio_recv(proc, timeout)
+
+            if "error" in result_resp:
+                raise RuntimeError(f"tools/call failed: {result_resp['error']}")
+
+            return result_resp.get("result", {})
+
+        except Exception as e:
+            stderr_output = ""
+            try:
+                stderr_output = proc.stderr.read().decode("utf-8", errors="replace")[:500]
+            except Exception:
+                pass
+            if stderr_output:
+                logger.debug(f"Server stderr: {stderr_output}")
+            raise RuntimeError(f"stdio tool call failed: {e}")
+
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
     # -------------------------------------------------------------------
     # HTTP transport — for remote MCP servers (Streamable HTTP)
     # -------------------------------------------------------------------

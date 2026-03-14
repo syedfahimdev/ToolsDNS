@@ -559,24 +559,27 @@ class IngestionPipeline:
                     url = self._resolve_env_vars(server_config.get("url", ""))
                     headers = self._resolve_env_vars(server_config.get("headers"))
                     tools = self.fetcher.fetch_http(url=url, headers=headers)
+                    for tool in tools:
+                        tool["_source_server"] = server_name
+                        tool["_source_type"] = server_type
+                        tool["_url"] = url
+                        tool["_headers"] = headers or {}
                 elif server_config.get("command"):
                     # stdio server — resolve env vars in args too
+                    command = server_config.get("command", "python3")
                     args = self._resolve_env_vars(server_config.get("args", []))
-                    tools = self.fetcher.fetch_stdio(
-                        command=server_config.get("command", "python3"),
-                        args=args
-                    )
+                    tools = self.fetcher.fetch_stdio(command=command, args=args)
+                    for tool in tools:
+                        tool["_source_server"] = server_name
+                        tool["_source_type"] = "stdio"
+                        tool["_command"] = command
+                        tool["_args"] = args
                 else:
                     logger.warning(f"  ⚠ {server_name}: unknown server type '{server_type}', skipping")
                     continue
 
-                # Tag each tool with its server name
-                for tool in tools:
-                    tool["_source_server"] = server_name
-                    tool["_source_type"] = server_type
-
                 all_tools.extend(tools)
-                logger.info(f"  → {server_name}: {len(tools)} tools")
+                logger.info(f"  → {server_name}: {len(tools)} tool(s)")
 
             except Exception as e:
                 logger.warning(f"  ✗ {server_name}: {e}")
@@ -810,6 +813,13 @@ class IngestionPipeline:
                 "original_name": name,
                 "server": server
             }
+            # Store transport-specific info for execution
+            if tool.get("_command"):
+                source_info["command"] = tool["_command"]
+                source_info["args"] = tool.get("_args", [])
+            if tool.get("_url"):
+                source_info["url"] = tool["_url"]
+                source_info["headers"] = tool.get("_headers", {})
 
             self.db.upsert_tool(
                 tool_id=tool_id,

@@ -14,11 +14,19 @@
 #
 # ============================================================
 
-set -e
-
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 TOOLDNS_HOME="${TOOLDNS_HOME:-$HOME/.tooldns}"
 PYTHON="${PYTHON:-python3}"
+
+# Read API key from .env file
+_get_api_key() {
+    local env_file="$TOOLDNS_HOME/.env"
+    if [ -f "$env_file" ]; then
+        grep "^TOOLDNS_API_KEY=" "$env_file" | cut -d= -f2-
+    else
+        echo ""
+    fi
+}
 
 # Colors
 RED='\033[0;31m'
@@ -136,16 +144,24 @@ do_logs() {
 
 do_test_api() {
     local port="${TOOLDNS_PORT:-8787}"
+    local api_key
+    api_key=$(_get_api_key)
     print_step "Testing ToolDNS API on port $port..."
     echo ""
 
-    # Health check
+    if [ -z "$api_key" ]; then
+        print_warn "No API key found in $TOOLDNS_HOME/.env — authenticated endpoints may fail."
+        print_info "Run './tooldns.sh install' to set one up."
+        echo ""
+    fi
+
+    # Health check (no auth needed)
     echo -e "${BLUE}  1. Health check:${NC}"
     if curl -s "http://localhost:$port/health" 2>/dev/null | python3 -m json.tool 2>/dev/null; then
         echo -e "${GREEN}     ✅ Server is running${NC}"
     else
-        print_error "Server is not running. Start it with: ./tooldns.sh start"
-        return 1
+        print_error "Server is not running. Start it first: ./tooldns.sh start"
+        return
     fi
     echo ""
 
@@ -154,19 +170,54 @@ do_test_api() {
     curl -s "http://localhost:$port/" | python3 -m json.tool
     echo ""
 
-    # Search test
+    # Search test (needs auth)
     echo -e "${BLUE}  3. Search test (query: 'send email'):${NC}"
     curl -s -X POST "http://localhost:$port/v1/search" \
         -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $api_key" \
         -d '{"query": "send email", "top_k": 3}' | python3 -m json.tool
     echo ""
 
-    # List tools
-    echo -e "${BLUE}  4. List tools:${NC}"
-    curl -s "http://localhost:$port/v1/tools" | python3 -m json.tool | head -20
+    # List sources (needs auth)
+    echo -e "${BLUE}  4. Registered sources:${NC}"
+    curl -s "http://localhost:$port/v1/sources" \
+        -H "Authorization: Bearer $api_key" | python3 -m json.tool | head -30
     echo ""
 
     print_step "API tests complete!"
+}
+
+do_integrate() {
+    print_step "Wiring ToolDNS into your AI agent (nanobot/openclaw)..."
+    echo ""
+    print_info "This will:"
+    print_info "  1. Add ToolDNS to your agent's MCP server list"
+    print_info "  2. Move heavy tool servers to ToolDNS config (saves tokens)"
+    print_info "  3. Update AGENTS.md with correct ToolDNS instructions"
+    echo ""
+    cd "$REPO_DIR"
+    $PYTHON -m tooldns.cli integrate
+}
+
+do_install_mcp() {
+    print_step "Install a new MCP server..."
+    echo ""
+    print_info "Installs the package, saves credentials, and indexes its tools."
+    print_info "Works with npm/npx, pip/Python, or any custom command."
+    echo ""
+    cd "$REPO_DIR"
+    $PYTHON -m tooldns.cli install-mcp
+}
+
+do_new_skill() {
+    print_step "Create a new skill file..."
+    echo ""
+    print_info "Skills are markdown files that teach your agent how to use an API"
+    print_info "or perform a multi-step task. Saved to ~/.tooldns/skills/ or any"
+    print_info "skill folder configured in ~/.tooldns/config.json."
+    echo ""
+    cd "$REPO_DIR"
+    $PYTHON -m tooldns.cli new-skill
 }
 
 do_reset() {
@@ -224,23 +275,26 @@ show_menu() {
     echo "  What do you want to do?"
     echo ""
     echo -e "  ${CYAN}Getting Started:${NC}"
-    echo "    1)  install     First-time setup (creates ~/.tooldns)"
-    echo "    2)  start       Start the API server"
-    echo "    3)  status      Show system status & health"
+    echo "    1)  install      First-time setup (creates ~/.tooldns, installs deps)"
+    echo "    2)  integrate    Wire ToolDNS into nanobot/openclaw (updates AGENTS.md)"
+    echo "    3)  start        Start the API server"
+    echo "    4)  status       Show system status & health"
     echo ""
-    echo -e "  ${CYAN}Tool Management:${NC}"
-    echo "    4)  add         Add a tool source interactively"
-    echo "    5)  search      Search for a tool"
-    echo "    6)  ingest      Re-ingest all sources"
+    echo -e "  ${CYAN}Add Tools & Skills:${NC}"
+    echo "    5)  install-mcp  Install a new MCP server + set env vars + index tools"
+    echo "    6)  new-skill    Create a new skill file template"
+    echo "    7)  add          Add an existing source (config file, URL, folder)"
+    echo "    8)  ingest       Re-scan all sources to pick up new tools"
     echo ""
-    echo -e "  ${CYAN}Testing & Debug:${NC}"
-    echo "    7)  test-api    Test all API endpoints"
-    echo "    8)  logs        View recent log entries"
-    echo "    9)  info        Show configuration details"
+    echo -e "  ${CYAN}Search & Debug:${NC}"
+    echo "    9)  search       Search for a tool by description"
+    echo "   10)  test-api     Test all API endpoints with live requests"
+    echo "   11)  logs         View recent server log entries"
+    echo "   12)  info         Show configuration details (API key, paths, DB size)"
     echo ""
     echo -e "  ${CYAN}Maintenance:${NC}"
-    echo "   10)  update      Pull latest code from git"
-    echo "   11)  reset       Delete database and start fresh"
+    echo "   13)  update       Pull latest code from git and reinstall"
+    echo "   14)  reset        Wipe database and start fresh"
     echo ""
     echo "    0)  exit"
     echo ""
@@ -254,37 +308,52 @@ show_menu() {
 if [ $# -gt 0 ]; then
     # Direct command mode
     case "$1" in
-        install)    do_install ;;
-        start)      do_start ;;
-        status)     do_status ;;
-        search)     shift; do_search "$*" ;;
-        add)        do_add ;;
-        ingest)     do_ingest ;;
-        update)     do_update ;;
-        test-api)   do_test_api ;;
-        logs)       do_logs ;;
-        info)       do_info ;;
-        reset)      do_reset ;;
-        help)
+        install)      do_install ;;
+        integrate)    do_integrate ;;
+        start)        do_start ;;
+        status)       do_status ;;
+        install-mcp)  do_install_mcp ;;
+        new-skill)    do_new_skill ;;
+        search)       shift; do_search "$*" ;;
+        add)          do_add ;;
+        ingest)       do_ingest ;;
+        update)       do_update ;;
+        test-api)     do_test_api ;;
+        logs)         do_logs ;;
+        info)         do_info ;;
+        reset)        do_reset ;;
+        help|--help|-h)
             print_header
             echo "  Usage: ./tooldns.sh [command]"
+            echo "         ./tooldns.sh           (interactive menu)"
             echo ""
-            echo "  Commands:"
-            echo "    install     First-time setup"
-            echo "    start       Start the API server"
-            echo "    status      Show system status"
-            echo "    add         Add a tool source"
-            echo "    search      Search for a tool"
-            echo "    ingest      Re-ingest all sources"
-            echo "    test-api    Test API endpoints"
-            echo "    logs        View log file"
-            echo "    info        Show config details"
-            echo "    update      Pull latest from git"
-            echo "    reset       Delete database"
+            echo "  Getting Started:"
+            echo "    install      First-time setup (creates ~/.tooldns, installs deps)"
+            echo "    integrate    Wire ToolDNS into nanobot/openclaw (updates AGENTS.md)"
+            echo "    start        Start the API server"
+            echo "    status       Show system status and health"
+            echo ""
+            echo "  Add Tools & Skills:"
+            echo "    install-mcp  Install a new MCP server, set env vars, and index tools"
+            echo "    new-skill    Create a new skill file template"
+            echo "    add          Add an existing source (config file, URL, folder)"
+            echo "    ingest       Re-scan all sources to pick up new tools"
+            echo ""
+            echo "  Search & Debug:"
+            echo "    search       Search for a tool  e.g: ./tooldns.sh search 'send email'"
+            echo "    test-api     Send live requests to all API endpoints"
+            echo "    logs         View recent server log entries"
+            echo "    info         Show config details (API key, paths, DB size)"
+            echo ""
+            echo "  Maintenance:"
+            echo "    update       Pull latest code from git and reinstall"
+            echo "    reset        Wipe database and start fresh"
             ;;
         *)
             print_error "Unknown command: $1"
-            echo "  Run './tooldns.sh help' for available commands."
+            echo ""
+            echo "  Run './tooldns.sh help' to see all available commands."
+            echo "  Run './tooldns.sh' (no args) to open the interactive menu."
             exit 1
             ;;
     esac
@@ -296,18 +365,21 @@ else
         echo ""
         case "$choice" in
             1)  do_install ;;
-            2)  do_start ;;
-            3)  do_status ;;
-            4)  do_add ;;
-            5)  do_search ;;
-            6)  do_ingest ;;
-            7)  do_test_api ;;
-            8)  do_logs ;;
-            9)  do_info ;;
-            10) do_update ;;
-            11) do_reset ;;
+            2)  do_integrate ;;
+            3)  do_start ;;
+            4)  do_status ;;
+            5)  do_install_mcp ;;
+            6)  do_new_skill ;;
+            7)  do_add ;;
+            8)  do_ingest ;;
+            9)  do_search ;;
+            10) do_test_api ;;
+            11) do_logs ;;
+            12) do_info ;;
+            13) do_update ;;
+            14) do_reset ;;
             0)  echo "  Goodbye!"; exit 0 ;;
-            *)  print_error "Invalid choice." ;;
+            *)  print_error "Invalid choice. Enter a number from the menu above." ;;
         esac
         echo ""
         echo -n "  Press Enter to continue..."
