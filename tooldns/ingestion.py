@@ -658,16 +658,40 @@ class IngestionPipeline:
             raise FileNotFoundError(f"Skill directory not found: {dir_path}")
 
         tools = []
-        for md_file in dir_path.glob("*.md"):
-            if md_file.name.startswith("_"):
-                continue  # Skip index files
 
-            try:
-                content = md_file.read_text(encoding="utf-8")
-                file_tools = self._parse_skill_file(content, md_file.stem)
-                tools.extend(file_tools)
-            except Exception as e:
-                logger.warning(f"Error parsing skill file {md_file}: {e}")
+        for item in sorted(dir_path.iterdir()):
+            # Pattern 1: subfolder with SKILL.md (e.g. daily-standup/SKILL.md)
+            if item.is_dir():
+                skill_file = item / "SKILL.md"
+                if not skill_file.exists():
+                    continue
+                try:
+                    content = skill_file.read_text(encoding="utf-8")
+                    name, description = self._parse_skill_md(content, item.name)
+                    tools.append({
+                        "name": name,
+                        "description": description,
+                        "inputSchema": {},
+                        "_source_server": config.get("name", "skills"),
+                        "_source_type": "skill",
+                    })
+                except Exception as e:
+                    logger.warning(f"Error parsing skill {item.name}: {e}")
+
+            # Pattern 2: flat .md file (e.g. github.md)
+            elif item.is_file() and item.suffix == ".md" and not item.name.startswith("_"):
+                try:
+                    content = item.read_text(encoding="utf-8")
+                    name, description = self._parse_skill_md(content, item.stem)
+                    tools.append({
+                        "name": name,
+                        "description": description,
+                        "inputSchema": {},
+                        "_source_server": config.get("name", "skills"),
+                        "_source_type": "skill",
+                    })
+                except Exception as e:
+                    logger.warning(f"Error parsing skill file {item.name}: {e}")
 
         return tools
 
