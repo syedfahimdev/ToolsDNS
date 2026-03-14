@@ -210,6 +210,55 @@ class ToolDatabase:
         conn.commit()
         conn.close()
 
+    def upsert_tools_batch(self, tools: list[dict]) -> None:
+        """
+        Insert or replace a batch of tools in a single transaction.
+
+        Significantly faster than calling upsert_tool() in a loop because
+        all rows are written in one commit instead of one commit per row.
+
+        Args:
+            tools: List of dicts, each with keys: tool_id, name, description,
+                   input_schema, source_info, tags, embedding. All values must
+                   already be Python objects (dicts/lists); JSON encoding is
+                   done here.
+        """
+        if not tools:
+            return
+        now = datetime.utcnow().isoformat()
+        tool_rows = [
+            (
+                t["tool_id"], t["name"], t["description"],
+                json.dumps(t["input_schema"]),
+                json.dumps(t["source_info"]),
+                json.dumps(t["tags"]),
+                json.dumps(t["embedding"]),
+                now,
+            )
+            for t in tools
+        ]
+        fts_rows = [
+            (t["tool_id"], t["name"], t["description"], " ".join(t["tags"]))
+            for t in tools
+        ]
+        tool_ids = [t["tool_id"] for t in tools]
+
+        conn = self._get_conn()
+        conn.executemany(
+            "INSERT OR REPLACE INTO tools "
+            "(id, name, description, input_schema, source_info, tags, embedding, indexed_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            tool_rows,
+        )
+        # Remove stale FTS entries then re-insert
+        conn.executemany("DELETE FROM tools_fts WHERE tool_id = ?", [(i,) for i in tool_ids])
+        conn.executemany(
+            "INSERT INTO tools_fts (tool_id, name, description, tags) VALUES (?, ?, ?, ?)",
+            fts_rows,
+        )
+        conn.commit()
+        conn.close()
+
     def get_all_tools_with_embeddings(self) -> list[dict]:
         """
         Retrieve all tools with their embeddings for search.

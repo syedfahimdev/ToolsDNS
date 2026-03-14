@@ -1,0 +1,31 @@
+services:
+  tooldns:
+    build: .
+    container_name: tooldns
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    volumes:
+      # Bind-mount the host's ~/.tooldns so config, skills, tools, and the
+      # database are shared between the host and the container.
+      # Edit anything in ~/.tooldns on the host and hot-reload picks it up.
+      - ~/.tooldns:/root/.tooldns
+    environment:
+      # Override any setting via env vars (all prefixed TOOLDNS_)
+      TOOLDNS_HOST: "0.0.0.0"
+      TOOLDNS_PORT: "8787"
+      # TOOLDNS_API_KEY: "your-secret-key"
+      # TOOLDNS_WEBHOOK_URL: "https://hooks.slack.com/services/..."
+      # TOOLDNS_WEBHOOK_SECRET: "optional-hmac-secret"
+      # TOOLDNS_REFRESH_INTERVAL: "15"
+      # TOOLDNS_MODEL: "claude-sonnet-4-6"
+    # Pass through host env vars that MCP servers need (API keys etc.)
+    # Uncomment and add the ones you use:
+    # env_file:
+    #   - ~/.tooldns/.env
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8787/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3

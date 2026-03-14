@@ -29,6 +29,7 @@ Usage:
 import json
 import time
 import os
+import threading
 import numpy as np
 from tooldns.config import logger, settings
 from tooldns.database import ToolDatabase
@@ -72,6 +73,13 @@ class SearchEngine:
         # Cache for total index token count — recomputed when tool count changes
         self._cached_index_tokens: int = 0
         self._cached_tool_count: int = 0
+
+    def _log_search_safe(self, **kwargs) -> None:
+        """Fire-and-forget wrapper for db.log_search; swallows exceptions."""
+        try:
+            self.db.log_search(**kwargs)
+        except Exception as e:
+            logger.warning(f"Failed to log search: {e}")
 
     def _get_index_tokens(self, all_tools: list[dict]) -> int:
         """
@@ -229,22 +237,20 @@ class SearchEngine:
         price = get_model_price(model_name) if model_name else None
         cost_saved = tokens_to_cost(tokens_saved, price) if price else 0.0
 
-        # Log to DB (async-safe: one connection per call)
-        try:
-            self.db.log_search(
-                query=query[:500],
-                total_tools_in_index=total_tools,
-                tools_returned=len(results),
-                tokens_full_index=tokens_full_index,
-                tokens_returned=tokens_returned,
-                tokens_saved=tokens_saved,
-                model_name=model_name,
-                price_per_million=price or 0.0,
-                cost_saved_usd=cost_saved,
-                search_time_ms=round(search_time, 2),
-            )
-        except Exception as e:
-            logger.warning(f"Failed to log search: {e}")
+        # Log to DB in a background thread so it doesn't block the response
+        log_kwargs = dict(
+            query=query[:500],
+            total_tools_in_index=total_tools,
+            tools_returned=len(results),
+            tokens_full_index=tokens_full_index,
+            tokens_returned=tokens_returned,
+            tokens_saved=tokens_saved,
+            model_name=model_name,
+            price_per_million=price or 0.0,
+            cost_saved_usd=cost_saved,
+            search_time_ms=round(search_time, 2),
+        )
+        threading.Thread(target=self._log_search_safe, kwargs=log_kwargs, daemon=True).start()
 
         logger.info(
             f"Search '{query[:50]}' → {len(results)}/{total_tools} tools, "

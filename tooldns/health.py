@@ -30,17 +30,20 @@ class HealthMonitor:
     Attributes:
         db: The ToolDatabase instance.
         check_timeout: HTTP request timeout in seconds.
+        _prev_status: Previous status per source name for transition detection.
     """
 
     def __init__(self, db: ToolDatabase, check_timeout: int = 5):
         self.db = db
         self.check_timeout = check_timeout
+        self._prev_status: dict[str, str] = {}
 
     async def check_all(self) -> dict:
         """
         Check health for all registered sources.
 
         Updates health_status on each source and its tools in the database.
+        Fires a webhook when a source transitions between healthy/degraded/down.
 
         Returns:
             dict: Summary of health check results.
@@ -51,6 +54,7 @@ class HealthMonitor:
         tasks = [self._check_source(source) for source in sources]
         statuses = await asyncio.gather(*tasks, return_exceptions=True)
 
+        webhook_tasks = []
         for source, status in zip(sources, statuses):
             if isinstance(status, Exception):
                 status = "degraded"
@@ -60,8 +64,37 @@ class HealthMonitor:
             self.db.set_tools_health_by_source(source["name"], status)
             results[status] = results.get(status, 0) + 1
 
+            # Fire webhook on status transition
+            prev = self._prev_status.get(source["name"])
+            if prev is not None and prev != status and settings.webhook_url:
+                webhook_tasks.append(self._fire_webhook(source["name"], prev, status))
+            self._prev_status[source["name"]] = status
+
+        if webhook_tasks:
+            await asyncio.gather(*webhook_tasks, return_exceptions=True)
+
         logger.info(f"Health check complete: {results}")
         return results
+
+    async def _fire_webhook(self, source_name: str, prev: str, current: str) -> None:
+        """POST a status-change event to the configured webhook URL."""
+        import httpx
+        payload = {
+            "event": "source_health_change",
+            "source": source_name,
+            "previous_status": prev,
+            "current_status": current,
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+        }
+        headers = {"Content-Type": "application/json"}
+        if settings.webhook_secret:
+            headers["X-ToolDNS-Secret"] = settings.webhook_secret
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                await client.post(settings.webhook_url, json=payload, headers=headers)
+            logger.info(f"Webhook fired: {source_name} {prev} → {current}")
+        except Exception as e:
+            logger.warning(f"Webhook failed for {source_name}: {e}")
 
     async def _check_source(self, source: dict) -> str:
         """

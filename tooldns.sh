@@ -127,6 +127,41 @@ do_update() {
     $PYTHON -m tooldns.cli update
 }
 
+do_docker() {
+    local subcmd="${1:-up}"
+    cd "$REPO_DIR"
+    case "$subcmd" in
+        up)
+            print_step "Starting ToolDNS in Docker..."
+            print_info "Your ~/.tooldns folder is mounted into the container."
+            print_info "Edit config, skills, or tools on the host — changes are live instantly."
+            echo ""
+            docker compose up -d
+            echo ""
+            print_info "Logs: ./tooldns.sh docker logs"
+            print_info "Stop: ./tooldns.sh docker down"
+            ;;
+        down)
+            print_step "Stopping ToolDNS Docker container..."
+            docker compose down
+            ;;
+        logs)
+            docker compose logs -f
+            ;;
+        build)
+            print_step "Building ToolDNS Docker image..."
+            docker compose build
+            ;;
+        status)
+            docker compose ps
+            ;;
+        *)
+            print_error "Unknown docker subcommand: $subcmd"
+            print_info "Usage: ./tooldns.sh docker [up|down|logs|build|status]"
+            ;;
+    esac
+}
+
 do_logs() {
     local log_file="$TOOLDNS_HOME/tooldns.log"
     if [ ! -f "$log_file" ]; then
@@ -372,8 +407,9 @@ if [ $# -gt 0 ]; then
         test-api)     do_test_api ;;
         logs)         do_logs ;;
         info)         do_info ;;
-        reset)         do_reset ;;
+        reset)        do_reset ;;
         setup-service) do_setup_service ;;
+        docker)       shift; do_docker "$@" ;;
         help|--help|-h)
             print_header
             echo "  Usage: ./tooldns.sh [command]"
@@ -401,6 +437,7 @@ if [ $# -gt 0 ]; then
             echo "    update         Pull latest code from git and reinstall"
             echo "    reset          Wipe database and start fresh"
             echo "    setup-service  Install as systemd service (auto-start/restart)"
+            echo "    docker [up|down|logs|build|status]  Manage Docker deployment"
             ;;
         *)
             print_error "Unknown command: $1"

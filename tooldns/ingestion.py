@@ -911,7 +911,7 @@ class IngestionPipeline:
 
         embeddings = cached
 
-        count = 0
+        batch = []
         for tool, embedding in zip(raw_tools, embeddings):
             name = tool.get("name", "unknown")
             server = tool.get("_source_server", source_name)
@@ -923,7 +923,6 @@ class IngestionPipeline:
                 "original_name": name,
                 "server": server
             }
-            # Store transport-specific info for execution
             if tool.get("_command"):
                 source_info["command"] = tool["_command"]
                 source_info["args"] = tool.get("_args", [])
@@ -933,18 +932,18 @@ class IngestionPipeline:
             if tool.get("_skill_folder"):
                 source_info["skill_folder"] = tool["_skill_folder"]
 
-            self.db.upsert_tool(
-                tool_id=tool_id,
-                name=name,
-                description=tool.get("description", ""),
-                input_schema=tool.get("inputSchema", {}),
-                source_info=source_info,
-                tags=self._extract_tags(name, tool.get("description", "")),
-                embedding=embedding
-            )
-            count += 1
+            batch.append({
+                "tool_id": tool_id,
+                "name": name,
+                "description": tool.get("description", ""),
+                "input_schema": tool.get("inputSchema", {}),
+                "source_info": source_info,
+                "tags": self._extract_tags(name, tool.get("description", "")),
+                "embedding": embedding,
+            })
 
-        return count
+        self.db.upsert_tools_batch(batch)
+        return len(batch)
 
     def _extract_tags(self, name: str, description: str) -> list[str]:
         """

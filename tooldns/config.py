@@ -61,6 +61,8 @@ class Settings(BaseSettings):
     refresh_interval: int = 15
     log_level: str = "INFO"
     model: str = ""  # LLM model name for cost calc (e.g. claude-sonnet-4-6)
+    webhook_url: str = ""  # POST health alerts here (Slack/Discord/custom)
+    webhook_secret: str = ""  # Added as X-ToolDNS-Secret header if set
 
     model_config = ConfigDict(env_prefix="TOOLDNS_")
 

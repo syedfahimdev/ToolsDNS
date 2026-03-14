@@ -114,6 +114,57 @@ async def _auto_refresh(pipeline: IngestionPipeline, interval_min: int):
         await asyncio.sleep(interval_min * 60)
 
 
+async def _config_watcher(pipeline: IngestionPipeline, config_path: Path):
+    """
+    Watch ~/.tooldns/config.json for changes and trigger re-ingest.
+
+    Uses watchdog for OS-level inotify/kqueue events. A lock prevents
+    concurrent ingests if the file is saved multiple times quickly.
+    """
+    from watchdog.observers import Observer
+    from watchdog.events import FileSystemEventHandler
+
+    loop = asyncio.get_running_loop()
+    _last_mtime = [config_path.stat().st_mtime if config_path.exists() else 0]
+    _lock = asyncio.Lock()
+
+    async def _reload():
+        if _lock.locked():
+            return  # ingest already queued/running, skip duplicate
+        async with _lock:
+            await asyncio.sleep(0.5)  # settle so the file is fully written
+            try:
+                total = await loop.run_in_executor(None, pipeline.ingest_all)
+                logger.info(f"Hot-reload complete: {total} tools indexed")
+            except Exception as e:
+                logger.error(f"Hot-reload error: {e}")
+
+    class _Handler(FileSystemEventHandler):
+        def on_modified(self, event):
+            if Path(event.src_path).resolve() != config_path.resolve():
+                return
+            try:
+                mtime = config_path.stat().st_mtime
+            except OSError:
+                return
+            if mtime == _last_mtime[0]:
+                return  # spurious duplicate event
+            _last_mtime[0] = mtime
+            logger.info("config.json changed — triggering re-ingest...")
+            asyncio.run_coroutine_threadsafe(_reload(), loop)
+
+    observer = Observer()
+    observer.schedule(_Handler(), str(config_path.parent), recursive=False)
+    observer.start()
+    logger.info(f"Hot-reload watching: {config_path}")
+    try:
+        while True:
+            await asyncio.sleep(1)
+    finally:
+        observer.stop()
+        observer.join()
+
+
 async def _health_check_loop(monitor: HealthMonitor, interval_sec: int = 60):
     """Background task: check source health every interval_sec seconds."""
     await asyncio.sleep(10)  # Wait for server to fully start
@@ -236,6 +287,10 @@ async def lifespan(app: FastAPI):
         tasks.append(asyncio.create_task(_auto_refresh(pipeline, settings.refresh_interval)))
 
     tasks.append(asyncio.create_task(_health_check_loop(health_monitor, 60)))
+
+    # Hot-reload: watch config.json for changes
+    config_file = Path(settings.home) / "config.json"
+    tasks.append(asyncio.create_task(_config_watcher(pipeline, config_file)))
 
     yield  # App is running
 

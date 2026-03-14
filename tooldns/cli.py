@@ -373,6 +373,21 @@ def cmd_setup():
     if port:
         env_vars["TOOLDNS_PORT"] = port
 
+    # Webhook (optional)
+    print("\n3️⃣  Webhook URL (optional)")
+    print("   ToolDNS will POST here when a source goes down or recovers.")
+    print("   Works with Slack, Discord, PagerDuty, or any HTTP endpoint.")
+    print("   Examples:")
+    print("     Slack:   https://hooks.slack.com/services/T.../B.../...")
+    print("     Discord: https://discord.com/api/webhooks/...")
+    print("     Custom:  https://yourserver.com/tooldns-alert")
+    webhook = input("   Webhook URL (leave blank to skip): ").strip()
+    if webhook:
+        env_vars["TOOLDNS_WEBHOOK_URL"] = webhook
+        secret = input("   Webhook secret (optional, sent as X-ToolDNS-Secret header): ").strip()
+        if secret:
+            env_vars["TOOLDNS_WEBHOOK_SECRET"] = secret
+
     # Write .env to home directory
     with open(env_path, "w") as f:
         for k, v in env_vars.items():
@@ -384,6 +399,8 @@ def cmd_setup():
 
     print("\n🎉 Setup complete! Start the server with:")
     print("   python3 -m tooldns.cli serve")
+    print("   # or via Docker:")
+    print("   docker compose up -d")
 
 
 def _run_auto_detect():

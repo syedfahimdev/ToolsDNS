@@ -110,8 +110,8 @@ python -m tooldns.cli serve
 # Or directly
 python main.py
 
-# Or with uvicorn
-uvicorn main:app --port 8787
+# Or with Docker (recommended for production)
+docker compose up -d
 ```
 
 ### Web Dashboard
@@ -224,9 +224,31 @@ Full interactive API documentation is available at `http://localhost:8787/docs` 
 | `python -m tooldns.cli health` | Check health of all sources |
 | `python -m tooldns.cli integrate` | Wizard to integrate with nanobot/openclaw |
 
+## Docker
+
+The recommended way to run ToolDNS in production. Your `~/.tooldns` folder is bind-mounted so config, skills, tools, and the database are shared between the host and container — edit anything on the host and it's picked up live.
+
+```bash
+# Start
+docker compose up -d
+
+# View logs
+docker compose logs -f
+
+# Stop
+docker compose down
+```
+
+**Your `~/.tooldns` folder** works exactly the same whether you're running native or in Docker:
+- Edit `~/.tooldns/config.json` on the host → hot-reload picks it up in ~1s inside the container
+- Skills in `~/.tooldns/skills/` are served from the host
+- Database at `~/.tooldns/tooldns.db` persists across container restarts
+
+Pass environment variables or API keys via `docker-compose.yml` or an `env_file` pointing to `~/.tooldns/.env`.
+
 ## Configuration
 
-All configuration is via environment variables (or `.env` file):
+All configuration is via environment variables (or `~/.tooldns/.env`):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -234,9 +256,11 @@ All configuration is via environment variables (or `.env` file):
 | `TOOLDNS_HOST` | `0.0.0.0` | Server bind address |
 | `TOOLDNS_PORT` | `8787` | Server port |
 | `TOOLDNS_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Sentence-transformer model |
-| `TOOLDNS_DB_PATH` | `./tooldns.db` | SQLite database path |
-| `TOOLDNS_REFRESH_INTERVAL` | `15` | Auto-refresh interval (minutes) |
+| `TOOLDNS_DB_PATH` | `~/.tooldns/tooldns.db` | SQLite database path |
+| `TOOLDNS_REFRESH_INTERVAL` | `15` | Auto-refresh interval (minutes, 0=off) |
 | `TOOLDNS_LOG_LEVEL` | `INFO` | Log level |
+| `TOOLDNS_WEBHOOK_URL` | *(empty)* | URL to POST health alerts to |
+| `TOOLDNS_WEBHOOK_SECRET` | *(empty)* | Sent as `X-ToolDNS-Secret` header |
 
 ## MCP Server Mode
 
@@ -282,33 +306,69 @@ tools = [{
 # 3. LLM can now call the actual tool with the returned schema
 ```
 
+## Hot Reload
+
+ToolDNS watches `~/.tooldns/config.json` with OS-level file notifications (inotify on Linux, kqueue on macOS). When you save a change — adding a new MCP server, a new skill path, etc. — re-ingestion starts automatically within ~1 second. No restart needed.
+
+```bash
+# Example: add a server to config.json, it's indexed within seconds
+nano ~/.tooldns/config.json  # save → watch the logs
+tail -f ~/.tooldns/tooldns.log | grep -E "changed|Hot-reload"
+```
+
+## Webhook Alerts
+
+Get notified when a source goes down or recovers. Set the URL once:
+
+```bash
+# ~/.tooldns/.env
+TOOLDNS_WEBHOOK_URL=https://hooks.slack.com/services/T.../B.../...
+TOOLDNS_WEBHOOK_SECRET=my-signing-secret   # optional
+```
+
+ToolDNS POSTs this JSON when any source changes status:
+
+```json
+{
+  "event": "source_health_change",
+  "source": "composio",
+  "previous_status": "healthy",
+  "current_status": "down",
+  "timestamp": "2026-03-14T22:03:15.059512Z"
+}
+```
+
+The secret is sent as the `X-ToolDNS-Secret` header so your endpoint can verify the request came from ToolDNS.
+
+**Works with any HTTP endpoint** — Slack incoming webhooks, Discord webhooks, PagerDuty Events API, or your own endpoint. Only fires on transitions (healthy→down, down→healthy, etc.), not on every health check.
+
 ## Architecture
 
 ```
 tooldns/
-├── main.py              # FastAPI server entry point
+├── main.py              # FastAPI entry point, lifespan, hot-reload watcher
+├── Dockerfile           # Production container image
+├── docker-compose.yml   # Bind-mounts ~/.tooldns, exposes port 8787
 ├── tooldns/
-│   ├── __init__.py
-│   ├── config.py        # Settings from environment variables
+│   ├── config.py        # Settings (env vars, webhook URL, etc.)
 │   ├── models.py        # Pydantic data models (universal tool schema)
-│   ├── database.py      # SQLite storage for tools and sources
-│   ├── embedder.py     # Sentence-transformers embedding engine
-│   ├── fetcher.py      # MCP protocol client (stdio + HTTP transports)
-│   ├── ingestion.py    # Multi-source ingestion pipeline
-│   ├── search.py       # Semantic search with cosine similarity
-│   ├── auth.py         # API key authentication
-│   ├── api.py          # FastAPI route handlers
-│   ├── cli.py          # Interactive command-line interface
-│   ├── mcp_server.py   # FastMCP wrapper (expose as MCP server)
-│   ├── health.py       # Tool/source health monitoring
-│   ├── marketplace.py  # Curated MCP server catalog
-│   ├── tokens.py       # Token counting and cost estimation
-│   ├── integrate.py    # Wizard for nanobot/openclaw integration
-│   ├── ui.py           # Web dashboard routes
-│   └── static/         # CSS, JS for web UI
+│   ├── database.py      # SQLite: tools, sources, search log, embedding cache
+│   ├── embedder.py      # Sentence-transformers embedding engine
+│   ├── fetcher.py       # MCP protocol client (stdio + HTTP transports)
+│   ├── ingestion.py     # Multi-source ingest pipeline (batch upserts)
+│   ├── search.py        # Hybrid semantic + BM25 search
+│   ├── auth.py          # API key authentication
+│   ├── api.py           # REST API routes
+│   ├── cli.py           # Interactive CLI
+│   ├── mcp_server.py    # FastMCP wrapper (expose as MCP server)
+│   ├── health.py        # Source health monitor + webhook firing
+│   ├── marketplace.py   # Curated MCP server + skill catalog
+│   ├── tokens.py        # Token counting and cost estimation
+│   ├── integrate.py     # Wizard for nanobot/openclaw integration
+│   ├── ui.py            # Web dashboard + marketplace routes
+│   └── static/          # CSS, JS for web UI
 ├── templates/           # Jinja2 templates for web UI
 ├── requirements.txt
-├── .env.example
 └── .gitignore
 ```
 
@@ -324,12 +384,12 @@ tooldns/
 
 ## Token Savings
 
-ToolDNS tracks real token usage using tiktoken (cl100k_base encoding, ~5% accuracy for all major LLMs). Each search response includes:
+ToolDNS tracks real token usage using tiktoken (cl100k_base encoding). Each search response includes:
 
 - `tokens_saved` — tokens not sent to LLM by using semantic search
 - `search_time_ms` — how fast the search ran
 
-This helps you quantify the cost savings of using ToolDNS vs loading all tool schemas.
+View cumulative savings at `/ui/stats` or `GET /v1/stats`.
 
 ## Health Monitoring
 
@@ -339,34 +399,24 @@ ToolDNS periodically checks whether registered MCP servers are reachable:
 - **stdio MCP servers**: Use "staleness" heuristic (if refreshed within 2× interval = healthy)
 - **Skill directories**: Always healthy (local files)
 
-Check health via API: `GET /v1/health` or web UI: `/ui/health`
+Check health via API: `GET /v1/health` or web UI: `/ui/health`. Set `TOOLDNS_WEBHOOK_URL` to get Slack/Discord alerts on status changes.
 
 ## Marketplace
 
-Built-in catalog of popular MCP servers with one-click install:
+Built-in catalog of 30+ popular MCP servers with one-click install:
 
-- GitHub, Git, Filesystem
-- Browser automation (Playwright, Puppeteer)
-- Slack, Discord, Telegram
-- Search (Brave, SerpAPI)
-- Data (Supabase, PostgreSQL)
-- Cloud (AWS, GCP, Azure)
-- AI (OpenAI, Anthropic, HuggingFace)
+- Dev: GitHub, Git, GitLab, Linear, Sentry
+- Browser: Playwright, Puppeteer, E2B
+- Communication: Slack, Notion, Gmail
+- Search: Brave, Tavily, Exa
+- Data: PostgreSQL, SQLite, Supabase
+- Cloud: Cloudflare, Docker, Kubernetes, AWS
+- AI: Sequential Thinking, Hugging Face, Context7
 
-## Future Improvements
-
-### Planned Features
-- [ ] **Auto-refresh scheduler** — Periodically re-ingest sources on a cron schedule (already partially implemented)
-- [ ] **SDK packages** — Python and TypeScript client libraries
-- [ ] **Multi-tenant support** — Team workspaces with shared tool registries
-- [ ] **Community marketplace** — Share and discover tool registries publicly
-- [ ] **Webhook support** — Get notified when sources update their tool lists
-- [ ] **Vector DB upgrade** — Migrate from SQLite to Qdrant/pgvector for larger indexes
-
-### Performance Targets
+## Performance Targets
 - Search latency: <50ms for 10,000 tools
-- Embedding: <10ms per query
-- Ingestion: Handle 1,000+ tools per source
+- Embedding: <10ms per query (cached after first run)
+- Ingestion: batch upserts via single SQLite transaction per source
 
 ## License
 
