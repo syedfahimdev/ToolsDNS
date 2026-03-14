@@ -256,8 +256,13 @@ class IngestionPipeline:
                 f"No MCP servers found at '{config_key}' in {config_path}"
             )
 
+        skip_servers = set(config.get("skip_servers", []))
+
         all_tools = []
         for server_name, server_config in mcp_section.items():
+            if server_name in skip_servers:
+                logger.info(f"Skipping MCP server: {server_name}")
+                continue
             logger.info(f"Fetching tools from MCP server: {server_name}")
             try:
                 server_type = server_config.get("type", "stdio")

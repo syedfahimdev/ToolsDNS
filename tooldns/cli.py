@@ -308,46 +308,86 @@ def cmd_setup():
 
 def _run_auto_detect():
     """
-    Auto-detect AI framework configs and offer to ingest them.
+    Auto-detect AI framework configs and offer selective ingestion.
 
     Scans for known configs (nanobot, openclaw), shows what was
-    found, and offers one-click ingestion.
+    found, and lets the user pick which configs AND which servers
+    within each config to ingest.
     """
     print("\n🔍 Auto-detecting AI framework configs...")
     detected = detect_configs()
 
-    if detected:
-        print(f"\n   Found {len(detected)} config(s):\n")
-        for i, cfg in enumerate(detected, 1):
-            servers = ", ".join(cfg["server_names"])
-            print(f"   {i}) {cfg['name']} — {cfg['description']}")
-            print(f"      Path: {cfg['full_path']}")
-            print(f"      MCP servers ({cfg['server_count']}): {servers}")
-            print()
-
-        ingest_choice = input("   Ingest all detected configs? [Y/n]: ").strip().lower()
-        if ingest_choice != "n":
-            db_comp, embedder, search, pipeline = get_components()
-            for cfg in detected:
-                print(f"\n   ⏳ Ingesting '{cfg['name']}'...")
-                try:
-                    config = {
-                        "type": SourceType.MCP_CONFIG,
-                        "name": cfg["name"],
-                        "path": cfg["full_path"],
-                        "config_key": cfg["config_key"],
-                    }
-                    count = pipeline.ingest_source(config)
-                    print(f"   ✅ {cfg['name']}: indexed {count} tools")
-                except Exception as e:
-                    print(f"   ❌ {cfg['name']}: {e}")
-        else:
-            print("   Skipped. Run 'tooldns add' later.")
-    else:
+    if not detected:
         print("   No known configs found.")
         add = input("\n   Add a source manually? [Y/n]: ").strip().lower()
         if add != "n":
             cmd_add()
+        return
+
+    print(f"\n   Found {len(detected)} config(s):\n")
+    for i, cfg in enumerate(detected, 1):
+        servers = ", ".join(cfg["server_names"])
+        print(f"   {i}) {cfg['name']} — {cfg['description']}")
+        print(f"      MCP servers ({cfg['server_count']}): {servers}")
+        print()
+
+    print("   Options:")
+    print("   • Enter numbers to select (e.g., '1' or '1,2')")
+    print("   • 'all' to ingest everything")
+    print("   • 'skip' to skip")
+    choice = input("\n   Select configs to ingest: ").strip().lower()
+
+    if choice == "skip":
+        print("   Skipped. Run 'tooldns add' later.")
+        return
+
+    if choice == "all":
+        selected = detected
+    else:
+        indices = [int(x.strip()) - 1 for x in choice.split(",") if x.strip().isdigit()]
+        selected = [detected[i] for i in indices if 0 <= i < len(detected)]
+
+    if not selected:
+        print("   No valid selection.")
+        return
+
+    db_comp, embedder, search, pipeline = get_components()
+
+    for cfg in selected:
+        print(f"\n   📦 {cfg['name']} has {cfg['server_count']} MCP server(s):")
+        for j, srv in enumerate(cfg["server_names"], 1):
+            print(f"      {j}) {srv}")
+
+        srv_choice = input(f"   Which servers? [all / 1,2,... / skip]: ").strip().lower()
+
+        if srv_choice == "skip":
+            print(f"   Skipped {cfg['name']}.")
+            continue
+
+        if srv_choice == "all" or srv_choice == "":
+            skip_servers = set()
+        else:
+            selected_indices = {int(x.strip()) - 1 for x in srv_choice.split(",") if x.strip().isdigit()}
+            # skip_servers = servers NOT selected
+            skip_servers = {
+                cfg["server_names"][j]
+                for j in range(len(cfg["server_names"]))
+                if j not in selected_indices
+            }
+
+        print(f"\n   ⏳ Ingesting '{cfg['name']}'...")
+        try:
+            config = {
+                "type": SourceType.MCP_CONFIG,
+                "name": cfg["name"],
+                "path": cfg["full_path"],
+                "config_key": cfg["config_key"],
+                "skip_servers": list(skip_servers),
+            }
+            count = pipeline.ingest_source(config)
+            print(f"   ✅ {cfg['name']}: indexed {count} tools")
+        except Exception as e:
+            print(f"   ❌ {cfg['name']}: {e}")
 
 
 def cmd_add():
@@ -548,6 +588,77 @@ def cmd_search(query: str):
         print()
 
 
+def cmd_status():
+    """
+    Show ToolDNS system status: config, sources, tools, health.
+
+    Displays a comprehensive overview of the current state including
+    home directory, database stats, source health, and sample tools.
+    """
+    from tooldns.config import TOOLDNS_HOME
+    home = TOOLDNS_HOME
+
+    print_banner()
+    print("📊 ToolDNS Status\n")
+
+    # Home directory
+    print(f"   Home:     {home}")
+    print(f"   Config:   {home / '.env'} {'✅' if (home / '.env').exists() else '❌ missing'}")
+    print(f"   Database: {settings.db_path}")
+    print(f"   Log:      {home / 'tooldns.log'}")
+
+    repo_file = home / "repo_path"
+    if repo_file.exists():
+        print(f"   Repo:     {repo_file.read_text().strip()}")
+    print()
+
+    # Database stats
+    db, _, _, _ = get_components()
+    tool_count = db.get_tool_count()
+    sources = db.get_all_sources()
+
+    print(f"   📦 Sources: {len(sources)}")
+    print(f"   🔧 Tools indexed: {tool_count}")
+    print()
+
+    # Source details
+    if sources:
+        print("   Sources:")
+        for s in sources:
+            icon = "✅" if s["status"] == "active" else "❌"
+            print(f"     {icon} {s['name']} — {s['tools_count']} tools ({s['type']})")
+            if s.get("error"):
+                print(f"        Error: {s['error']}")
+        print()
+
+    # Sample tools
+    if tool_count > 0:
+        tools = db.get_all_tools()
+        print(f"   Sample tools (showing first 5 of {tool_count}):")
+        for t in tools[:5]:
+            src = t.get("source_info", {}).get("source_name", "?")
+            print(f"     • {t['name']} (from {src})")
+        if tool_count > 5:
+            print(f"     ... and {tool_count - 5} more")
+        print()
+
+    # Log file check
+    log_path = home / "tooldns.log"
+    if log_path.exists():
+        lines = log_path.read_text().strip().split("\n")
+        print(f"   📝 Log: {len(lines)} lines (last 3):")
+        for line in lines[-3:]:
+            print(f"      {line}")
+    print()
+
+    # Refresh interval
+    print(f"   🔄 Auto-refresh: every {settings.refresh_interval} min")
+    print(f"   🌐 Server: http://{settings.host}:{settings.port}")
+    print(f"   📖 API docs: http://localhost:{settings.port}/docs")
+    print()
+    print("   All good! ✅" if tool_count > 0 else "   ⚠️  No tools indexed. Run 'tooldns add'.")
+
+
 def cmd_ingest():
     """Re-ingest all registered sources."""
     _, _, _, pipeline = get_components()
@@ -597,6 +708,7 @@ def main():
         sources   List registered sources
         tools     List indexed tools
         search    Search for a tool by query
+        status    Show system status and health
         ingest    Re-ingest all sources
         serve     Start the API server
     """
@@ -611,6 +723,7 @@ def main():
         print("  sources   List registered sources")
         print("  tools     List indexed tools [--source NAME]")
         print("  search    Search for a tool")
+        print("  status    Show system status and health")
         print("  ingest    Re-ingest all sources")
         print("  serve     Start the API server")
         return
@@ -640,6 +753,8 @@ def main():
         else:
             query = " ".join(sys.argv[2:])
         cmd_search(query)
+    elif cmd == "status":
+        cmd_status()
     elif cmd == "ingest":
         cmd_ingest()
     elif cmd == "serve":

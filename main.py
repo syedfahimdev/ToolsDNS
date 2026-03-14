@@ -3,16 +3,17 @@ main.py — FastAPI application entry point for ToolDNS.
 
 Initializes all components (database, embedder, search engine,
 ingestion pipeline) and starts the FastAPI server with the
-API routes.
+API routes. Includes an optional background auto-refresh scheduler.
 
-The server can be started in two ways:
-    1. CLI:    python -m tooldns.cli serve
-    2. Direct: python main.py
+The server can be started in three ways:
+    1. CLI:    python3 -m tooldns.cli serve
+    2. Direct: python3 main.py
     3. Uvicorn: uvicorn main:app --port 8787
 
 API documentation is auto-generated at /docs (Swagger UI).
 """
 
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from tooldns.config import settings, logger
@@ -21,6 +22,27 @@ from tooldns.embedder import get_embedder
 from tooldns.search import SearchEngine
 from tooldns.ingestion import IngestionPipeline
 from tooldns.api import router, init_api
+
+
+async def _auto_refresh(pipeline: IngestionPipeline, interval_min: int):
+    """
+    Background task that periodically re-ingests all registered sources.
+
+    Runs in a loop, sleeping for `interval_min` minutes between each
+    refresh cycle. Errors are logged but never crash the refresh loop.
+
+    Args:
+        pipeline: The IngestionPipeline instance.
+        interval_min: Minutes between each refresh cycle.
+    """
+    while True:
+        await asyncio.sleep(interval_min * 60)
+        try:
+            logger.info("Auto-refresh: re-ingesting all sources...")
+            total = pipeline.ingest_all()
+            logger.info(f"Auto-refresh complete: {total} tools indexed")
+        except Exception as e:
+            logger.error(f"Auto-refresh error: {e}")
 
 
 @asynccontextmanager
@@ -33,6 +55,7 @@ async def lifespan(app: FastAPI):
     2. Embedding model (sentence-transformers)
     3. Search engine
     4. Ingestion pipeline
+    5. Auto-refresh background task (if interval > 0)
 
     The embedding model is preloaded to avoid first-request latency.
     """
@@ -57,8 +80,21 @@ async def lifespan(app: FastAPI):
         f"ToolDNS ready — {tool_count} tools from {source_count} sources"
     )
 
+    # Start auto-refresh if interval is set
+    refresh_task = None
+    if settings.refresh_interval > 0:
+        logger.info(
+            f"Auto-refresh enabled: every {settings.refresh_interval} min"
+        )
+        refresh_task = asyncio.create_task(
+            _auto_refresh(pipeline, settings.refresh_interval)
+        )
+
     yield  # App is running
 
+    # Cleanup
+    if refresh_task:
+        refresh_task.cancel()
     logger.info("ToolDNS shutting down.")
 
 
@@ -95,7 +131,8 @@ async def health():
     return {
         "status": "healthy",
         "tools_indexed": db.get_tool_count(),
-        "sources": len(db.get_all_sources())
+        "sources": len(db.get_all_sources()),
+        "refresh_interval_min": settings.refresh_interval,
     }
 
 
