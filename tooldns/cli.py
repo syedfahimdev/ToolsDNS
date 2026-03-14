@@ -763,31 +763,33 @@ def main():
         python3 -m tooldns.cli <command> [args]
 
     Commands:
-        install   Create ~/.tooldns, install deps, run setup
-        update    Pull latest code and sync dependencies
-        setup     Interactive config + auto-detect sources
-        add       Add a tool source interactively
-        sources   List registered sources
-        tools     List indexed tools
-        search    Search for a tool by query
-        status    Show system status and health
-        ingest    Re-ingest all sources
-        serve     Start the API server
+        install    Create ~/.tooldns, install deps, run setup
+        update     Pull latest code and sync dependencies
+        setup      Interactive config + auto-detect sources
+        integrate  Wire ToolDNS into nanobot/openclaw agents
+        add        Add a tool source interactively
+        sources    List registered sources
+        tools      List indexed tools
+        search     Search for a tool by query
+        status     Show system status and health
+        ingest     Re-ingest all sources
+        serve      Start the API server
     """
     if len(sys.argv) < 2:
         print_banner()
         print("Usage: python3 -m tooldns.cli <command>\n")
         print("Commands:")
-        print("  install   Create ~/.tooldns, install deps, run setup")
-        print("  update    Pull latest code and sync dependencies")
-        print("  setup     Interactive config + auto-detect sources")
-        print("  add       Add a tool source interactively")
-        print("  sources   List registered sources")
-        print("  tools     List indexed tools [--source NAME]")
-        print("  search    Search for a tool")
-        print("  status    Show system status and health")
-        print("  ingest    Re-ingest all sources")
-        print("  serve     Start the API server")
+        print("  install    Create ~/.tooldns, install deps, run setup")
+        print("  update     Pull latest code and sync dependencies")
+        print("  setup      Interactive config + auto-detect sources")
+        print("  integrate  Wire ToolDNS into nanobot/openclaw agents")
+        print("  add        Add a tool source interactively")
+        print("  sources    List registered sources")
+        print("  tools      List indexed tools [--source NAME]")
+        print("  search     Search for a tool")
+        print("  status     Show system status and health")
+        print("  ingest     Re-ingest all sources")
+        print("  serve      Start the API server")
         return
 
     cmd = sys.argv[1]
@@ -798,6 +800,10 @@ def main():
         cmd_update()
     elif cmd == "setup":
         cmd_setup()
+    elif cmd == "integrate":
+        from tooldns.integrate import run_integrate
+        print_banner()
+        run_integrate()
     elif cmd == "add":
         cmd_add()
     elif cmd == "sources":
