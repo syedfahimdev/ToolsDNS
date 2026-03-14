@@ -53,6 +53,9 @@ class IngestionPipeline:
         fetcher: The MCPFetcher instance for MCP protocol communication.
     """
 
+    # Server types that use HTTP transport (sent as POST requests)
+    HTTP_SERVER_TYPES = {"streamableHttp", "sse"}
+
     def __init__(self, db: ToolDatabase, embedder: Embedder):
         """
         Initialize the ingestion pipeline.
@@ -64,6 +67,45 @@ class IngestionPipeline:
         self.db = db
         self.embedder = embedder
         self.fetcher = MCPFetcher()
+
+    # -------------------------------------------------------------------
+    # Env var resolution
+    # -------------------------------------------------------------------
+
+    def _resolve_env_vars(self, value):
+        """
+        Resolve ${VAR} and $VAR environment variable placeholders.
+
+        Works recursively on strings, dicts, and lists. Used to expand
+        env var references in config files (e.g., openclaw's mcporter.json
+        uses ${COMPOSIO_API_KEY} in headers).
+
+        Args:
+            value: A string, dict, list, or other value. Strings get
+                   env var substitution, dicts/lists are processed recursively.
+
+        Returns:
+            The value with all env var references resolved.
+        """
+        if isinstance(value, str):
+            # Replace ${VAR} patterns
+            result = re.sub(
+                r'\$\{([^}]+)\}',
+                lambda m: os.environ.get(m.group(1), m.group(0)),
+                value
+            )
+            # Replace $VAR patterns (word boundary)
+            result = re.sub(
+                r'\$([A-Z_][A-Z0-9_]*)',
+                lambda m: os.environ.get(m.group(1), m.group(0)),
+                result
+            )
+            return result
+        elif isinstance(value, dict):
+            return {k: self._resolve_env_vars(v) for k, v in value.items()}
+        elif isinstance(value, list):
+            return [self._resolve_env_vars(v) for v in value]
+        return value
 
     # -------------------------------------------------------------------
     # Main entry points
@@ -219,16 +261,21 @@ class IngestionPipeline:
             logger.info(f"Fetching tools from MCP server: {server_name}")
             try:
                 server_type = server_config.get("type", "stdio")
-                if server_type == "streamableHttp":
-                    tools = self.fetcher.fetch_http(
-                        url=server_config.get("url", ""),
-                        headers=server_config.get("headers")
-                    )
-                else:
+                if server_type in self.HTTP_SERVER_TYPES:
+                    # Resolve env vars in URL and headers
+                    url = self._resolve_env_vars(server_config.get("url", ""))
+                    headers = self._resolve_env_vars(server_config.get("headers"))
+                    tools = self.fetcher.fetch_http(url=url, headers=headers)
+                elif server_config.get("command"):
+                    # stdio server — resolve env vars in args too
+                    args = self._resolve_env_vars(server_config.get("args", []))
                     tools = self.fetcher.fetch_stdio(
                         command=server_config.get("command", "python3"),
-                        args=server_config.get("args", [])
+                        args=args
                     )
+                else:
+                    logger.warning(f"  ⚠ {server_name}: unknown server type '{server_type}', skipping")
+                    continue
 
                 # Tag each tool with its server name
                 for tool in tools:
@@ -281,10 +328,9 @@ class IngestionPipeline:
         Returns:
             list[dict]: Tools from the MCP server.
         """
-        tools = self.fetcher.fetch_http(
-            url=config.get("url", ""),
-            headers=config.get("headers")
-        )
+        url = self._resolve_env_vars(config.get("url", ""))
+        headers = self._resolve_env_vars(config.get("headers"))
+        tools = self.fetcher.fetch_http(url=url, headers=headers)
 
         for tool in tools:
             tool["_source_server"] = config.get("name", "unknown")

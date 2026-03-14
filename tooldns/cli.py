@@ -4,8 +4,14 @@ cli.py — Interactive CLI for ToolDNS.
 Provides a command-line interface for setting up, managing,
 and using ToolDNS without running the HTTP server.
 
+Features:
+    - Auto-detects known AI framework configs (nanobot, openclaw)
+    - Interactive source management (add, list, remove)
+    - Semantic tool search from the command line
+    - Server management
+
 Commands:
-    tooldns setup       — Interactive first-time setup
+    tooldns setup       — Interactive first-time setup (auto-detects configs)
     tooldns add         — Add a source interactively
     tooldns sources     — List registered sources
     tooldns tools       — List all indexed tools
@@ -28,6 +34,69 @@ from pathlib import Path
 from tooldns.config import settings, logger
 from tooldns.models import SourceType
 
+
+# -------------------------------------------------------------------
+# Known AI framework configs (auto-detection)
+# -------------------------------------------------------------------
+
+# Each entry: (display_name, config_path, config_key)
+# config_key is the dot-separated JSON path to the mcpServers object.
+KNOWN_CONFIGS = [
+    {
+        "name": "nanobot",
+        "path": "~/.nanobot/config.json",
+        "config_key": "tools.mcpServers",
+        "description": "Nanobot AI agent framework",
+    },
+    {
+        "name": "openclaw",
+        "path": "~/.openclaw/workspace/config/mcporter.json",
+        "config_key": "mcpServers",
+        "description": "OpenClaw agent framework (mcporter)",
+    },
+]
+
+
+def detect_configs() -> list[dict]:
+    """
+    Scan the filesystem for known AI framework config files.
+
+    Checks each path in KNOWN_CONFIGS and returns the ones that exist.
+    Also validates that the config_key path actually contains MCP servers.
+
+    Returns:
+        list[dict]: Detected configs with name, path, config_key, and
+                    the number of MCP servers found.
+    """
+    detected = []
+    for cfg in KNOWN_CONFIGS:
+        full_path = Path(os.path.expanduser(cfg["path"]))
+        if not full_path.exists():
+            continue
+
+        try:
+            raw = json.loads(full_path.read_text(encoding="utf-8"))
+            # Navigate to the mcpServers section
+            section = raw
+            for key in cfg["config_key"].split("."):
+                section = section.get(key, {})
+
+            if section and isinstance(section, dict):
+                detected.append({
+                    **cfg,
+                    "full_path": str(full_path),
+                    "server_count": len(section),
+                    "server_names": list(section.keys()),
+                })
+        except Exception:
+            continue
+
+    return detected
+
+
+# -------------------------------------------------------------------
+# Component initialization
+# -------------------------------------------------------------------
 
 def get_components():
     """
@@ -63,15 +132,20 @@ def print_banner():
     """)
 
 
+# -------------------------------------------------------------------
+# Commands
+# -------------------------------------------------------------------
+
 def cmd_setup():
     """
-    Interactive first-time setup wizard.
+    Interactive first-time setup wizard with auto-detection.
 
     Walks the user through:
     1. Generating an API key
-    2. Setting the database path
-    3. Choosing whether to add a first source
-    4. Writing the .env file
+    2. Setting the server port
+    3. Auto-detecting known AI framework configs
+    4. Ingesting detected sources
+    5. Writing the .env file
     """
     print_banner()
     print("Welcome to ToolDNS setup!\n")
@@ -108,35 +182,97 @@ def cmd_setup():
             f.write(f"{k}={v}\n")
     print(f"\n✅ Config saved to {env_path}")
 
-    # Offer to add first source
-    print("\n4️⃣  Add your first tool source?")
-    add = input("   Add a source now? [Y/n]: ").strip().lower()
-    if add != "n":
-        cmd_add()
+    # Auto-detect configs
+    print("\n4️⃣  Auto-detecting AI framework configs...")
+    detected = detect_configs()
+
+    if detected:
+        print(f"\n   🔍 Found {len(detected)} config(s):\n")
+        for i, cfg in enumerate(detected, 1):
+            servers = ", ".join(cfg["server_names"])
+            print(f"   {i}) {cfg['name']} — {cfg['description']}")
+            print(f"      Path: {cfg['full_path']}")
+            print(f"      MCP servers ({cfg['server_count']}): {servers}")
+            print()
+
+        ingest_choice = input("   Ingest all detected configs? [Y/n]: ").strip().lower()
+        if ingest_choice != "n":
+            db_comp, embedder, search, pipeline = get_components()
+            for cfg in detected:
+                print(f"\n   ⏳ Ingesting '{cfg['name']}'...")
+                try:
+                    config = {
+                        "type": SourceType.MCP_CONFIG,
+                        "name": cfg["name"],
+                        "path": cfg["full_path"],
+                        "config_key": cfg["config_key"],
+                    }
+                    count = pipeline.ingest_source(config)
+                    print(f"   ✅ {cfg['name']}: indexed {count} tools")
+                except Exception as e:
+                    print(f"   ❌ {cfg['name']}: {e}")
+        else:
+            print("   Skipped. You can add sources later with 'tooldns add'.")
+    else:
+        print("   No known configs found.")
+        add = input("\n   Add a source manually? [Y/n]: ").strip().lower()
+        if add != "n":
+            cmd_add()
 
     print("\n🎉 Setup complete! Start the server with:")
-    print("   python -m tooldns.cli serve")
-    print("   or: python main.py")
+    print("   python3 -m tooldns.cli serve")
+    print("   or: python3 main.py")
 
 
 def cmd_add():
     """
     Interactive source addition wizard.
 
-    Walks the user through adding a tool source with a menu
-    of supported types. Immediately ingests the source after adding.
+    Presents a menu of source types. If MCP configs are detected
+    on the system, offers them as quick-add options first.
     """
     db, embedder, search, pipeline = get_components()
 
+    # Check for unregistered configs
+    detected = detect_configs()
+    existing_sources = {s["name"] for s in db.get_all_sources()}
+    new_detected = [c for c in detected if c["name"] not in existing_sources]
+
+    if new_detected:
+        print("\n🔍 Detected configs not yet registered:\n")
+        for i, cfg in enumerate(new_detected, 1):
+            servers = ", ".join(cfg["server_names"])
+            print(f"   {i}) {cfg['name']} — {servers}")
+        print(f"   {len(new_detected) + 1}) Add a different source manually")
+        print()
+
+        choice = input(f"   Choice [1-{len(new_detected) + 1}]: ").strip()
+        try:
+            idx = int(choice) - 1
+            if 0 <= idx < len(new_detected):
+                cfg = new_detected[idx]
+                config = {
+                    "type": SourceType.MCP_CONFIG,
+                    "name": cfg["name"],
+                    "path": cfg["full_path"],
+                    "config_key": cfg["config_key"],
+                }
+                print(f"\n⏳ Ingesting tools from '{cfg['name']}'...")
+                count = pipeline.ingest_source(config)
+                print(f"✅ Success! Indexed {count} tools from '{cfg['name']}'.")
+                return
+        except (ValueError, IndexError):
+            pass
+
+    # Manual add menu
     print("\n📦 Add a Tool Source")
-    print("   What type of source?")
-    print("")
-    print("   1) MCP Config File   — Read all MCP servers from a config.json")
+    print("   What type of source?\n")
+    print("   1) MCP Config File    — Read all MCP servers from a config.json")
     print("   2) MCP Server (stdio) — Connect to a local MCP server process")
     print("   3) MCP Server (HTTP)  — Connect to a remote MCP server URL")
     print("   4) Skill Directory    — Read skill .md files from a folder")
     print("   5) Custom Tool        — Register a single tool manually")
-    print("")
+    print()
 
     choice = input("   Choice [1-5]: ").strip()
 
@@ -145,13 +281,19 @@ def cmd_add():
     if choice == "1":
         config["type"] = SourceType.MCP_CONFIG
         config["name"] = input("   Source name (e.g., 'nanobot'): ").strip()
-        config["path"] = input("   Config file path (e.g., ~/.nanobot/config.json): ").strip()
+        config["path"] = input("   Config file path: ").strip()
+        if not config["path"]:
+            print("   ❌ Path is required.")
+            return
         config["config_key"] = input("   JSON path to MCP servers [tools.mcpServers]: ").strip() or "tools.mcpServers"
 
     elif choice == "2":
         config["type"] = SourceType.MCP_STDIO
         config["name"] = input("   Source name (e.g., 'my-skills'): ").strip()
         config["command"] = input("   Command (e.g., python3): ").strip()
+        if not config["command"]:
+            print("   ❌ Command is required.")
+            return
         args_str = input("   Arguments (space-separated): ").strip()
         config["args"] = args_str.split() if args_str else []
 
@@ -159,6 +301,9 @@ def cmd_add():
         config["type"] = SourceType.MCP_HTTP
         config["name"] = input("   Source name (e.g., 'composio'): ").strip()
         config["url"] = input("   Server URL: ").strip()
+        if not config["url"]:
+            print("   ❌ URL is required.")
+            return
         has_headers = input("   Custom headers? [y/N]: ").strip().lower()
         if has_headers == "y":
             headers = {}
@@ -174,6 +319,9 @@ def cmd_add():
         config["type"] = SourceType.SKILL_DIRECTORY
         config["name"] = input("   Source name (e.g., 'my-skills'): ").strip()
         config["path"] = input("   Directory path: ").strip()
+        if not config["path"]:
+            print("   ❌ Path is required.")
+            return
 
     elif choice == "5":
         config["type"] = SourceType.CUSTOM
@@ -185,6 +333,10 @@ def cmd_add():
 
     else:
         print("   ❌ Invalid choice.")
+        return
+
+    if not config.get("name"):
+        print("   ❌ Source name is required.")
         return
 
     # Ingest
@@ -301,7 +453,7 @@ def main():
         python -m tooldns.cli <command> [args]
 
     Commands:
-        setup     Interactive first-time setup
+        setup     Interactive first-time setup (auto-detects configs)
         add       Add a tool source interactively
         sources   List registered sources
         tools     List indexed tools
@@ -313,7 +465,7 @@ def main():
         print_banner()
         print("Usage: python -m tooldns.cli <command>\n")
         print("Commands:")
-        print("  setup     Interactive first-time setup")
+        print("  setup     Interactive first-time setup (auto-detects configs)")
         print("  add       Add a tool source interactively")
         print("  sources   List registered sources")
         print("  tools     List indexed tools [--source NAME]")
