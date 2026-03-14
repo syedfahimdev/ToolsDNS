@@ -32,6 +32,7 @@ from tooldns.ingestion import IngestionPipeline
 from tooldns.health import HealthMonitor
 from tooldns.api import router, init_api
 from tooldns.ui import ui_router, init_ui
+from tooldns.auth import init_auth
 
 # ---------------------------------------------------------------------------
 # Network access control middleware
@@ -272,6 +273,7 @@ async def lifespan(app: FastAPI):
 
     # Inject into API and UI routes
     init_api(search_engine, pipeline, db, health_monitor)
+    init_auth(db)
     init_ui(db, pipeline, health_monitor)
 
     tool_count = db.get_tool_count()

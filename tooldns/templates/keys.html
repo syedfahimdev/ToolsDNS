@@ -1,0 +1,181 @@
+{% extends "base.html" %}
+{% block title %} — API Keys{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>API Keys</h1>
+    <div class="page-sub">Create keys for your AI agents or to sell access to clients</div>
+  </div>
+</div>
+
+{% if msg %}
+<div class="alert {% if msg.startswith('success') %}alert-ok{% else %}alert-error{% endif %}">
+  {{ msg.split(':', 1)[1].replace('+', ' ') if ':' in msg else msg }}
+</div>
+{% endif %}
+
+<!-- Admin key info -->
+<section class="card">
+  <h2>Your Admin Key</h2>
+  <p class="hint-text">This is your master key — unlimited access, never expires. Keep it secret.</p>
+  <div class="key-display">
+    <code id="admin-key-val">{{ admin_key }}</code>
+    <button class="btn btn-sm" onclick="copyKey('admin-key-val')">Copy</button>
+  </div>
+  <div class="key-usage-hint">
+    Use as: <code>Authorization: Bearer {{ admin_key }}</code>
+  </div>
+</section>
+
+<!-- Create new key -->
+<section class="card">
+  <h2>Create New Key</h2>
+  <p class="hint-text">Give each client or agent their own key so you can track and control usage separately.</p>
+  <form method="post" action="/ui/keys/create" class="key-create-form">
+    <div class="key-form-grid">
+      <div class="form-row">
+        <label>Key Name <span class="hint">— internal reference (e.g. "acme-corp", "agent-v2")</span></label>
+        <input type="text" name="name" required placeholder="acme-corp" class="form-input">
+      </div>
+      <div class="form-row">
+        <label>Label <span class="hint">— shown to the key holder</span></label>
+        <input type="text" name="label" placeholder="Acme Corp Production" class="form-input">
+      </div>
+      <div class="form-row">
+        <label>Plan</label>
+        <select name="plan" class="form-input">
+          <option value="free">Free</option>
+          <option value="pro">Pro</option>
+          <option value="enterprise">Enterprise</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>Monthly Search Limit <span class="hint">— 0 = unlimited</span></label>
+        <input type="number" name="monthly_limit" value="1000" min="0" class="form-input">
+      </div>
+    </div>
+    <button type="submit" class="btn btn-primary">+ Generate Key</button>
+  </form>
+</section>
+
+<!-- Existing keys -->
+<section class="card">
+  <div class="section-header">
+    <h2>All Keys ({{ keys|length }})</h2>
+    <span class="hint">{{ total_searches }} total searches across all keys</span>
+  </div>
+
+  {% if not keys %}
+  <div class="empty-keys">
+    <div class="empty-icon">🔑</div>
+    <div class="empty-title">No keys yet</div>
+    <div class="empty-desc">Create a key above to give your AI agent or a client access to ToolDNS.</div>
+  </div>
+  {% else %}
+  <table class="tool-table keys-table">
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Key</th>
+        <th>Plan</th>
+        <th>Usage</th>
+        <th>Limit</th>
+        <th>Status</th>
+        <th>Last Used</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for k in keys %}
+    <tr id="key-row-{{ loop.index }}" class="{% if not k.is_active %}key-revoked{% endif %}">
+      <td>
+        <strong>{{ k.name }}</strong>
+        {% if k.label %}<br><small class="text-dim">{{ k.label }}</small>{% endif %}
+      </td>
+      <td>
+        <div class="key-cell">
+          <code id="key-{{ loop.index }}" class="key-code">{{ k.key[:12] }}…</code>
+          <button class="btn btn-sm" onclick="revealAndCopy('key-{{ loop.index }}', '{{ k.key }}')">Copy</button>
+        </div>
+      </td>
+      <td><span class="badge badge-plan-{{ k.plan }}">{{ k.plan }}</span></td>
+      <td>
+        {% if k.monthly_limit > 0 %}
+        <div class="usage-bar-wrap">
+          <div class="usage-bar">
+            <div class="usage-fill" style="width:{{ [[(k.search_count / k.monthly_limit * 100)|int, 0]|max, 100]|min }}%"></div>
+          </div>
+          <span class="usage-text">{{ k.search_count }}/{{ k.monthly_limit }}</span>
+        </div>
+        {% else %}
+        <span class="usage-text">{{ k.total_searches }} total</span>
+        {% endif %}
+      </td>
+      <td>{{ k.monthly_limit if k.monthly_limit > 0 else '∞' }}</td>
+      <td>
+        {% if k.is_active %}<span class="badge badge-ok">Active</span>
+        {% else %}<span class="badge badge-warn">Revoked</span>{% endif %}
+      </td>
+      <td class="ts">{{ k.last_used_at[:10] if k.last_used_at else 'Never' }}</td>
+      <td class="actions">
+        {% if k.is_active %}
+        <button hx-post="/ui/keys/{{ k.key }}/revoke"
+                hx-target="#key-row-{{ loop.index }} td:nth-child(6)"
+                hx-swap="innerHTML"
+                class="btn btn-sm btn-danger"
+                hx-confirm="Revoke key for {{ k.name }}?">Revoke</button>
+        {% endif %}
+        <button hx-post="/ui/keys/{{ k.key }}/reset"
+                hx-target="#key-row-{{ loop.index }} td:nth-child(4)"
+                hx-swap="innerHTML"
+                class="btn btn-sm">Reset</button>
+        <button hx-post="/ui/keys/{{ k.key }}/delete"
+                hx-target="#key-row-{{ loop.index }}"
+                hx-swap="outerHTML"
+                hx-confirm="Delete this key permanently?"
+                class="btn btn-sm btn-danger">✕</button>
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+
+<!-- How to use -->
+<section class="card">
+  <h2>How to Use an API Key</h2>
+  <p class="hint-text">Give a key to your AI agent or client. They use it to search your tool registry:</p>
+  <pre class="code-block">curl -X POST http://your-server:8787/v1/search \
+  -H "Authorization: Bearer td_their_key" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "send an email", "top_k": 2}'</pre>
+  <div style="margin-top:12px">
+    <a href="/docs" class="btn btn-sm">View Full API Docs →</a>
+    <a href="/ui/pricing" class="btn btn-sm" style="margin-left:8px">See Pricing Tiers →</a>
+  </div>
+</section>
+
+<script>
+function copyKey(id) {
+  const el = document.getElementById(id);
+  navigator.clipboard.writeText(el.textContent.trim()).then(() => {
+    const orig = el.nextElementSibling.textContent;
+    el.nextElementSibling.textContent = '✓ Copied';
+    setTimeout(() => el.nextElementSibling.textContent = orig, 2000);
+  });
+}
+function revealAndCopy(id, fullKey) {
+  navigator.clipboard.writeText(fullKey).then(() => {
+    const el = document.getElementById(id);
+    el.textContent = fullKey;
+    el.nextElementSibling.textContent = '✓ Copied';
+    setTimeout(() => {
+      el.textContent = fullKey.substring(0, 12) + '…';
+      el.nextElementSibling.textContent = 'Copy';
+    }, 3000);
+  });
+}
+</script>
+{% endblock %}

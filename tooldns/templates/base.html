@@ -9,15 +9,17 @@
 </head>
 <body>
   <nav>
-    <div class="nav-brand">🔍 ToolDNS</div>
+    <div class="nav-brand">
+      <span class="nav-logo">⚡</span>
+      <span>ToolDNS</span>
+    </div>
     <div class="nav-links">
-      <a href="/ui" class="{% if page == 'dashboard' %}active{% endif %}">Dashboard</a>
+      <a href="/ui" class="{% if page == 'dashboard' %}active{% endif %}">Home</a>
+      <a href="/ui/marketplace" class="{% if page == 'marketplace' %}active{% endif %}">🛒 Add Tools</a>
+      <a href="/ui/tools" class="{% if page == 'tools' %}active{% endif %}">Browse Tools</a>
       <a href="/ui/sources" class="{% if page == 'sources' %}active{% endif %}">Sources</a>
-      <a href="/ui/tools" class="{% if page == 'tools' %}active{% endif %}">Tools</a>
-      <a href="/ui/health" class="{% if page == 'health' %}active{% endif %}">Health</a>
-      <a href="/ui/stats" class="{% if page == 'stats' %}active{% endif %}">📊 Savings</a>
-      <a href="/ui/marketplace" class="{% if page == 'marketplace' %}active{% endif %}">🛒 Marketplace</a>
-      <a href="/ui/skills/new" class="{% if page == 'skills' %}active{% endif %}">+ Skill</a>
+      <a href="/ui/stats" class="{% if page == 'stats' %}active{% endif %}">Savings</a>
+      <a href="/ui/keys" class="{% if page == 'keys' %}active{% endif %}">API Keys</a>
       <a href="/ui/settings" class="{% if page == 'settings' %}active{% endif %}">⚙ Settings</a>
     </div>
   </nav>
@@ -27,7 +29,14 @@
   </main>
 
   <footer>
-    ToolDNS — DNS for AI Tools &nbsp;|&nbsp; <a href="/docs">API Docs</a>
+    <div class="footer-inner">
+      <span>ToolDNS — DNS for AI Tools</span>
+      <div class="footer-links">
+        <a href="/docs">API Docs</a>
+        <a href="/ui/pricing">Pricing</a>
+        <a href="https://github.com/syedfahimdev/tooldns" target="_blank">GitHub</a>
+      </div>
+    </div>
   </footer>
 </body>
 </html>

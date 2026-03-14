@@ -159,6 +159,21 @@ class ToolDatabase:
             )
         """)
 
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS api_keys (
+                key TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                label TEXT DEFAULT '',
+                plan TEXT DEFAULT 'free',
+                monthly_limit INTEGER DEFAULT 0,
+                search_count INTEGER DEFAULT 0,
+                total_searches INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                last_used_at TEXT,
+                is_active INTEGER DEFAULT 1
+            )
+        """)
+
         conn.commit()
         conn.close()
         logger.info(f"Database initialized at {self.db_path}")
@@ -913,3 +928,67 @@ class ToolDatabase:
                 "cost_saved_usd": round(r["cost_saved_usd"], 6),
             } for r in daily_rows],
         }
+
+    # -----------------------------------------------------------------------
+    # API Key management
+    # -----------------------------------------------------------------------
+
+    def create_api_key(self, name: str, label: str = "", plan: str = "free", monthly_limit: int = 0) -> str:
+        """Create a new API key. Returns the generated key string."""
+        import secrets
+        key = "td_" + secrets.token_urlsafe(24)
+        conn = self._get_conn()
+        conn.execute(
+            "INSERT INTO api_keys (key, name, label, plan, monthly_limit) VALUES (?, ?, ?, ?, ?)",
+            [key, name, label, plan, monthly_limit]
+        )
+        conn.commit()
+        conn.close()
+        return key
+
+    def get_api_key(self, key: str) -> Optional[dict]:
+        """Look up an API key. Returns None if not found."""
+        conn = self._get_conn()
+        row = conn.execute("SELECT * FROM api_keys WHERE key = ?", [key]).fetchone()
+        conn.close()
+        if not row:
+            return None
+        return dict(row)
+
+    def get_all_api_keys(self) -> list[dict]:
+        """Return all API keys (for admin UI)."""
+        conn = self._get_conn()
+        rows = conn.execute("SELECT * FROM api_keys ORDER BY created_at DESC").fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    def increment_key_usage(self, key: str) -> None:
+        """Increment search_count and total_searches for a key."""
+        conn = self._get_conn()
+        conn.execute(
+            "UPDATE api_keys SET search_count = search_count + 1, total_searches = total_searches + 1, last_used_at = ? WHERE key = ?",
+            [datetime.utcnow().isoformat(), key]
+        )
+        conn.commit()
+        conn.close()
+
+    def revoke_api_key(self, key: str) -> None:
+        """Deactivate (soft-delete) an API key."""
+        conn = self._get_conn()
+        conn.execute("UPDATE api_keys SET is_active = 0 WHERE key = ?", [key])
+        conn.commit()
+        conn.close()
+
+    def delete_api_key(self, key: str) -> None:
+        """Permanently delete an API key."""
+        conn = self._get_conn()
+        conn.execute("DELETE FROM api_keys WHERE key = ?", [key])
+        conn.commit()
+        conn.close()
+
+    def reset_key_monthly_count(self, key: str) -> None:
+        """Reset monthly search_count to 0 (for billing cycle reset)."""
+        conn = self._get_conn()
+        conn.execute("UPDATE api_keys SET search_count = 0 WHERE key = ?", [key])
+        conn.commit()
+        conn.close()

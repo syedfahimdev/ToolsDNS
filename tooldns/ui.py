@@ -805,6 +805,81 @@ async def settings_delete_all_sources():
 
 
 # ---------------------------------------------------------------------------
+# API Key Manager (SaaS / multi-tenant)
+# ---------------------------------------------------------------------------
+
+@ui_router.get("/keys", response_class=HTMLResponse)
+async def keys_page(request: Request, msg: str = ""):
+    """API key management page — create, view, revoke customer keys."""
+    from tooldns.config import settings
+    keys = _database.get_all_api_keys()
+    stats = _database.get_search_stats()
+    return templates.TemplateResponse("keys.html", {
+        "request": request,
+        "keys": keys,
+        "admin_key": settings.api_key,
+        "msg": msg,
+        "total_searches": stats.get("total_searches", 0),
+        "page": "keys",
+    })
+
+
+@ui_router.post("/keys/create")
+async def create_key(
+    name: str = Form(...),
+    label: str = Form(""),
+    plan: str = Form("free"),
+    monthly_limit: int = Form(0),
+):
+    """Create a new named API key."""
+    if not name.strip():
+        return RedirectResponse("/ui/keys?msg=error:Name+is+required", status_code=303)
+    key = _database.create_api_key(
+        name=name.strip(),
+        label=label.strip(),
+        plan=plan.strip(),
+        monthly_limit=monthly_limit,
+    )
+    # URL-encode the key for the msg param
+    safe_key = key.replace("_", "%5F")
+    return RedirectResponse(f"/ui/keys?msg=success:Key+created:+{key}", status_code=303)
+
+
+@ui_router.post("/keys/{key}/revoke")
+async def revoke_key(key: str):
+    """Revoke (deactivate) a key — HTMX."""
+    _database.revoke_api_key(key)
+    return HTMLResponse("<span class='badge badge-warn'>Revoked</span>")
+
+
+@ui_router.post("/keys/{key}/delete")
+async def delete_key_ui(key: str):
+    """Permanently delete a key — HTMX."""
+    _database.delete_api_key(key)
+    return HTMLResponse("")
+
+
+@ui_router.post("/keys/{key}/reset")
+async def reset_key_count(key: str):
+    """Reset a key's monthly search count — HTMX."""
+    _database.reset_key_monthly_count(key)
+    return HTMLResponse("<span class='badge badge-ok'>Reset</span>")
+
+
+# ---------------------------------------------------------------------------
+# Pricing page
+# ---------------------------------------------------------------------------
+
+@ui_router.get("/pricing", response_class=HTMLResponse)
+async def pricing_page(request: Request):
+    """Public-facing pricing page for selling ToolDNS as a service."""
+    return templates.TemplateResponse("pricing.html", {
+        "request": request,
+        "page": "pricing",
+    })
+
+
+# ---------------------------------------------------------------------------
 # Shareable Savings Card
 # ---------------------------------------------------------------------------
 
