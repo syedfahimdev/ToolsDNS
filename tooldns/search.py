@@ -1,20 +1,23 @@
 """
 search.py — Semantic search engine for ToolDNS.
 
-Performs semantic similarity search over indexed tools using
-cosine similarity between embedding vectors. When an LLM asks
-"I need a tool to create a GitHub issue", this module finds
-the most relevant tool(s) from the entire index — regardless
-of what source they came from.
+search.py — Hybrid search engine for ToolDNS.
 
-Algorithm:
-    1. Embed the query text using the same model used for tools
-    2. Compute cosine similarity against all stored tool embeddings
-    3. Rank by similarity score (highest = most relevant)
-    4. Filter by confidence threshold and return top_k results
+Performs hybrid search combining:
+    1. Semantic similarity (cosine) between embedding vectors
+    2. BM25 keyword matching via SQLite FTS5
+
+The hybrid approach ensures:
+    - Natural language queries work well (semantic)
+    - Exact tool name lookups work too (BM25)
+    - E.g. "GMAIL_SEND_EMAIL" matches by name, "send email" by meaning
+
+Scoring formula:
+    hybrid_score = (semantic_weight × cosine) + (bm25_weight × bm25_normalized)
+    Default: semantic=0.7, bm25=0.3
 
 Performance:
-    - For <10,000 tools, brute-force cosine similarity is fast enough (<50ms)
+    - For <10,000 tools, brute-force cosine + FTS5 is fast enough (<100ms)
     - For larger indexes, upgrade to vector DB (Qdrant, pgvector, FAISS)
 
 Usage:
@@ -45,8 +48,11 @@ class SearchEngine:
     """
 
     # Average tokens per tool schema — used for tokens_saved calculation.
-    # This is a rough estimate based on typical MCP tool definitions.
     AVG_TOKENS_PER_TOOL = 120
+
+    # Default weights for hybrid scoring
+    SEMANTIC_WEIGHT = 0.7
+    BM25_WEIGHT = 0.3
 
     def __init__(self, db: ToolDatabase, embedder: Embedder):
         """
@@ -98,14 +104,29 @@ class SearchEngine:
 
         # Compute cosine similarity for each tool
         scored_tools = []
+
+        # Get BM25 keyword scores
+        bm25_scores = self.db.bm25_search(query, limit=50)
+
         for tool in all_tools:
             embedding = tool.get("embedding", [])
             if not embedding:
                 continue
 
-            similarity = self._cosine_similarity(query_embedding, embedding)
-            if similarity >= threshold:
-                scored_tools.append((tool, similarity))
+            # Semantic score (cosine similarity)
+            semantic_score = self._cosine_similarity(query_embedding, embedding)
+
+            # BM25 score (keyword match), defaults to 0 if no match
+            bm25_score = bm25_scores.get(tool["id"], 0.0)
+
+            # Hybrid score
+            hybrid = (
+                self.SEMANTIC_WEIGHT * semantic_score +
+                self.BM25_WEIGHT * bm25_score
+            )
+
+            if hybrid >= threshold:
+                scored_tools.append((tool, hybrid))
 
         # Sort by similarity (highest first) and take top_k
         scored_tools.sort(key=lambda x: x[1], reverse=True)

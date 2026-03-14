@@ -8,6 +8,7 @@ similarity in Python for the MVP (can upgrade to pgvector/Qdrant later).
 
 Architecture:
     - tools table: Stores the universal tool schema + embedding vectors
+    - tools_fts table: FTS5 virtual table for BM25 keyword search
     - sources table: Tracks registered sources and their refresh status
     - SQLite is chosen for zero-dependency deployment (no external DB needed)
 
@@ -67,6 +68,7 @@ class ToolDatabase:
 
         Tables:
             tools: Stores tool metadata, input schemas, source info, and embeddings.
+            tools_fts: FTS5 virtual table for BM25 keyword search.
             sources: Tracks registered tool sources and their refresh status.
         """
         conn = self._get_conn()
@@ -82,6 +84,12 @@ class ToolDatabase:
                 indexed_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        conn.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS tools_fts
+            USING fts5(tool_id, name, description, tags)
+        """)
+
         conn.execute("""
             CREATE TABLE IF NOT EXISTS sources (
                 id TEXT PRIMARY KEY,
@@ -133,6 +141,15 @@ class ToolDatabase:
             json.dumps(embedding),
             datetime.utcnow().isoformat()
         ])
+
+        # Update FTS5 index (delete old entry first, then insert)
+        conn.execute("DELETE FROM tools_fts WHERE tool_id = ?", [tool_id])
+        tags_text = " ".join(tags) if tags else ""
+        conn.execute(
+            "INSERT INTO tools_fts (tool_id, name, description, tags) VALUES (?, ?, ?, ?)",
+            [tool_id, name, description, tags_text]
+        )
+
         conn.commit()
         conn.close()
 
@@ -239,11 +256,21 @@ class ToolDatabase:
             int: Number of tools deleted.
         """
         conn = self._get_conn()
+
+        # Delete FTS5 entries FIRST (before tools, since query references tools table)
+        conn.execute(
+            "DELETE FROM tools_fts WHERE tool_id IN "
+            "(SELECT id FROM tools WHERE json_extract(source_info, '$.source_name') = ?)",
+            [source_name]
+        )
+
+        # Then delete the tools
         cursor = conn.execute(
             "DELETE FROM tools WHERE json_extract(source_info, '$.source_name') = ?",
             [source_name]
         )
         count = cursor.rowcount
+
         conn.commit()
         conn.close()
         return count
@@ -259,6 +286,62 @@ class ToolDatabase:
         count = conn.execute("SELECT COUNT(*) as c FROM tools").fetchone()["c"]
         conn.close()
         return count
+
+    def bm25_search(self, query: str, limit: int = 20) -> dict[str, float]:
+        """
+        Perform BM25 keyword search using FTS5.
+
+        Returns a dict mapping tool_id to a normalized BM25 score (0-1).
+        FTS5's bm25() returns negative values (lower = better match),
+        so we negate and normalize them.
+
+        Args:
+            query: Search query string.
+            limit: Maximum results to return.
+
+        Returns:
+            dict[str, float]: {tool_id: normalized_score} where 1.0 = best match.
+        """
+        conn = self._get_conn()
+        try:
+            # FTS5 match query — escape special chars
+            safe_query = query.replace('"', '').replace("'", '')
+            # Search across name and description with different weights
+            rows = conn.execute(
+                "SELECT tool_id, bm25(tools_fts, 0, 10.0, 5.0, 2.0) as score "
+                "FROM tools_fts WHERE tools_fts MATCH ? "
+                "ORDER BY score LIMIT ?",
+                [safe_query, limit]
+            ).fetchall()
+        except Exception:
+            # If FTS match fails (bad query syntax), try with quoted query
+            try:
+                rows = conn.execute(
+                    'SELECT tool_id, bm25(tools_fts, 0, 10.0, 5.0, 2.0) as score '
+                    'FROM tools_fts WHERE tools_fts MATCH ? '
+                    'ORDER BY score LIMIT ?',
+                    [f'"{safe_query}"', limit]
+                ).fetchall()
+            except Exception:
+                conn.close()
+                return {}
+        conn.close()
+
+        if not rows:
+            return {}
+
+        # BM25 scores are negative (lower = better), negate them
+        raw_scores = {row["tool_id"]: -row["score"] for row in rows}
+
+        # Normalize to 0-1 range
+        max_score = max(raw_scores.values()) if raw_scores else 1.0
+        if max_score <= 0:
+            return {}
+
+        return {
+            tid: score / max_score
+            for tid, score in raw_scores.items()
+        }
 
     # -----------------------------------------------------------------------
     # Source operations

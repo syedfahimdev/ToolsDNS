@@ -187,10 +187,10 @@ class IngestionPipeline:
 
     def ingest_all(self) -> int:
         """
-        Re-ingest all registered sources.
+        Re-ingest all registered sources AND local config directories.
 
-        Reads the list of sources from the database and re-ingests each one.
-        This is called by the refresh cron and the /v1/ingest endpoint.
+        Reads the list of sources from the database, re-ingests each one,
+        then scans ~/.tooldns/ for local configs, skills, and tools.
 
         Returns:
             int: Total number of tools ingested across all sources.
@@ -210,11 +210,264 @@ class IngestionPipeline:
                 errors.append(f"{source['name']}: {e}")
                 logger.error(f"Error re-ingesting {source['name']}: {e}")
 
+        # Also ingest local config directories
+        try:
+            local_count = self.ingest_local()
+            total += local_count
+        except Exception as e:
+            logger.error(f"Error ingesting local config: {e}")
+
         if errors:
             logger.warning(f"Ingestion errors: {errors}")
 
-        logger.info(f"Full re-ingestion complete: {total} tools from {len(sources)} sources")
+        logger.info(f"Full re-ingestion complete: {total} tools from {len(sources)} sources + local")
         return total
+
+    def ingest_local(self) -> int:
+        """
+        Ingest tools from ~/.tooldns/ local directories.
+
+        Scans three locations:
+            1. config.json — custom MCP servers (with ${VAR} env var resolution)
+            2. skills/<name>/SKILL.md — skill description files
+            3. tools/*.py — custom Python tool definitions
+
+        Returns:
+            int: Total tools ingested from local directories.
+        """
+        from tooldns.config import TOOLDNS_HOME
+        home = TOOLDNS_HOME
+        total = 0
+
+        # 1. Custom MCP config
+        config_file = home / "config.json"
+        if config_file.exists():
+            try:
+                count = self._ingest_local_config(config_file)
+                total += count
+                logger.info(f"Local config.json: {count} tools")
+            except Exception as e:
+                logger.error(f"Local config.json error: {e}")
+
+        # 2. Skills directory
+        skills_dir = home / "skills"
+        if skills_dir.exists():
+            try:
+                count = self._ingest_local_skills(skills_dir)
+                total += count
+                logger.info(f"Local skills/: {count} tools")
+            except Exception as e:
+                logger.error(f"Local skills/ error: {e}")
+
+        # 3. Custom tools directory
+        tools_dir = home / "tools"
+        if tools_dir.exists():
+            try:
+                count = self._ingest_local_tools(tools_dir)
+                total += count
+                logger.info(f"Local tools/: {count} tools")
+            except Exception as e:
+                logger.error(f"Local tools/ error: {e}")
+
+        return total
+
+    def _ingest_local_config(self, config_path: Path) -> int:
+        """
+        Ingest MCP servers from ~/.tooldns/config.json.
+
+        Same format as nanobot/openclaw configs. Credentials use
+        ${ENV_VAR} references which are resolved automatically.
+
+        Args:
+            config_path: Path to the config.json file.
+
+        Returns:
+            int: Number of tools ingested.
+        """
+        config = {
+            "type": SourceType.MCP_CONFIG,
+            "name": "local",
+            "path": str(config_path),
+            "config_key": "mcpServers",
+        }
+        return self.ingest_source(config)
+
+    def _ingest_local_skills(self, skills_dir: Path) -> int:
+        """
+        Ingest skills from ~/.tooldns/skills/<name>/SKILL.md files.
+
+        Each skill is a subfolder containing a SKILL.md file.
+        The SKILL.md front matter (YAML) is parsed for name and description.
+        The rest of the file is used as the full description for embedding.
+
+        Expected structure:
+            skills/
+              my-skill/
+                SKILL.md   (with name: and description: in YAML frontmatter)
+
+        Args:
+            skills_dir: Path to the skills directory.
+
+        Returns:
+            int: Number of skills ingested as tools.
+        """
+        source_name = "local-skills"
+        self.db.delete_tools_by_source(source_name)
+
+        tools = []
+        for skill_folder in sorted(skills_dir.iterdir()):
+            if not skill_folder.is_dir():
+                continue
+
+            skill_file = skill_folder / "SKILL.md"
+            if not skill_file.exists():
+                continue
+
+            try:
+                content = skill_file.read_text(encoding="utf-8")
+                name, description = self._parse_skill_md(content, skill_folder.name)
+                tools.append({
+                    "name": name,
+                    "description": description,
+                    "inputSchema": {},
+                    "_source_server": "local-skills",
+                    "_source_type": "skill",
+                })
+                logger.info(f"  → Skill: {name}")
+            except Exception as e:
+                logger.warning(f"  ✗ Skill {skill_folder.name}: {e}")
+
+        return self._index_tools(tools, source_name, "skill_directory")
+
+    def _parse_skill_md(self, content: str, folder_name: str) -> tuple[str, str]:
+        """
+        Parse a SKILL.md file for name and description.
+
+        Extracts YAML front matter (between --- delimiters) for the
+        skill name and description. Falls back to folder name.
+
+        Args:
+            content: The full SKILL.md file content.
+            folder_name: The skill folder name (used as fallback).
+
+        Returns:
+            tuple[str, str]: (name, description)
+        """
+        name = folder_name
+        description = ""
+
+        # Parse YAML front matter
+        if content.startswith("---"):
+            parts = content.split("---", 2)
+            if len(parts) >= 3:
+                frontmatter = parts[1]
+                body = parts[2].strip()
+
+                for line in frontmatter.strip().split("\n"):
+                    if line.startswith("name:"):
+                        name = line.split(":", 1)[1].strip().strip('"').strip("'")
+                    elif line.startswith("description:"):
+                        description = line.split(":", 1)[1].strip().strip('"').strip("'")
+
+                # Use body as description if frontmatter description is short
+                if body and len(description) < 50:
+                    description = (description + " " + body[:500]).strip()
+        else:
+            # No front matter — use first line as description
+            lines = content.strip().split("\n")
+            description = lines[0].lstrip("# ").strip() if lines else folder_name
+
+        if not description:
+            description = f"Skill: {name}"
+
+        return name, description
+
+    def _ingest_local_tools(self, tools_dir: Path) -> int:
+        """
+        Ingest custom tools from ~/.tooldns/tools/*.py files.
+
+        Each .py file should define module-level variables:
+            - TOOL_NAME (str): The tool's name
+            - TOOL_DESCRIPTION (str): What the tool does
+            - TOOL_INPUT_SCHEMA (dict): JSON Schema for inputs (optional)
+
+        Example tools/my_tool.py:
+            TOOL_NAME = "my_custom_tool"
+            TOOL_DESCRIPTION = "Does something useful"
+            TOOL_INPUT_SCHEMA = {"type": "object", "properties": {...}}
+
+        Args:
+            tools_dir: Path to the tools directory.
+
+        Returns:
+            int: Number of tools ingested.
+        """
+        source_name = "local-tools"
+        self.db.delete_tools_by_source(source_name)
+
+        tools = []
+        for tool_file in sorted(tools_dir.glob("*.py")):
+            try:
+                content = tool_file.read_text(encoding="utf-8")
+                # Extract module-level variables without executing the file
+                name, description, schema = self._parse_tool_py(content, tool_file.stem)
+                tools.append({
+                    "name": name,
+                    "description": description,
+                    "inputSchema": schema,
+                    "_source_server": "local-tools",
+                    "_source_type": "custom",
+                })
+                logger.info(f"  → Tool: {name}")
+            except Exception as e:
+                logger.warning(f"  ✗ Tool {tool_file.name}: {e}")
+
+        return self._index_tools(tools, source_name, "custom")
+
+    def _parse_tool_py(self, content: str, filename: str) -> tuple[str, str, dict]:
+        """
+        Parse a custom tool .py file for name, description, and schema.
+
+        Extracts TOOL_NAME, TOOL_DESCRIPTION, and TOOL_INPUT_SCHEMA
+        from module-level variable assignments without executing code.
+
+        Args:
+            content: The .py file contents.
+            filename: The filename (used as fallback name).
+
+        Returns:
+            tuple[str, str, dict]: (name, description, input_schema)
+        """
+        import ast
+
+        name = filename
+        description = ""
+        schema = {}
+
+        try:
+            tree = ast.parse(content)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Assign):
+                    for target in node.targets:
+                        if isinstance(target, ast.Name):
+                            if target.id == "TOOL_NAME" and isinstance(node.value, ast.Constant):
+                                name = node.value.value
+                            elif target.id == "TOOL_DESCRIPTION" and isinstance(node.value, ast.Constant):
+                                description = node.value.value
+                            elif target.id == "TOOL_INPUT_SCHEMA":
+                                schema = ast.literal_eval(node.value)
+        except Exception:
+            # Fallback: use docstring
+            lines = content.strip().split("\n")
+            for line in lines:
+                if line.strip().startswith('"""') or line.strip().startswith("'''"):
+                    description = line.strip().strip('"\"').strip("'\'")
+                    break
+
+        if not description:
+            description = f"Custom tool: {name}"
+
+        return name, description, schema
 
     # -------------------------------------------------------------------
     # Source-specific handlers

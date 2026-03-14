@@ -156,9 +156,28 @@ def cmd_install():
     print(f"   Home directory: {home}")
     print(f"   Repo directory: {repo_dir}")
 
-    # Create home directory
+    # Create home directory and subdirectories
     home.mkdir(parents=True, exist_ok=True)
+    (home / "skills").mkdir(exist_ok=True)
+    (home / "tools").mkdir(exist_ok=True)
     print(f"   ✅ Created {home}")
+    print(f"   ✅ Created {home}/skills/ (drop skill folders here)")
+    print(f"   ✅ Created {home}/tools/  (drop .py tool files here)")
+
+    # Create example config.json if it doesn't exist
+    config_file = home / "config.json"
+    if not config_file.exists():
+        config_file.write_text(json.dumps({
+            "mcpServers": {
+                "_example": {
+                    "type": "streamableHttp",
+                    "url": "https://your-mcp-server.com/mcp",
+                    "headers": {"Authorization": "Bearer ${YOUR_API_KEY}"},
+                    "_note": "Remove this entry and add your own MCP servers. Use ${ENV_VAR} for credentials."
+                }
+            }
+        }, indent=2))
+        print(f"   ✅ Created example config.json (add your MCP servers)")
 
     # Save repo path so 'update' knows where to git pull
     repo_file = home / "repo_path"
