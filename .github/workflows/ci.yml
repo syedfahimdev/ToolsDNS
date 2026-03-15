@@ -14,14 +14,22 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
       - name: Install dependencies
         run: pip install -e ".[dev]" 2>/dev/null || pip install -e .
+
       - name: Check imports
         run: |
           python3 -c "from tooldns.ui import ui_router; print('ui OK')"
           python3 -c "from tooldns.api import router; print('api OK')"
           python3 -c "from tooldns.auth import require_api_key, init_auth; print('auth OK')"
           python3 -c "from tooldns.discover import discover_from_url; print('discover OK')"
+          python3 -c "from tooldns.config import settings; print('config OK')"
+
+      - name: Verify CLI entry points
+        run: |
+          python3 -c "from tooldns.cli import main; print('CLI entry point OK')"
+
       - name: Test discover module
         run: |
           python3 -c "
@@ -32,3 +40,12 @@ jobs:
           assert r.get('detected_type') == 'npm MCP Package', r
           print('All discover tests passed')
           "
+
+      - name: Check no hardcoded secrets or old branding
+        run: |
+          # Fail if old "ToolDNS" (missing s) appears in user-visible code
+          if grep -r "ToolDNS" --include="*.py" --include="*.html" --include="*.md" . | grep -v ".git"; then
+            echo "ERROR: Found old 'ToolDNS' branding — use 'ToolsDNS'"
+            exit 1
+          fi
+          echo "Branding check passed"

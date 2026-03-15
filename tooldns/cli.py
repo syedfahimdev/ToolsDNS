@@ -13,13 +13,13 @@ Features:
 Commands:
     tooldns install     — Create ~/.tooldns, install dependencies, run setup
     tooldns update      — Pull latest code and sync ~/.tooldns
-    tooldns setup       — Interactive first-time setup (auto-detects configs)
-    tooldns add         — Add a source interactively
-    tooldns sources     — List registered sources
-    tooldns tools       — List all indexed tools
-    tooldns search      — Search for a tool
-    tooldns ingest      — Re-ingest all sources
-    tooldns serve       — Start the API server
+    toolsdns setup       — Interactive first-time setup (auto-detects configs)
+    toolsdns add         — Add a source interactively
+    toolsdns sources     — List registered sources
+    toolsdns tools       — List all indexed tools
+    toolsdns search      — Search for a tool
+    toolsdns ingest      — Re-ingest all sources
+    toolsdns serve       — Start the API server
 
 Usage:
     python3 -m tooldns.cli install
@@ -250,7 +250,7 @@ def cmd_install():
             print(f"   ⚠ Dependency install issue: {result.stderr[:200]}")
 
     # Install tooldns as a package so 'python3 -m tooldns.mcp_server' works globally
-    print("⏳ Installing tooldns package...")
+    print("⏳ Installing ToolsDNS package...")
     result = subprocess.run(
         [sys.executable, "-m", "pip", "install",
          "--break-system-packages", "-q", "-e", str(repo_dir)],
@@ -380,7 +380,7 @@ def cmd_setup():
     print("   Examples:")
     print("     Slack:   https://hooks.slack.com/services/T.../B.../...")
     print("     Discord: https://discord.com/api/webhooks/...")
-    print("     Custom:  https://yourserver.com/tooldns-alert")
+    print("     Custom:  https://yourserver.com/toolsdns-alert")
     webhook = input("   Webhook URL (leave blank to skip): ").strip()
     if webhook:
         env_vars["TOOLDNS_WEBHOOK_URL"] = webhook
@@ -435,7 +435,7 @@ def _run_auto_detect():
     choice = input("\n   Select configs to ingest: ").strip().lower()
 
     if choice == "skip":
-        print("   Skipped. Run 'tooldns add' later.")
+        print("   Skipped. Run 'toolsdns add' later.")
         return
 
     if choice == "all":
@@ -617,7 +617,7 @@ def cmd_sources():
     sources = db.get_all_sources()
 
     if not sources:
-        print("No sources registered. Run 'tooldns add' to add one.")
+        print("No sources registered. Run 'toolsdns add' to add one.")
         return
 
     print(f"\n📋 Registered Sources ({len(sources)}):\n")
@@ -645,7 +645,7 @@ def cmd_tools(source_filter: str = None):
         tools = db.get_all_tools()
 
     if not tools:
-        print("No tools indexed. Run 'tooldns add' to add a source.")
+        print("No tools indexed. Run 'toolsdns add' to add a source.")
         return
 
     print(f"\n🔧 Indexed Tools ({len(tools)}):\n")
@@ -753,7 +753,7 @@ def cmd_status():
     print(f"   🌐 Server: http://{settings.host}:{settings.port}")
     print(f"   📖 API docs: http://localhost:{settings.port}/docs")
     print()
-    print("   All good! ✅" if tool_count > 0 else "   ⚠️  No tools indexed. Run 'tooldns add'.")
+    print("   All good! ✅" if tool_count > 0 else "   ⚠️  No tools indexed. Run 'toolsdns add'.")
 
 
 def cmd_install_mcp():
@@ -775,7 +775,7 @@ def cmd_install_mcp():
     # Step 1: Package type
     print("   What kind of MCP server?")
     print("   1) npm / npx  (e.g., @modelcontextprotocol/server-github)")
-    print("   2) pip / Python  (e.g., tooldns)")
+    print("   2) pip / Python  (e.g., toolsdns)")
     print("   3) Custom command  (already installed, just configure it)")
     print()
     pkg_type = input("   Choice [1-3]: ").strip()

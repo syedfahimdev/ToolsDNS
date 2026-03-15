@@ -1159,7 +1159,7 @@ async def savings_card(request: Request):
 
   <div class="actions">
     <button class="btn btn-primary" onclick="copyLink()">🔗 Copy Link</button>
-    <a href="{svg_url}" class="btn btn-secondary" download="tooldns-savings.svg">⬇ Download SVG</a>
+    <a href="{svg_url}" class="btn btn-secondary" download="toolsdns-savings.svg">⬇ Download SVG</a>
     <a href="/ui/stats" class="btn btn-secondary">📊 Full Stats</a>
   </div>
   <div class="copy-hint" id="copy-hint">&nbsp;</div>

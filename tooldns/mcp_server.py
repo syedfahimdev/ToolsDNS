@@ -1,10 +1,10 @@
 """
-mcp_server.py — ToolDNS as an MCP server (fastmcp edition).
+mcp_server.py — ToolsDNS as an MCP server (fastmcp edition).
 
-Exposes ToolDNS to any MCP-capable agent as five tools:
+Exposes ToolsDNS to any MCP-capable agent as five tools:
     1. search_tools      — find tools by natural language
     2. get_tool          — get full schema + skill instructions
-    3. call_tool         — execute a tool through ToolDNS
+    3. call_tool         — execute a tool through ToolsDNS
     4. register_mcp_server — add a new MCP server on the fly
     5. create_skill      — create a new skill file
 
@@ -45,7 +45,7 @@ mcp = FastMCP(
     name="tooldns",
     version="2.0.0",
     instructions=(
-        "ToolDNS gives you semantic search over 100+ MCP tools. "
+        "ToolsDNS gives you semantic search over 100+ MCP tools. "
         "Instead of loading every tool schema into your context, call "
         "search_tools() first to find the right tool, then call_tool() "
         "to execute it. This saves thousands of tokens per request.\n\n"
@@ -76,7 +76,7 @@ async def _get_client() -> httpx.AsyncClient:
 
 
 async def _api(method: str, path: str, body: dict | None = None) -> dict:
-    """Make a request to the ToolDNS HTTP API."""
+    """Make a request to the ToolsDNS HTTP API."""
     client = await _get_client()
     try:
         if method == "GET":
@@ -86,14 +86,14 @@ async def _api(method: str, path: str, body: dict | None = None) -> dict:
         resp.raise_for_status()
         return resp.json()
     except httpx.HTTPStatusError as e:
-        raise ToolError(f"ToolDNS API error {e.response.status_code}: {e.response.text[:200]}")
+        raise ToolError(f"ToolsDNS API error {e.response.status_code}: {e.response.text[:200]}")
     except httpx.ConnectError:
         raise ToolError(
-            "Cannot connect to ToolDNS (http://127.0.0.1:8787). "
-            "Is the service running? Check: systemctl status tooldns"
+            "Cannot connect to ToolsDNS (http://127.0.0.1:8787). "
+            "Is the service running? Check: systemctl status toolsdns"
         )
     except Exception as e:
-        raise ToolError(f"ToolDNS API error: {e}")
+        raise ToolError(f"ToolsDNS API error: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +107,7 @@ async def search_tools(
     ctx: Optional[Context] = None,
 ) -> str:
     """
-    Search the ToolDNS index by natural language description.
+    Search the ToolsDNS index by natural language description.
 
     Describe what you need and get back the most relevant tools with
     confidence scores and input schemas. Use the returned tool_id with
@@ -207,7 +207,7 @@ async def call_tool(
     ctx: Optional[Context] = None,
 ) -> str:
     """
-    Execute a tool via ToolDNS.
+    Execute a tool via ToolsDNS.
 
     For MCP tools, forwards the call to the original MCP server and returns
     the result. For skills, returns the skill instructions to follow.
@@ -260,7 +260,7 @@ async def register_mcp_server(
     ctx: Optional[Context] = None,
 ) -> str:
     """
-    Register a new MCP server into ToolDNS.
+    Register a new MCP server into ToolsDNS.
 
     Saves credentials to ~/.tooldns/.env, adds the server to
     ~/.tooldns/config.json, and indexes its tools immediately so they
@@ -312,7 +312,7 @@ async def create_skill(
     ctx: Optional[Context] = None,
 ) -> str:
     """
-    Create a new skill file in the ToolDNS skills directory.
+    Create a new skill file in the ToolsDNS skills directory.
 
     A skill is a markdown file that teaches the agent how to call an API
     or perform a multi-step task. Indexed immediately after creation so
@@ -465,11 +465,11 @@ async def list_skills(ctx: Optional[Context] = None) -> str:
 
 @mcp.resource("tooldns://tools")
 async def tools_resource() -> str:
-    """Browse all tools indexed in ToolDNS. Returns a summary list."""
+    """Browse all tools indexed in ToolsDNS. Returns a summary list."""
     result = await _api("POST", "/v1/search", {"query": "tool", "top_k": 50})
     results = result.get("results", [])
     total = result.get("total_tools_indexed", 0)
-    lines = [f"# ToolDNS — {total} tools indexed\n"]
+    lines = [f"# ToolsDNS — {total} tools indexed\n"]
     for r in results:
         lines.append(f"- **{r['name']}** ({r['source']}): {r['description'][:100]}")
     return "\n".join(lines)
@@ -477,11 +477,11 @@ async def tools_resource() -> str:
 
 @mcp.resource("tooldns://sources")
 async def sources_resource() -> str:
-    """All registered MCP server sources in ToolDNS."""
+    """All registered MCP server sources in ToolsDNS."""
     result = await _api("GET", "/health")
     sources = result.get("sources", [])
     total_tools = result.get("tools_indexed", 0)
-    lines = [f"# ToolDNS Sources — {total_tools} tools across {len(sources)} source(s)\n"]
+    lines = [f"# ToolsDNS Sources — {total_tools} tools across {len(sources)} source(s)\n"]
     if sources:
         for src in sources:
             if isinstance(src, dict):
@@ -501,7 +501,7 @@ async def sources_resource() -> str:
 # ---------------------------------------------------------------------------
 
 def run():
-    """Run the ToolDNS MCP server (transport selected via TOOLDNS_MCP_TRANSPORT env var)."""
+    """Run the ToolsDNS MCP server (transport selected via TOOLDNS_MCP_TRANSPORT env var)."""
     transport = os.environ.get("TOOLDNS_MCP_TRANSPORT", "stdio")
     mcp.run(transport=transport)
 

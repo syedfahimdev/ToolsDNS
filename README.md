@@ -1,8 +1,14 @@
 # ToolsDNS
 
-**DNS for AI Tools** — Search 10,000 tools. Return only the one you need.
+**DNS for AI Tools** — Search 1,700+ tools. Return only the one you need.
+
+[![CI](https://github.com/syedfahimdev/ToolsDNS/actions/workflows/ci.yml/badge.svg)](https://github.com/syedfahimdev/ToolsDNS/actions/workflows/ci.yml)
+[![Security](https://github.com/syedfahimdev/ToolsDNS/actions/workflows/security.yml/badge.svg)](https://github.com/syedfahimdev/ToolsDNS/actions/workflows/security.yml)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-purple.svg)](LICENSE)
 
 > The standard way to give an AI agent tools (loading a massive MCP with 500 schemas) is like making someone read a 1,000-page encyclopedia every time you ask them a single question. ToolsDNS fixes this.
+
+---
 
 ## The Problem
 
@@ -15,100 +21,75 @@ When you connect an AI agent to tools via Composio, Zapier MCP, or similar platf
 
 ## The Solution
 
-ToolsDNS is a universal tool registry with semantic search routing. Point it at your MCP servers, skill files, or APIs — and when your LLM needs a tool, it queries ToolsDNS to get back **only** the relevant tool schema.
+ToolsDNS is a universal tool registry with semantic search routing. Point it at your MCP servers, skill files, or APIs — when your LLM needs a tool, it queries ToolsDNS to get back **only** the relevant tool schema.
 
 ```
 Without ToolsDNS:  LLM receives 500 tool schemas (50,000+ tokens) every message
 With ToolsDNS:     LLM searches → gets 1-2 relevant schemas (~200 tokens)
 ```
 
+---
+
 ## Features
 
 | Feature | Description |
 |---------|-------------|
 | 🔍 **Semantic Search** | Find tools by natural language, not exact names |
-| 📊 **Token Tracking** | Real token counting with tiktoken, cost savings per search |
+| 📋 **Skill Listing** | `list_skills` tool — agents instantly see all your skills |
+| 📊 **Token Tracking** | Real token counting with cost savings per search |
 | 🏥 **Health Monitoring** | Auto-check if MCP servers are online/degraded/down |
 | 🛒 **Marketplace** | One-click install popular MCP servers (GitHub, Slack, etc.) |
-| 🎨 **Web Dashboard** | Browser UI for managing sources, browsing tools, viewing stats |
+| 🎨 **Web Dashboard** | Full browser UI — manage everything without touching code |
 | 🔌 **MCP Server Mode** | Expose ToolsDNS itself as an MCP server for any agent |
-| ⚡ **FastMCP Integration** | Native FastMCP wrapper for easy agent integration |
-| 📦 **Skill Management** | Create and manage skill files from the UI |
-| 🔧 **Auto-Discovery** | Pull tools from any MCP config file automatically |
+| 📦 **Skill Management** | Create, read, update skills from the UI or API |
+| 🔧 **Auto-Discovery** | Pull tools from any URL (Smithery, npm, GitHub, HTTP MCP) |
+| 🔑 **API Key Manager** | Per-key usage tracking, monthly limits, client portal |
+| 🚀 **1-Click Deploy** | Built-in deploy guide for Railway, Render, Fly.io, Docker |
+| 🏷️ **White-Label** | Brand it as your own via env vars — no code changes |
+
+---
 
 ## How It Works
 
 ```
-┌──────────────────┐     ┌─────────────────────┐     ┌──────────────┐
-│  Tool Sources     │     │      ToolsDNS         │     │  LLM Agent   │
-│                   │     │                      │     │              │
-│ • MCP Servers     │────▶│  1. Register tools   │◀────│  "I need a   │
-│ • Config files    │     │  2. Embed & index    │     │   tool to    │
-│ • Skill files     │     │  3. Semantic search   │────▶│   create a   │
-│ • Custom tools    │     │  4. Return only the   │     │   github     │
-│ • OpenAPI specs   │     │     relevant schema   │     │   issue"     │
-└──────────────────┘     └─────────────────────┘     └──────────────┘
+┌──────────────────┐     ┌──────────────────────┐     ┌──────────────┐
+│  Tool Sources     │     │      ToolsDNS          │     │  LLM Agent   │
+│                   │     │                       │     │              │
+│ • MCP Servers     │────▶│  1. Register tools    │◀────│  "What skills│
+│ • Config files    │     │  2. Embed & index     │     │   do I have?"│
+│ • Skill files     │     │  3. list_skills()      │────▶│              │
+│ • Custom tools    │     │  4. search_tools()    │     │  "Create a   │
+│ • OpenAPI specs   │     │  5. Return only the   │────▶│   work order"│
+└──────────────────┘     │     relevant schema   │     └──────────────┘
+                          └──────────────────────┘
 ```
 
 1. **Register sources** — Point ToolsDNS at your MCP configs, skill directories, or custom tools
 2. **Auto-discover** — ToolsDNS connects to each MCP server and fetches all tool definitions
 3. **Embed & index** — Each tool's description is embedded for semantic search (locally, no API cost)
-4. **Search** — When an LLM needs a tool, it queries ToolsDNS with natural language
-5. **Return** — ToolsDNS returns only the 1-2 most relevant tool schemas
+4. **list_skills / search** — Agent calls `list_skills()` to see capabilities, or `search_tools(query)` for any task
+5. **Return** — ToolsDNS returns only the relevant tool schema + exactly how to call it
+
+---
 
 ## Quick Start
 
-### Installation
+### Install
 
 ```bash
 git clone https://github.com/syedfahimdev/ToolsDNS.git
 cd ToolsDNS
-pip install -r requirements.txt
+pip install -e .
 ```
 
-### Interactive Setup
+### Run
 
 ```bash
-python -m tooldns.cli setup
-```
+# Interactive setup (recommended for first time)
+toolsdns setup
 
-This walks you through:
-- Generating an API key
-- Configuring the server
-- Adding your first tool source
-
-### Add Tool Sources
-
-```bash
-# Interactive mode
-python -m tooldns.cli add
-
-# Or add specific source types:
-```
-
-#### From an MCP Config File (e.g., nanobot's config.json)
-```bash
-# The CLI will ask for the file path and JSON key
-# Example: path = ~/.nanobot/config.json, key = tools.mcpServers
-python -m tooldns.cli add
-# Choose option 1 (MCP Config File)
-```
-
-#### From a Skill Directory
-```bash
-# Point to a folder of .md skill files
-python -m tooldns.cli add
-# Choose option 4 (Skill Directory)
-```
-
-### Start the Server
-
-```bash
-# Via CLI
-python -m tooldns.cli serve
-
-# Or directly
-python main.py
+# Start the server
+toolsdns serve
 
 # Or with Docker (recommended for production)
 docker compose up -d
@@ -116,159 +97,136 @@ docker compose up -d
 
 ### Web Dashboard
 
-The server includes a built-in web UI:
-
 ```
 http://localhost:8787/ui
 ```
 
-Features:
-- Dashboard: Overview of indexed tools, recent searches
-- Sources: Add/remove/edit MCP server sources
-- Tools: Browse all indexed tools with search
-- Marketplace: One-click install popular MCP servers
-- Health: Monitor which tools are online/offline
-- Stats: Token savings, search analytics
-- Settings: Configure API key, refresh interval
+All management through the UI — no config file editing needed:
 
-### Search for Tools
+| Page | What you can do |
+|------|----------------|
+| **Dashboard** | Overview, tool count, recent searches, onboarding wizard |
+| **Add Tools** | Marketplace — one-click install popular MCP servers |
+| **Browse Tools** | Search all 1,700+ indexed tools |
+| **Sources** | Add/remove/edit MCP server sources, auto-discover from URL |
+| **Savings** | Token savings tracker, shareable savings card |
+| **API Keys** | Create sub-keys, set monthly limits, track usage |
+| **Settings** | API key, branding (app name, email, colors), env vars |
+| **Deploy** | Step-by-step guide for Railway, Render, Fly.io, Docker |
+| **Client Portal** | Self-service page for your API key customers |
 
-```bash
-# Via CLI
-python -m tooldns.cli search "create a github issue"
-
-# Via API
-curl -X POST http://localhost:8787/v1/search \
-  -H "Authorization: Bearer td_your_key" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "create a github issue", "top_k": 2}'
-```
+---
 
 ## API Reference
 
 ### `POST /v1/search` — Find the right tool
 
-The core endpoint. Send a natural language query, get back the matching tool(s).
-
-**Request:**
-```json
-{
-  "query": "create a github issue about the login bug",
-  "top_k": 2,
-  "threshold": 0.5
-}
+```bash
+curl -X POST http://localhost:8787/v1/search \
+  -H "Authorization: Bearer td_your_key" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "create a github issue", "limit": 2}'
 ```
 
-**Response:**
 ```json
 {
-  "results": [
-    {
-      "id": "composio__GITHUB_CREATE_ISSUE",
-      "name": "GITHUB_CREATE_ISSUE",
-      "description": "Create a new issue in a GitHub repository",
-      "confidence": 0.94,
-      "input_schema": { ... },
-      "source": "composio",
-      "how_to_call": {
-        "type": "mcp",
-        "server": "composio",
-        "tool_name": "GITHUB_CREATE_ISSUE"
-      }
+  "results": [{
+    "name": "GITHUB_CREATE_ISSUE",
+    "description": "Creates a new issue in a GitHub repository",
+    "confidence": 0.94,
+    "how_to_call": {
+      "type": "mcp",
+      "server": "composio",
+      "instruction": "Call this tool via the 'composio' MCP server."
     }
-  ],
-  "total_tools_indexed": 523,
-  "tokens_saved": 62400,
-  "search_time_ms": 12.3
+  }],
+  "total_tools_indexed": 1709,
+  "tokens_saved": 284710
 }
 ```
 
-### `POST /v1/sources` — Register a tool source
-
-```json
-{
-  "type": "mcp_config",
-  "name": "nanobot",
-  "path": "~/.nanobot/config.json",
-  "config_key": "tools.mcpServers"
-}
-```
-
-### `GET /v1/sources` — List registered sources
-
-### `GET /v1/tools` — List all indexed tools
-
-### `POST /v1/ingest` — Refresh all sources
-
-### `DELETE /v1/sources/{id}` — Remove a source
-
-### `GET /v1/health` — Check tool/source health status
-
-### `GET /v1/stats` — Get token savings and usage analytics
-
-### `POST /v1/discover` — Auto-discover an MCP server from any URL
-
-```json
-{"url": "https://smithery.ai/server/@modelcontextprotocol/server-github", "ingest": true}
-```
-
-Accepts Smithery.ai server pages, npm package pages, GitHub repos, or direct HTTP MCP endpoints.
-Auto-detects the type, generates the source config, and optionally ingests it.
-
-**Response:**
-```json
-{
-  "detected_type": "Smithery MCP Server",
-  "message": "Detected Smithery server '@modelcontextprotocol/server-github' — will run via npx.",
-  "source_config": {"type": "mcp_stdio", "name": "server-github", "command": "npx", "args": [...]},
-  "ingested": true,
-  "tools_count": 8
-}
-```
-
-### API Docs
-
-Full interactive API documentation is available at `http://localhost:8787/docs` when the server is running.
-
-## CLI Commands
-
-| Command | Description |
-|---------|-------------|
-| `python -m tooldns.cli setup` | Interactive first-time setup |
-| `python -m tooldns.cli add` | Add a tool source interactively |
-| `python -m tooldns.cli sources` | List registered sources |
-| `python -m tooldns.cli tools` | List all indexed tools |
-| `python -m tooldns.cli search "query"` | Search for a tool |
-| `python -m tooldns.cli ingest` | Re-ingest all sources |
-| `python -m tooldns.cli serve` | Start the API server |
-| `python -m tooldns.cli health` | Check health of all sources |
-| `python -m tooldns.cli integrate` | Wizard to integrate with nanobot/openclaw |
-
-## Docker
-
-The recommended way to run ToolsDNS in production. Your `~/.tooldns` folder is bind-mounted so config, skills, tools, and the database are shared between the host and container — edit anything on the host and it's picked up live.
+### `GET /v1/skills` — List all skills
 
 ```bash
-# Start
-docker compose up -d
-
-# View logs
-docker compose logs -f
-
-# Stop
-docker compose down
+curl http://localhost:8787/v1/skills \
+  -H "Authorization: Bearer td_your_key"
 ```
 
-**Your `~/.tooldns` folder** works exactly the same whether you're running native or in Docker:
-- Edit `~/.tooldns/config.json` on the host → hot-reload picks it up in ~1s inside the container
-- Skills in `~/.tooldns/skills/` are served from the host
-- Database at `~/.tooldns/tooldns.db` persists across container restarts
+```json
+{
+  "skills": [
+    {"name": "everi-work-order", "description": "Create Excel work orders..."},
+    {"name": "work-email-assistant", "description": "Email automation for..."}
+  ],
+  "total": 5
+}
+```
 
-Pass environment variables or API keys via `docker-compose.yml` or an `env_file` pointing to `~/.tooldns/.env`.
+### `GET /v1/skills/{name}` — Get full skill instructions
+
+```bash
+curl http://localhost:8787/v1/skills/everi-work-order \
+  -H "Authorization: Bearer td_your_key"
+```
+
+Returns the full `SKILL.md` content — the agent follows these instructions.
+
+### `POST /v1/discover` — Auto-discover from any URL
+
+```bash
+curl -X POST http://localhost:8787/v1/discover \
+  -H "Authorization: Bearer td_your_key" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://smithery.ai/server/@modelcontextprotocol/server-github"}'
+```
+
+Supports: Smithery URLs, npm packages, GitHub repos, HTTP MCP endpoints.
+
+### `GET /v1/health` — Server health
+
+```bash
+curl http://localhost:8787/v1/health \
+  -H "Authorization: Bearer td_your_key"
+```
+
+---
+
+## MCP Server Integration
+
+ToolsDNS exposes itself as an MCP server. Add it to any agent (nanobot, OpenClaw, etc.):
+
+```json
+{
+  "mcpServers": {
+    "tooldns": {
+      "command": "python3",
+      "args": ["-m", "tooldns.mcp_server"]
+    }
+  }
+}
+```
+
+Tools exposed via MCP:
+
+| Tool | Description |
+|------|-------------|
+| `list_skills` | List all skills — call when asked "what can you do?" |
+| `search_tools(query)` | Semantic search across all indexed tools |
+| `get_tool(id)` | Get full schema for a specific tool |
+| `call_tool(id, args)` | Execute a tool through ToolsDNS |
+| `read_skill(name)` | Get full SKILL.md instructions for a skill |
+| `create_skill(...)` | Create a new skill file |
+| `register_mcp_server(...)` | Add a new MCP server to the index |
+
+MCP resources:
+- `tooldns://tools` — browse all indexed tools
+- `tooldns://sources` — list all registered sources
+
+---
 
 ## Configuration
 
-All configuration is via environment variables (or `~/.tooldns/.env`):
+All configuration via environment variables (or `~/.tooldns/.env`):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -276,69 +234,43 @@ All configuration is via environment variables (or `~/.tooldns/.env`):
 | `TOOLDNS_HOST` | `0.0.0.0` | Server bind address |
 | `TOOLDNS_PORT` | `8787` | Server port |
 | `TOOLDNS_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Sentence-transformer model |
-| `TOOLDNS_DB_PATH` | `~/.tooldns/tooldns.db` | SQLite database path |
 | `TOOLDNS_REFRESH_INTERVAL` | `15` | Auto-refresh interval (minutes, 0=off) |
 | `TOOLDNS_LOG_LEVEL` | `INFO` | Log level |
 | `TOOLDNS_WEBHOOK_URL` | *(empty)* | URL to POST health alerts to |
 | `TOOLDNS_WEBHOOK_SECRET` | *(empty)* | Sent as `X-ToolsDNS-Secret` header |
+| `TOOLDNS_APP_NAME` | `ToolsDNS` | Brand name (white-label) |
+| `TOOLDNS_APP_TAGLINE` | `DNS for AI Tools` | Tagline shown in UI |
+| `TOOLDNS_CONTACT_EMAIL` | `hello@toolsdns.com` | Support email |
+| `TOOLDNS_GITHUB_URL` | GitHub repo URL | Linked in footer |
 
-## MCP Server Mode
+---
 
-ToolsDNS can expose itself as an MCP server, giving any MCP-capable agent access to its tool registry:
+## Docker / Production
 
-```python
-# In your nanobot / openclaw / mcporter config:
-"tooldns": {
-    "command": "python3",
-    "args": ["-m", "tooldns.mcp_server"]
-}
-```
+### Docker Compose
 
-This exposes 5 tools:
-- `search_tools` — find tools by natural language
-- `get_tool` — get full schema + skill instructions
-- `call_tool` — execute a tool through ToolsDNS
-- `register_mcp_server` — add a new MCP server on the fly
-- `create_skill` — create a new skill file
-
-Plus two live MCP resources:
-- `tooldns://tools` — browse all indexed tools
-- `tooldns://sources` — list all registered sources
-
-## LLM Integration Pattern
-
-Give your LLM a single "search" tool instead of hundreds of actual tools:
-
-```python
-# The only tool your LLM needs
-tools = [{
-    "name": "tooldns_search",
-    "description": "Search for the right tool to accomplish a task. "
-                   "Use this before attempting any external action.",
-    "parameters": {
-        "query": {"type": "string", "description": "What tool you need"}
-    }
-}]
-
-# When the LLM calls tooldns_search:
-# 1. Forward the query to ToolsDNS
-# 2. Get back the relevant tool schema
-# 3. LLM can now call the actual tool with the returned schema
-```
-
-## Hot Reload
-
-ToolsDNS watches `~/.tooldns/config.json` with OS-level file notifications (inotify on Linux, kqueue on macOS). When you save a change — adding a new MCP server, a new skill path, etc. — re-ingestion starts automatically within ~1 second. No restart needed.
+The recommended way to run ToolsDNS in production. Your `~/.tooldns` folder is bind-mounted so config, skills, tools, and the database are shared between the host and container.
 
 ```bash
-# Example: add a server to config.json, it's indexed within seconds
-nano ~/.tooldns/config.json  # save → watch the logs
-tail -f ~/.tooldns/tooldns.log | grep -E "changed|Hot-reload"
+docker compose up -d
 ```
 
-## Webhook Alerts
+Your `~/.tooldns` folder works exactly the same whether you're running native or in Docker:
+- Edit `~/.tooldns/config.json` on the host → hot-reload picks it up in ~1s
+- Skills in `~/.tooldns/skills/` are served from the host
+- Database at `~/.tooldns/tooldns.db` persists across container restarts
 
-Get notified when a source goes down or recovers. Set the URL once:
+### Railway / Render / Fly.io
+
+See the **🚀 Deploy** page in the web UI at `/ui/deploy` for step-by-step guides with all environment variables pre-filled.
+
+### Hot Reload
+
+ToolsDNS watches `~/.tooldns/config.json` with OS-level file notifications. When you save a change — adding a new MCP server, a new skill — re-ingestion starts automatically within ~1 second. No restart needed.
+
+---
+
+## Webhooks / Alerts
 
 ```bash
 # ~/.tooldns/.env
@@ -346,114 +278,53 @@ TOOLDNS_WEBHOOK_URL=https://hooks.slack.com/services/T.../B.../...
 TOOLDNS_WEBHOOK_SECRET=my-signing-secret   # optional
 ```
 
-ToolsDNS POSTs this JSON when any source changes status:
+ToolsDNS POSTs a JSON payload to your webhook when source health changes (online → down, etc.). The secret is sent as `X-ToolsDNS-Secret` so your endpoint can verify the request came from ToolsDNS.
 
-```json
-{
-  "event": "source_health_change",
-  "source": "composio",
-  "previous_status": "healthy",
-  "current_status": "down",
-  "timestamp": "2026-03-14T22:03:15.059512Z"
-}
-```
+---
 
-The secret is sent as the `X-ToolsDNS-Secret` header so your endpoint can verify the request came from ToolsDNS.
-
-**Works with any HTTP endpoint** — Slack incoming webhooks, Discord webhooks, PagerDuty Events API, or your own endpoint. Only fires on transitions (healthy→down, down→healthy, etc.), not on every health check.
-
-## Architecture
+## Project Structure
 
 ```
-tooldns/
-├── main.py              # FastAPI entry point, lifespan, hot-reload watcher
-├── Dockerfile           # Production container image
+ToolsDNS/
+├── main.py              # FastAPI app entry point
 ├── docker-compose.yml   # Bind-mounts ~/.tooldns, exposes port 8787
-├── tooldns/
-│   ├── config.py        # Settings (env vars, webhook URL, etc.)
-│   ├── models.py        # Pydantic data models (universal tool schema)
-│   ├── database.py      # SQLite: tools, sources, search log, embedding cache
-│   ├── embedder.py      # Sentence-transformers embedding engine
-│   ├── fetcher.py       # MCP protocol client (stdio + HTTP transports)
-│   ├── ingestion.py     # Multi-source ingest pipeline (batch upserts)
+├── pyproject.toml       # Package config (CLI entry: toolsdns)
+├── tooldns/             # Python package (import name)
+│   ├── api.py           # REST API routes (/v1/*)
+│   ├── ui.py            # Web UI routes (/ui/*)
+│   ├── auth.py          # API key auth + multi-tenant sub-keys
+│   ├── cli.py           # CLI (toolsdns setup / serve / add / search)
+│   ├── config.py        # Settings with env var overrides
+│   ├── database.py      # SQLite with FTS5 + vector search
+│   ├── discover.py      # Auto-discover from URL (Smithery/npm/GitHub/HTTP)
+│   ├── embedder.py      # Sentence-transformer embeddings
+│   ├── fetcher.py       # MCP server tool fetching
+│   ├── health.py        # Source health monitoring
+│   ├── ingestion.py     # Tool indexing pipeline
+│   ├── marketplace.py   # Pre-built MCP server catalog
+│   ├── mcp_server.py    # FastMCP server (exposes ToolsDNS as MCP)
+│   ├── models.py        # Pydantic models
 │   ├── search.py        # Hybrid semantic + BM25 search
-│   ├── auth.py          # API key authentication
-│   ├── api.py           # REST API routes
-│   ├── cli.py           # Interactive CLI
-│   ├── mcp_server.py    # FastMCP wrapper (expose as MCP server)
-│   ├── health.py        # Source health monitor + webhook firing
-│   ├── marketplace.py   # Curated MCP server + skill catalog
-│   ├── tokens.py        # Token counting and cost estimation
-│   ├── integrate.py     # Wizard for nanobot/openclaw integration
-│   ├── ui.py            # Web dashboard, savings card, discover form
-│   ├── discover.py      # URL auto-discovery (Smithery, npm, GitHub, HTTP MCP)
-│   └── static/          # CSS, JS for web UI
-├── templates/           # Jinja2 templates for web UI
-├── requirements.txt
-└── .gitignore
+│   ├── tokens.py        # Token counting + cost calculation
+│   ├── templates/       # Jinja2 HTML templates
+│   └── static/          # CSS + JS
+└── .github/
+    ├── workflows/ci.yml          # CI — import checks, tests, branding
+    └── workflows/security.yml    # Security — Bandit, CVE scan, secret check
 ```
 
-## Supported Source Types
-
-| Source Type | Description | How It Works |
-|-------------|-------------|--------------|
-| `mcp_config` | Config file with MCP servers | Reads JSON, discovers all listed MCP servers, fetches their tools |
-| `mcp_stdio` | Single stdio MCP server | Spawns subprocess, communicates via stdin/stdout |
-| `mcp_http` | Single HTTP MCP server | Makes HTTP POST requests (Streamable HTTP transport) |
-| `skill_directory` | Directory of skill .md files | Parses YAML headers and TEMPLATE sections |
-| `custom` | Single custom tool | User provides name, description, and schema |
-
-## Token Savings
-
-ToolsDNS tracks real token usage using tiktoken (cl100k_base encoding). Each search response includes:
-
-- `tokens_saved` — tokens not sent to LLM by using semantic search
-- `search_time_ms` — how fast the search ran
-
-View cumulative savings at `/ui/stats` or `GET /v1/stats`.
-
-### Shareable Savings Card
-
-Share your token savings with a screenshot-ready card:
-
-```
-http://localhost:8787/ui/savings-card
-```
-
-Shows total tokens saved, cost saved, searches run, and tools indexed — styled for screenshots.
-Embed the SVG version in your README:
-
-```markdown
-![ToolsDNS Savings](http://localhost:8787/ui/savings-card.svg)
-```
-
-## Health Monitoring
-
-ToolsDNS periodically checks whether registered MCP servers are reachable:
-
-- **HTTP MCP servers**: Send a ping, check HTTP 200
-- **stdio MCP servers**: Use "staleness" heuristic (if refreshed within 2× interval = healthy)
-- **Skill directories**: Always healthy (local files)
-
-Check health via API: `GET /v1/health` or web UI: `/ui/health`. Set `TOOLDNS_WEBHOOK_URL` to get Slack/Discord alerts on status changes.
-
-## Marketplace
-
-Built-in catalog of 30+ popular MCP servers with one-click install:
-
-- Dev: GitHub, Git, GitLab, Linear, Sentry
-- Browser: Playwright, Puppeteer, E2B
-- Communication: Slack, Notion, Gmail
-- Search: Brave, Tavily, Exa
-- Data: PostgreSQL, SQLite, Supabase
-- Cloud: Cloudflare, Docker, Kubernetes, AWS
-- AI: Sequential Thinking, Hugging Face, Context7
-
-## Performance Targets
-- Search latency: <50ms for 10,000 tools
-- Embedding: <10ms per query (cached after first run)
-- Ingestion: batch upserts via single SQLite transaction per source
+---
 
 ## License
 
-MIT
+**AGPL-3.0** for open-source use. See [LICENSE](LICENSE).
+
+For commercial/proprietary use (closed-source products, white-label resale), contact [syed@toolsdns.com](mailto:syed@toolsdns.com) for a commercial license.
+
+---
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). PRs welcome — especially new marketplace skills and MCP server connectors.
+
+**Contact:** [hello@toolsdns.com](mailto:hello@toolsdns.com) | [GitHub Issues](https://github.com/syedfahimdev/ToolsDNS/issues)

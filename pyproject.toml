@@ -17,5 +17,9 @@ dependencies = [
     "sentence-transformers",
 ]
 
+[project.scripts]
+toolsdns = "tooldns.cli:main"
+tooldns = "tooldns.cli:main"
+
 [tool.setuptools.packages.find]
 include = ["tooldns*"]

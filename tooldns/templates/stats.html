@@ -104,13 +104,13 @@
   <h2>Token Flow — All Time</h2>
   <div class="token-flow">
     <div class="token-block token-block-full">
-      <div class="token-block-label">Without ToolDNS</div>
+      <div class="token-block-label">Without ToolsDNS</div>
       <div class="token-block-value">{{ "{:,}".format(stats.total_tokens_would_have_used) }} tokens</div>
       <div class="token-block-sub">All tool schemas loaded every call</div>
     </div>
     <div class="token-arrow">→</div>
     <div class="token-block token-block-used">
-      <div class="token-block-label">With ToolDNS</div>
+      <div class="token-block-label">With ToolsDNS</div>
       <div class="token-block-value">{{ "{:,}".format(stats.total_tokens_actually_used) }} tokens</div>
       <div class="token-block-sub">Only relevant tools returned</div>
     </div>
@@ -265,7 +265,7 @@
     </tbody>
   </table>
   {% else %}
-  <div class="empty">No searches logged yet. Searches are recorded when your agent calls ToolDNS.</div>
+  <div class="empty">No searches logged yet. Searches are recorded when your agent calls ToolsDNS.</div>
   {% endif %}
 </section>
 {% endblock %}

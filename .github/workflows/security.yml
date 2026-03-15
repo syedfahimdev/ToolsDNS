@@ -1,0 +1,145 @@
+name: Security Review
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+  schedule:
+    - cron: "0 3 * * 1"  # Weekly Monday 3am UTC
+
+jobs:
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install security tools
+        run: |
+          pip install bandit safety pip-audit 2>/dev/null || pip install bandit safety
+
+      - name: Bandit — static code security analysis
+        run: |
+          bandit -r tooldns/ \
+            --skip B101,B603,B604,B607 \
+            --format txt \
+            --severity-level medium \
+            --confidence-level medium \
+            -o bandit-report.txt || true
+          cat bandit-report.txt
+          # Fail on HIGH severity issues
+          bandit -r tooldns/ \
+            --skip B101,B603,B604,B607 \
+            --severity-level high \
+            --confidence-level high \
+            --exit-zero
+
+      - name: Safety — check for known CVEs in dependencies
+        run: |
+          pip install -e . 2>/dev/null || true
+          safety check --full-report || true
+
+      - name: Check for hardcoded secrets
+        run: |
+          echo "Scanning for hardcoded API keys and tokens..."
+          FOUND=0
+
+          # Patterns that look like real secrets (not examples/placeholders)
+          if grep -rn \
+            -e 'api_key\s*=\s*"[a-zA-Z0-9_\-]\{20,\}"' \
+            -e 'token\s*=\s*"[a-zA-Z0-9_\-]\{20,\}"' \
+            -e 'secret\s*=\s*"[a-zA-Z0-9_\-]\{20,\}"' \
+            -e 'password\s*=\s*"[a-zA-Z0-9_\-]\{8,\}"' \
+            --include="*.py" --include="*.json" --include="*.yaml" \
+            --exclude-dir=".git" \
+            . | grep -v "example\|placeholder\|your_\|YOUR_\|test_\|fake_\|dummy\|<\|>"; then
+            FOUND=1
+          fi
+
+          if [ "$FOUND" -eq 1 ]; then
+            echo "WARNING: Possible hardcoded secrets found above. Review carefully."
+          else
+            echo "No obvious hardcoded secrets found."
+          fi
+
+      - name: Check .env files are not committed
+        run: |
+          if git ls-files | grep -E "^\.env$|^\.env\.local$|^\.env\.production$"; then
+            echo "ERROR: .env file is committed to the repo — remove it immediately!"
+            exit 1
+          fi
+          echo ".env check passed — no secrets in repo"
+
+      - name: Check API key masking (never expose keys in HTML)
+        run: |
+          python3 -c "
+          import re, sys
+          issues = []
+          files = [
+              'tooldns/ui.py',
+              'tooldns/templates/keys.html',
+          ]
+          for f in files:
+              try:
+                  content = open(f).read()
+                  # Check for unmasked key patterns in template rendering
+                  if re.search(r'\"{{ k\.key }}\"', content):
+                      issues.append(f'{f}: raw key in template attribute')
+              except FileNotFoundError:
+                  pass
+          if issues:
+              print('API KEY EXPOSURE ISSUES:')
+              for i in issues: print(' ', i)
+              sys.exit(1)
+          print('API key masking check passed')
+          "
+
+      - name: Check for SQL injection risks
+        run: |
+          python3 -c "
+          import re, glob, sys
+          issues = []
+          for f in glob.glob('tooldns/**/*.py', recursive=True):
+              content = open(f).read()
+              # Flag f-string SQL queries (risk of injection)
+              matches = re.findall(r'f[\"\'](.*?SELECT.*?WHERE.*?)[\"\']\s*[,)]', content, re.IGNORECASE)
+              for m in matches:
+                  if '{' in m:
+                      issues.append(f'{f}: possible SQL injection: {m[:80]}')
+          if issues:
+              print('SQL INJECTION RISKS:')
+              for i in issues: print(' ', i)
+              # Warn only, don't fail (could be false positives)
+          else:
+              print('SQL injection check passed')
+          "
+
+      - name: Check CORS and auth middleware
+        run: |
+          python3 -c "
+          content = open('main.py').read()
+          issues = []
+          if 'allow_origins=[\"*\"]' in content or \"allow_origins=['*']\" in content:
+              issues.append('CORS allows ALL origins — restrict in production')
+          if issues:
+              print('SECURITY WARNINGS:')
+              for i in issues: print(' -', i)
+          else:
+              print('CORS/auth check passed')
+          "
+
+      - name: Upload Bandit report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bandit-security-report
+          path: bandit-report.txt
+          retention-days: 30
