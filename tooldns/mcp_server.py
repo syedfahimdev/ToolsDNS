@@ -440,6 +440,58 @@ async def update_skill(
 
 
 @mcp.tool()
+async def list_tools(
+    category: Optional[str] = None,
+    source: Optional[str] = None,
+    ctx: Optional[Context] = None,
+) -> str:
+    """
+    List all tools indexed in ToolsDNS, optionally filtered by category or source.
+
+    Returns a summary of every indexed tool. For large indexes, use
+    search_tools(query) instead to find specific tools by description.
+
+    Args:
+        category: Optional category filter (e.g. 'GitHub', 'Email', 'Files').
+        source: Optional source/server filter (e.g. 'composio', 'browser-use').
+    """
+    if ctx:
+        await ctx.info("Listing indexed tools...")
+
+    params = []
+    if category:
+        params.append(f"category={category}")
+    if source:
+        params.append(f"source={source}")
+    qs = ("?" + "&".join(params)) if params else ""
+
+    result = await _api("GET", f"/v1/tools{qs}")
+    tools = result.get("tools", [])
+    total = result.get("total", len(tools))
+
+    if not tools:
+        return "No tools indexed yet. Add sources via register_mcp_server()."
+
+    lines = [f"## {total} Tools Indexed in ToolsDNS\n"]
+    lines.append("Use `search_tools(query)` to find tools by what you want to do.\n")
+
+    # Group by source for readability
+    by_source: dict[str, list] = {}
+    for t in tools:
+        src = t.get("source", "unknown")
+        by_source.setdefault(src, []).append(t)
+
+    for src, src_tools in sorted(by_source.items()):
+        lines.append(f"\n### {src} ({len(src_tools)} tools)")
+        for t in src_tools[:20]:  # cap per source to avoid huge output
+            lines.append(f"- **{t['name']}**: {t.get('description', '')[:100]}")
+        if len(src_tools) > 20:
+            lines.append(f"  ... and {len(src_tools) - 20} more — use search_tools() to find specific ones")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
 async def list_skills(ctx: Optional[Context] = None) -> str:
     """
     List all skills available in ToolsDNS.

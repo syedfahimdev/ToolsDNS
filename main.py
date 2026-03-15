@@ -34,6 +34,10 @@ from tooldns.api import router, admin_router, init_api
 from tooldns.auth import init_auth
 from tooldns.mcp_server import mcp as _mcp_server
 
+# Build the MCP ASGI app once at module level so its lifespan can be composed
+# with the FastAPI lifespan below (required by fastmcp's task group init).
+_mcp_http_app = _mcp_server.http_app(path="/", transport="streamable-http")
+
 # ---------------------------------------------------------------------------
 # Network access control middleware
 # ---------------------------------------------------------------------------
@@ -311,7 +315,10 @@ async def lifespan(app: FastAPI):
     config_file = Path(settings.home) / "config.json"
     tasks.append(asyncio.create_task(_config_watcher(pipeline, config_file)))
 
-    yield  # App is running
+    # Start the MCP ASGI app's lifespan (initializes the task group required
+    # by fastmcp's StreamableHTTPSessionManager — must run while app is live)
+    async with _mcp_http_app.lifespan(app):
+        yield  # App is running
 
     # Cleanup
     for task in tasks:
@@ -346,7 +353,7 @@ app.include_router(admin_router)
 
 # Mount the MCP server at /mcp (streamable-HTTP transport)
 # Users connect with: https://your-domain.com/mcp  +  Authorization: Bearer <api-key>
-app.mount("/mcp", _mcp_server.http_app(path="/", transport="streamable-http"))
+app.mount("/mcp", _mcp_http_app)
 
 
 @app.get("/")
