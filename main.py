@@ -40,12 +40,27 @@ from tooldns.auth import init_auth
 
 # Tailscale always uses 100.64.0.0/10
 _TAILSCALE_NETWORK = ipaddress.ip_network("100.64.0.0/10")
+# Docker bridge / private networks (Caddy proxy arrives as these)
+_PRIVATE_NETWORKS = [
+    ipaddress.ip_network("172.16.0.0/12"),   # Docker default
+    ipaddress.ip_network("10.0.0.0/8"),       # Private
+    ipaddress.ip_network("192.168.0.0/16"),   # Private
+]
 _LOCALHOST = {"127.0.0.1", "::1"}
 
 
 def _is_tailscale(ip: str) -> bool:
     try:
         return ipaddress.ip_address(ip) in _TAILSCALE_NETWORK
+    except ValueError:
+        return False
+
+
+def _is_private(ip: str) -> bool:
+    """Returns True for Docker bridge / private network IPs (reverse proxy traffic)."""
+    try:
+        addr = ipaddress.ip_address(ip)
+        return any(addr in net for net in _PRIVATE_NETWORKS)
     except ValueError:
         return False
 
@@ -64,26 +79,28 @@ class NetworkACLMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         is_local = client_ip in _LOCALHOST
         is_ts = _is_tailscale(client_ip)
+        is_private = _is_private(client_ip)  # Docker/Caddy proxy
 
-        # /v1/* (API) — localhost only
+        # /v1/* (API) — allow from localhost, Tailscale, and private networks (Caddy proxy)
+        # Protected by API key auth — no need to restrict by IP
         if path.startswith("/v1/"):
-            if not is_local:
+            if not (is_local or is_ts or is_private):
                 return JSONResponse(
-                    {"detail": "API access restricted to localhost"},
+                    {"detail": "API access requires routing through the reverse proxy"},
                     status_code=403
                 )
 
-        # /ui/* — Tailscale or localhost
+        # /ui/* — Tailscale, localhost, or private networks (Caddy proxy)
         elif path.startswith("/ui") or path.startswith("/static"):
-            if not (is_local or is_ts):
+            if not (is_local or is_ts or is_private):
                 return HTMLResponse(
-                    "<h1>403 Forbidden</h1><p>UI is accessible via Tailscale only.</p>",
+                    "<h1>403 Forbidden</h1><p>UI is accessible via the configured domain only.</p>",
                     status_code=403
                 )
 
-        # Everything else (/, /health, /docs) — allow local + Tailscale, block public
+        # Everything else (/, /health, /docs) — allow local + Tailscale + private
         else:
-            if not (is_local or is_ts):
+            if not (is_local or is_ts or is_private):
                 return JSONResponse({"detail": "Access denied"}, status_code=403)
 
         return await call_next(request)
