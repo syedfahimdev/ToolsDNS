@@ -1,5 +1,5 @@
 """
-database.py — SQLite storage for ToolDNS tool metadata and embeddings.
+database.py — SQLite storage for ToolsDNS tool metadata and embeddings.
 
 This module handles all database operations for the tool index.
 Each tool is stored with its full metadata and embedding vector.

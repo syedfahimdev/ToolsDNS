@@ -1,5 +1,5 @@
 """
-api.py — FastAPI routes for the ToolDNS API.
+api.py — FastAPI routes for the ToolsDNS API.
 
 Exposes four main endpoints:
     POST /v1/search  — Search for tools by natural language query
@@ -387,7 +387,7 @@ async def call_tool(req: dict):
     Proxy a tool call to the original MCP server.
 
     This is the execution bridge — the LLM sends the tool name
-    and arguments here, and ToolDNS forwards the call to the
+    and arguments here, and ToolsDNS forwards the call to the
     correct MCP server.
 
     Request body:
@@ -645,7 +645,7 @@ def _resolve_env(val):
 @router.post("/register-mcp")
 async def register_mcp(req: RegisterMCPRequest):
     """
-    Register a new MCP server into ToolDNS — callable by AI agents.
+    Register a new MCP server into ToolsDNS — callable by AI agents.
 
     Saves env vars, updates ~/.tooldns/config.json, and optionally
     ingests the server's tools immediately. No interactive prompts.
@@ -803,7 +803,7 @@ async def create_skill(req: CreateSkillRequest):
     """
     Create a new skill file — callable by AI agents.
 
-    Writes a SKILL.md file to the ToolDNS skills directory (or a
+    Writes a SKILL.md file to the ToolsDNS skills directory (or a
     specified path) and re-indexes skills immediately. Agents can
     compose the markdown content themselves and POST it here.
 
@@ -1125,7 +1125,7 @@ async def discover_source(req: dict):
       - GitHub repository        (github.com/user/repo)
       - Direct HTTP MCP endpoint (any https://... URL)
 
-    ToolDNS detects the type, generates the source config, and optionally
+    ToolsDNS detects the type, generates the source config, and optionally
     ingests it immediately.
 
     Request body:

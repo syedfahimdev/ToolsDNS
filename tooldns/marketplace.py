@@ -2,7 +2,7 @@
 marketplace.py — Curated catalog of popular MCP servers and skills.
 
 Used by the web UI marketplace page to let users browse and one-click
-install popular MCP servers and pre-built skills into ToolDNS.
+install popular MCP servers and pre-built skills into ToolsDNS.
 """
 
 # Categories for filtering

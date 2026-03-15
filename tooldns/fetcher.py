@@ -1,5 +1,5 @@
 """
-fetcher.py — MCP tool fetcher for ToolDNS.
+fetcher.py — MCP tool fetcher for ToolsDNS.
 
 Connects to MCP servers and extracts their tool definitions.
 Supports two transport types:
@@ -12,7 +12,7 @@ The MCP protocol uses JSON-RPC 2.0. To discover tools, we:
     3. Send "tools/list" — get all tool names, descriptions, and schemas
     4. Close the connection
 
-This is the core mechanism that makes ToolDNS work: it speaks the same
+This is the core mechanism that makes ToolsDNS work: it speaks the same
 protocol as every MCP server, so it can discover tools from ANY server.
 
 Usage:

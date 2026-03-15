@@ -1,5 +1,5 @@
 """
-embedder.py — Embedding engine for ToolDNS.
+embedder.py — Embedding engine for ToolsDNS.
 
 Supports three backends (auto-selected in priority order):
   1. ONNX Runtime (default) — 3-4x faster CPU inference via optimum

@@ -1,5 +1,5 @@
 """
-health.py — Tool and source health monitoring for ToolDNS.
+health.py — Tool and source health monitoring for ToolsDNS.
 
 Periodically checks whether registered MCP servers are reachable
 and marks their tools as healthy, degraded, or down. This prevents
@@ -88,7 +88,7 @@ class HealthMonitor:
         }
         headers = {"Content-Type": "application/json"}
         if settings.webhook_secret:
-            headers["X-ToolDNS-Secret"] = settings.webhook_secret
+            headers["X-ToolsDNS-Secret"] = settings.webhook_secret
         try:
             async with httpx.AsyncClient(timeout=5) as client:
                 await client.post(settings.webhook_url, json=payload, headers=headers)

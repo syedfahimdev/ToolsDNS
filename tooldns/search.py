@@ -1,7 +1,7 @@
 """
-search.py — Semantic search engine for ToolDNS.
+search.py — Semantic search engine for ToolsDNS.
 
-search.py — Hybrid search engine for ToolDNS.
+search.py — Hybrid search engine for ToolsDNS.
 
 Performs hybrid search combining:
     1. Semantic similarity (cosine) between embedding vectors
@@ -273,7 +273,7 @@ class SearchEngine:
         # --- Real token counting (not estimates) ---
         # tokens_full_index: what the LLM would have consumed loading all tools
         tokens_full_index = self._get_index_tokens(all_tools)
-        # tokens_returned: what ToolDNS actually sent back
+        # tokens_returned: what ToolsDNS actually sent back
         tokens_returned = sum(count_tool_tokens(t) for t, _ in top_results)
         tokens_saved = max(0, tokens_full_index - tokens_returned)
 

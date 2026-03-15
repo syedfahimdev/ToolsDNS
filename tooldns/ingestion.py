@@ -1,5 +1,5 @@
 """
-ingestion.py — Tool ingestion pipeline for ToolDNS.
+ingestion.py — Tool ingestion pipeline for ToolsDNS.
 
 This module reads tool definitions from various sources, normalizes
 them into the UniversalTool format, embeds their descriptions,
@@ -57,8 +57,8 @@ class IngestionPipeline:
     # Server types that use HTTP transport (sent as POST requests)
     HTTP_SERVER_TYPES = {"streamableHttp", "sse"}
 
-    # Server names that ToolDNS must never index — these are self-referential
-    # and would pollute the index with ToolDNS's own meta-tools.
+    # Server names that ToolsDNS must never index — these are self-referential
+    # and would pollute the index with ToolsDNS's own meta-tools.
     SELF_SERVER_NAMES = {"tooldns", "tooldns-mcp", "tool-dns"}
 
     def __init__(self, db: ToolDatabase, embedder: Embedder):
@@ -1098,7 +1098,7 @@ class IngestionPipeline:
         Normalize, embed, and store a list of raw tool definitions.
 
         Takes tool definitions in MCP format (name, description, inputSchema)
-        and converts them into the universal ToolDNS format, generates
+        and converts them into the universal ToolsDNS format, generates
         embeddings for search, and stores them in the database.
 
         Args:

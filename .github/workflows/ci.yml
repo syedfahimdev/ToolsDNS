@@ -20,11 +20,13 @@ jobs:
 
       - name: Check imports
         run: |
-          python3 -c "from tooldns.ui import ui_router; print('ui OK')"
           python3 -c "from tooldns.api import router; print('api OK')"
           python3 -c "from tooldns.auth import require_api_key, init_auth; print('auth OK')"
           python3 -c "from tooldns.discover import discover_from_url; print('discover OK')"
           python3 -c "from tooldns.config import settings; print('config OK')"
+          python3 -c "from tooldns.search import SearchEngine; print('search OK')"
+          python3 -c "from tooldns.ingestion import IngestionPipeline; print('ingestion OK')"
+          python3 -c "from tooldns.mcp_server import mcp; print('mcp_server OK')"
 
       - name: Verify CLI entry points
         run: |

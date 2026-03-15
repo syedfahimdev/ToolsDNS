@@ -1,5 +1,5 @@
 """
-tokens.py — Token counting and model cost estimation for ToolDNS.
+tokens.py — Token counting and model cost estimation for ToolsDNS.
 
 Counts real tokens (not estimates) for tool schemas using tiktoken.
 Uses model-aware pricing to calculate actual cost savings per search.

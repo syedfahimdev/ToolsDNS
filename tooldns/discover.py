@@ -209,7 +209,7 @@ def _extract_install_from_readme(readme_url: str, fallback_url: str, repo: str) 
         import urllib.request
         for url in [readme_url, fallback_url]:
             try:
-                req = urllib.request.Request(url, headers={"User-Agent": "ToolDNS/1.0"})
+                req = urllib.request.Request(url, headers={"User-Agent": "ToolsDNS/1.0"})
                 with urllib.request.urlopen(req, timeout=5) as resp:
                     content = resp.read().decode("utf-8", errors="ignore")
                     return _parse_readme_for_command(content, repo)
@@ -287,7 +287,7 @@ def _discover_http_mcp(url: str) -> dict:
         req = urllib.request.Request(
             url,
             data=probe_payload,
-            headers={"Content-Type": "application/json", "User-Agent": "ToolDNS/1.0"},
+            headers={"Content-Type": "application/json", "User-Agent": "ToolsDNS/1.0"},
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=5) as resp:

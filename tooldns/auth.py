@@ -1,5 +1,5 @@
 """
-auth.py — API key authentication for ToolDNS.
+auth.py — API key authentication for ToolsDNS.
 
 Supports two key types:
   1. Admin key (TOOLDNS_API_KEY env var) — unlimited, full access

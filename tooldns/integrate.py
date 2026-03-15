@@ -1,11 +1,11 @@
 """
-integrate.py — Wire ToolDNS into nanobot / openclaw agents.
+integrate.py — Wire ToolsDNS into nanobot / openclaw agents.
 
 Interactive wizard that:
     1. Detects nanobot/openclaw and shows their MCP servers
     2. Adds 'tooldns' MCP server to their config (with confirmation)
     3. Migrates heavy HTTP MCP servers to ~/.tooldns/config.json
-    4. Appends ToolDNS usage instructions to AGENTS.md
+    4. Appends ToolsDNS usage instructions to AGENTS.md
 """
 
 import json
@@ -19,10 +19,10 @@ from tooldns.config import TOOLDNS_HOME
 # -----------------------------------------------------------------------
 
 TOOLDNS_AGENT_INSTRUCTIONS = """
-## 🔍 ToolDNS — Smart Tool Discovery (IMPORTANT)
+## 🔍 ToolsDNS — Smart Tool Discovery (IMPORTANT)
 
-**You have access to 130+ external tools** (Composio, skills, custom tools) via ToolDNS.
-When asked "what tools do you have", ALWAYS mention ToolDNS and its capabilities.
+**You have access to 130+ external tools** (Composio, skills, custom tools) via ToolsDNS.
+When asked "what tools do you have", ALWAYS mention ToolsDNS and its capabilities.
 
 Use these 3 MCP tools to find and execute any external tool on demand:
 
@@ -72,16 +72,16 @@ KEEP_SERVERS = {"tooldns"}
 
 def run_integrate():
     """
-    Interactive wizard to wire ToolDNS into nanobot/openclaw.
+    Interactive wizard to wire ToolsDNS into nanobot/openclaw.
 
     Steps:
         1. Detect frameworks and show current MCP servers
         2. Add 'tooldns' MCP server to framework config
         3. Migrate heavy MCP servers to ~/.tooldns/config.json
-        4. Update AGENTS.md with ToolDNS instructions
+        4. Update AGENTS.md with ToolsDNS instructions
     """
-    print("🔌 ToolDNS Integration Wizard\n")
-    print("   This will configure your AI agents to use ToolDNS")
+    print("🔌 ToolsDNS Integration Wizard\n")
+    print("   This will configure your AI agents to use ToolsDNS")
     print("   for smart tool discovery instead of loading all tools.\n")
 
     detected = [fw for fw in KNOWN_FRAMEWORKS if fw["config_path"].exists()]
@@ -104,7 +104,7 @@ def run_integrate():
 
     print("\n🎉 Integration complete!\n")
     print("   Next steps:")
-    print("   1. Start ToolDNS:  python3 -m tooldns.cli serve")
+    print("   1. Start ToolsDNS:  python3 -m tooldns.cli serve")
     print("   2. Start your agent (nanobot/openclaw)")
     print("   3. The agent now uses 'search_tools' to find any tool!\n")
 
@@ -167,7 +167,7 @@ def _integrate_framework(fw: dict):
 def _step_add_tooldns(mcp_section, raw_config, config_path, keys):
     """Add the tooldns MCP server entry to the framework config."""
     if "tooldns" in mcp_section:
-        print("   ✅ ToolDNS MCP server already in config\n")
+        print("   ✅ ToolsDNS MCP server already in config\n")
         return
 
     choice = input("   Add 'tooldns' MCP server to config? [Y/n]: ").strip().lower()
@@ -206,7 +206,7 @@ def _step_migrate_servers(mcp_section, raw_config, config_path, keys, mcp_key):
         print(f"     • {srv_name}")
     print()
     print("   These load many tools into every prompt.")
-    print("   ToolDNS can search them on-demand instead.\n")
+    print("   ToolsDNS can search them on-demand instead.\n")
 
     choice = input("   Migrate to ~/.tooldns/config.json? [Y/n]: ").strip().lower()
     if choice not in ("", "y", "yes"):
@@ -252,19 +252,19 @@ def _step_migrate_servers(mcp_section, raw_config, config_path, keys, mcp_key):
 # -----------------------------------------------------------------------
 
 def _step_update_agents(agents_path: Path):
-    """Add or replace ToolDNS instructions in the agent's AGENTS.md file."""
+    """Add or replace ToolsDNS instructions in the agent's AGENTS.md file."""
     if not agents_path.exists():
         print(f"   ⚠ No AGENTS.md found at {agents_path}")
-        print(f"   You'll need to manually add ToolDNS instructions.\n")
+        print(f"   You'll need to manually add ToolsDNS instructions.\n")
         return
 
     content = agents_path.read_text(encoding="utf-8")
-    has_tooldns = "ToolDNS" in content
+    has_tooldns = "ToolsDNS" in content
 
     if has_tooldns:
-        print("   📝 AGENTS.md already has ToolDNS instructions — replacing with updated version.")
+        print("   📝 AGENTS.md already has ToolsDNS instructions — replacing with updated version.")
     else:
-        print("   📝 AGENTS.md needs ToolDNS instructions.")
+        print("   📝 AGENTS.md needs ToolsDNS instructions.")
     print("   This tells the agent the correct tool names and workflow.\n")
 
     choice = input("   Update AGENTS.md? [Y/n]: ").strip().lower()
@@ -273,10 +273,10 @@ def _step_update_agents(agents_path: Path):
         return
 
     if has_tooldns:
-        # Replace the existing ToolDNS section (from its heading to next ## heading or EOF)
+        # Replace the existing ToolsDNS section (from its heading to next ## heading or EOF)
         import re
         new_content = re.sub(
-            r'## 🔍 ToolDNS.*?(?=\n## |\Z)',
+            r'## 🔍 ToolsDNS.*?(?=\n## |\Z)',
             TOOLDNS_AGENT_INSTRUCTIONS,
             content,
             flags=re.DOTALL

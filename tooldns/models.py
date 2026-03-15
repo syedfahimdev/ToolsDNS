@@ -1,5 +1,5 @@
 """
-models.py — Pydantic data models for ToolDNS.
+models.py — Pydantic data models for ToolsDNS.
 
 Defines the universal tool schema and all API request/response models.
 Every tool from every source (MCP, OpenAPI, skill files, custom) gets
@@ -55,7 +55,7 @@ class SourceInfo(BaseModel):
     """
     Metadata about where a tool originally came from.
 
-    This is stored alongside each tool so ToolDNS can track
+    This is stored alongside each tool so ToolsDNS can track
     provenance and re-fetch from the correct source during refresh.
 
     Attributes:
@@ -80,7 +80,7 @@ class UniversalTool(BaseModel):
     """
     The universal tool schema — every tool from every source gets normalized to this.
 
-    This is the core data model of ToolDNS. Whether a tool comes from an MCP server,
+    This is the core data model of ToolsDNS. Whether a tool comes from an MCP server,
     an OpenAPI spec, a skill file, or a custom registration, it ends up as a
     UniversalTool in the index. This enables uniform semantic search across all tools
     regardless of their origin.
@@ -111,7 +111,7 @@ class SearchRequest(BaseModel):
     """
     Request body for POST /v1/search.
 
-    The core endpoint of ToolDNS. Send a natural language query
+    The core endpoint of ToolsDNS. Send a natural language query
     describing what you need, and get back the most relevant tool(s).
 
     Attributes:
@@ -176,7 +176,7 @@ class SourceRequest(BaseModel):
     """
     Request body for POST /v1/sources — add a new tool source.
 
-    Tells ToolDNS where to find tools. Supports multiple source types:
+    Tells ToolsDNS where to find tools. Supports multiple source types:
     - mcp_config: Point to a config file containing MCP server definitions.
     - mcp_stdio: Point to a specific stdio-based MCP server.
     - mcp_http: Point to a specific HTTP-based MCP server.
@@ -213,7 +213,7 @@ class RegisterMCPRequest(BaseModel):
     """
     Request body for POST /v1/register-mcp — agents add a new MCP server.
 
-    AI agents call this to register an MCP server into ToolDNS without
+    AI agents call this to register an MCP server into ToolsDNS without
     any interactive prompts. The server is added to ~/.tooldns/config.json,
     env vars are written to ~/.tooldns/.env, and tools are indexed immediately.
 
@@ -239,7 +239,7 @@ class CreateSkillRequest(BaseModel):
     """
     Request body for POST /v1/skills — agents create a new skill file.
 
-    AI agents call this to write a skill markdown file into the ToolDNS
+    AI agents call this to write a skill markdown file into the ToolsDNS
     skills directory. The skill is indexed immediately after creation.
 
     Attributes:
