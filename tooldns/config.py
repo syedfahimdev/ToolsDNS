@@ -73,6 +73,7 @@ class Settings(BaseSettings):
     webhook_secret: str = ""  # Added as X-ToolsDNS-Secret header if set
     auto_discover: bool = False  # Auto-scan agent framework configs on startup
     extra_paths: str = ""  # Comma-separated extra paths to ingest
+    public_url: str = ""  # Public HTTPS URL (e.g. https://api.toolsdns.com) — used in connect snippets
     # Branding — override these in ~/.tooldns/.env to white-label
     app_name: str = "ToolsDNS"
     app_tagline: str = "DNS for AI Tools"

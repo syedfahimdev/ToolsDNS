@@ -3,13 +3,12 @@
 # tooldns.sh — Developer Helper Script for ToolsDNS
 # ============================================================
 #
-# This script provides guided commands for installing, running,
-# testing, and debugging ToolsDNS. Designed for junior devs
-# and anyone new to the project.
+# Provides guided commands for managing ToolsDNS running
+# directly on the host (systemd + Caddy). No Docker.
 #
 # Usage:
 #   chmod +x tooldns.sh
-#   ./tooldns.sh            # Show interactive menu
+#   ./tooldns.sh            # Interactive menu
 #   ./tooldns.sh install    # Run a specific command
 #
 # ============================================================
@@ -17,24 +16,21 @@
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 TOOLDNS_HOME="${TOOLDNS_HOME:-$HOME/.tooldns}"
 PYTHON="${PYTHON:-python3}"
+PORT="${TOOLDNS_PORT:-8787}"
 
-# Read API key from .env file
 _get_api_key() {
     local env_file="$TOOLDNS_HOME/.env"
-    if [ -f "$env_file" ]; then
-        grep "^TOOLDNS_API_KEY=" "$env_file" | cut -d= -f2-
-    else
-        echo ""
-    fi
+    [ -f "$env_file" ] && grep "^TOOLDNS_API_KEY=" "$env_file" | cut -d= -f2- || echo ""
 }
 
-# Colors
+# ── Colors ────────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+BOLD='\033[1m'
+NC='\033[0m'
 
 print_header() {
     echo ""
@@ -45,21 +41,10 @@ print_header() {
     echo ""
 }
 
-print_step() {
-    echo -e "${GREEN}▶ $1${NC}"
-}
-
-print_info() {
-    echo -e "${BLUE}  ℹ $1${NC}"
-}
-
-print_warn() {
-    echo -e "${YELLOW}  ⚠ $1${NC}"
-}
-
-print_error() {
-    echo -e "${RED}  ✗ $1${NC}"
-}
+print_step()  { echo -e "${GREEN}▶ $1${NC}"; }
+print_info()  { echo -e "${BLUE}  ℹ $1${NC}"; }
+print_warn()  { echo -e "${YELLOW}  ⚠ $1${NC}"; }
+print_error() { echo -e "${RED}  ✗ $1${NC}"; }
 
 # ============================================================
 # Commands
@@ -70,7 +55,7 @@ do_install() {
     echo ""
     print_info "This will:"
     print_info "  1. Create ~/.tooldns home directory"
-    print_info "  2. Install Python dependencies"
+    print_info "  2. Install Python dependencies (including ONNX for fast search)"
     print_info "  3. Run interactive setup (API key, auto-detect configs)"
     echo ""
     cd "$REPO_DIR"
@@ -81,7 +66,7 @@ do_start() {
     print_step "Starting ToolsDNS server..."
     print_info "Repo: $REPO_DIR"
     print_info "Home: $TOOLDNS_HOME"
-    print_info "Swagger docs will be at: http://localhost:8787/docs"
+    print_info "API docs: http://localhost:$PORT/docs"
     echo ""
     cd "$REPO_DIR"
     $PYTHON -m tooldns.cli serve
@@ -90,8 +75,35 @@ do_start() {
 do_status() {
     print_step "Checking ToolsDNS status..."
     echo ""
+    # Systemd status
+    if systemctl is-active --quiet tooldns 2>/dev/null; then
+        echo -e "  ${GREEN}✅ tooldns.service: running${NC}"
+        systemctl status tooldns --no-pager -l 2>/dev/null | grep -E "(Active|Main PID|Memory|CPU)" | sed 's/^/     /'
+    else
+        echo -e "  ${RED}❌ tooldns.service: not running${NC}"
+        print_info "Start: systemctl start tooldns"
+        print_info "Logs:  journalctl -u tooldns -n 30"
+    fi
+    echo ""
+    # Caddy status
+    if systemctl is-active --quiet caddy 2>/dev/null; then
+        echo -e "  ${GREEN}✅ caddy: running${NC}"
+    else
+        echo -e "  ${YELLOW}⚠ caddy: not running${NC}"
+    fi
+    echo ""
+    # Health check
+    HEALTH=$(curl -s --max-time 3 "http://localhost:$PORT/health" 2>/dev/null || true)
+    if echo "$HEALTH" | grep -q "healthy"; then
+        TOOLS=$(echo "$HEALTH" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tools_indexed',0))" 2>/dev/null || echo "?")
+        SOURCES=$(echo "$HEALTH" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('sources',0))" 2>/dev/null || echo "?")
+        echo -e "  ${GREEN}✅ API healthy — $TOOLS tools from $SOURCES sources${NC}"
+    else
+        echo -e "  ${RED}❌ API not responding on port $PORT${NC}"
+    fi
+    echo ""
     cd "$REPO_DIR"
-    $PYTHON -m tooldns.cli status
+    $PYTHON -m tooldns.cli status 2>/dev/null || true
 }
 
 do_search() {
@@ -124,98 +136,159 @@ do_update() {
     print_step "Updating ToolsDNS from git..."
     echo ""
     cd "$REPO_DIR"
-    $PYTHON -m tooldns.cli update
+    git pull --ff-only
+    # Reinstall in case dependencies changed
+    if [ -f "$REPO_DIR/.venv/bin/pip" ]; then
+        "$REPO_DIR/.venv/bin/pip" install -q -e "$REPO_DIR"
+    else
+        $PYTHON -m pip install -q -e "$REPO_DIR"
+    fi
+    systemctl restart tooldns 2>/dev/null && print_info "Service restarted" || true
+    print_info "Update complete. Logs: journalctl -u tooldns -n 20"
 }
 
-do_docker() {
-    local subcmd="${1:-up}"
-    cd "$REPO_DIR"
-    case "$subcmd" in
-        up)
-            print_step "Starting ToolsDNS in Docker..."
-            print_info "Your ~/.tooldns folder is mounted into the container."
-            print_info "Edit config, skills, or tools on the host — changes are live instantly."
-            echo ""
-            docker compose up -d
-            echo ""
-            print_info "Logs: ./tooldns.sh docker logs"
-            print_info "Stop: ./tooldns.sh docker down"
-            ;;
-        down)
-            print_step "Stopping ToolsDNS Docker container..."
-            docker compose down
-            ;;
-        logs)
-            docker compose logs -f
-            ;;
-        build)
-            print_step "Building ToolsDNS Docker image..."
-            docker compose build
-            ;;
-        status)
-            docker compose ps
-            ;;
-        *)
-            print_error "Unknown docker subcommand: $subcmd"
-            print_info "Usage: ./tooldns.sh docker [up|down|logs|build|status]"
-            ;;
-    esac
+do_caddy_setup() {
+    print_step "Configuring Caddy reverse proxy for ToolsDNS..."
+    echo ""
+    if ! command -v caddy &>/dev/null; then
+        print_error "Caddy not found. Install it first:"
+        print_info "  https://caddyserver.com/docs/install"
+        return 1
+    fi
+
+    echo -n "  Domain (e.g. api.toolsdns.com): "
+    read -r DOMAIN
+    if [ -z "$DOMAIN" ]; then
+        print_warn "No domain entered. Skipping."
+        return
+    fi
+
+    mkdir -p /etc/caddy/conf.d
+    SNIPPET="/etc/caddy/conf.d/tooldns.caddy"
+    cat > "$SNIPPET" << EOF
+# ToolsDNS API — managed by tooldns.sh
+$DOMAIN {
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        -Server
+    }
+    reverse_proxy localhost:$PORT {
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Real-IP {remote_host}
+    }
+}
+EOF
+
+    CADDYFILE="/etc/caddy/Caddyfile"
+    if ! grep -q "conf.d" "$CADDYFILE" 2>/dev/null; then
+        echo "" >> "$CADDYFILE"
+        echo "import /etc/caddy/conf.d/*.caddy" >> "$CADDYFILE"
+    fi
+
+    if caddy validate --config "$CADDYFILE" 2>/dev/null; then
+        systemctl reload caddy 2>/dev/null || systemctl restart caddy
+        print_info "Caddy reloaded"
+        echo ""
+        echo -e "  ${GREEN}✅ ToolsDNS will be served at https://$DOMAIN${NC}"
+        print_info "Make sure DNS for $DOMAIN points to this server's IP."
+    else
+        print_error "Caddy config validation failed — check $SNIPPET"
+    fi
+}
+
+do_setup_service() {
+    print_step "Setting up ToolsDNS as a systemd service..."
+    echo ""
+
+    VENV="$REPO_DIR/.venv"
+    [ -d "$VENV" ] || { print_error "No .venv found at $REPO_DIR/.venv — run ./tooldns.sh install first"; return 1; }
+
+    cat > /etc/systemd/system/tooldns.service << EOF
+[Unit]
+Description=ToolsDNS — AI Tool Discovery Service
+Documentation=https://github.com/syedfahimdev/ToolsDNS
+After=network.target
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=$REPO_DIR
+EnvironmentFile=$TOOLDNS_HOME/.env
+ExecStart=$VENV/bin/python3 -m tooldns.cli serve
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tooldns
+ReadWritePaths=$TOOLDNS_HOME $REPO_DIR
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable tooldns
+    systemctl restart tooldns
+    sleep 3
+
+    if systemctl is-active --quiet tooldns; then
+        print_info "✅ tooldns.service is running and enabled"
+    else
+        print_error "Service failed — check: journalctl -u tooldns -n 30"
+    fi
+
+    echo ""
+    print_info "Useful commands:"
+    print_info "  journalctl -u tooldns -f      # Follow logs"
+    print_info "  systemctl restart tooldns     # Restart"
+    print_info "  systemctl stop tooldns        # Stop"
 }
 
 do_logs() {
-    local log_file="$TOOLDNS_HOME/tooldns.log"
-    if [ ! -f "$log_file" ]; then
-        print_warn "No log file found at $log_file"
-        print_info "Start the server first: ./tooldns.sh start"
-        return
+    print_step "ToolsDNS live logs (Ctrl+C to exit)..."
+    echo ""
+    if systemctl is-active --quiet tooldns 2>/dev/null; then
+        journalctl -u tooldns -f --no-pager
+    else
+        local log_file="$TOOLDNS_HOME/tooldns.log"
+        if [ -f "$log_file" ]; then
+            tail -n 40 "$log_file"
+        else
+            print_warn "Service not running and no log file found."
+            print_info "Start: systemctl start tooldns"
+        fi
     fi
-    print_step "Last 30 lines of $log_file:"
-    echo ""
-    tail -n 30 "$log_file"
-    echo ""
-    print_info "Full log: $log_file"
-    print_info "Watch live: tail -f $log_file"
 }
 
 do_test_api() {
-    local port="${TOOLDNS_PORT:-8787}"
     local api_key
     api_key=$(_get_api_key)
-    print_step "Testing ToolsDNS API on port $port..."
+    print_step "Testing ToolsDNS API on port $PORT..."
     echo ""
 
-    if [ -z "$api_key" ]; then
-        print_warn "No API key found in $TOOLDNS_HOME/.env — authenticated endpoints may fail."
-        print_info "Run './tooldns.sh install' to set one up."
-        echo ""
-    fi
-
-    # Health check (no auth needed)
     echo -e "${BLUE}  1. Health check:${NC}"
-    if curl -s "http://localhost:$port/health" 2>/dev/null | python3 -m json.tool 2>/dev/null; then
+    if curl -s "http://localhost:$PORT/health" 2>/dev/null | python3 -m json.tool 2>/dev/null; then
         echo -e "${GREEN}     ✅ Server is running${NC}"
     else
-        print_error "Server is not running. Start it first: ./tooldns.sh start"
+        print_error "Server is not responding. Start: systemctl start tooldns"
         return
     fi
     echo ""
 
-    # Root endpoint
-    echo -e "${BLUE}  2. Root endpoint:${NC}"
-    curl -s "http://localhost:$port/" | python3 -m json.tool
-    echo ""
-
-    # Search test (needs auth)
-    echo -e "${BLUE}  3. Search test (query: 'send email'):${NC}"
-    curl -s -X POST "http://localhost:$port/v1/search" \
+    echo -e "${BLUE}  2. Search (query: 'send email'):${NC}"
+    curl -s -X POST "http://localhost:$PORT/v1/search" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $api_key" \
-        -d '{"query": "send email", "top_k": 3}' | python3 -m json.tool
+        -d '{"query": "send email", "top_k": 3}' | python3 -m json.tool | head -50
     echo ""
 
-    # List sources (needs auth)
-    echo -e "${BLUE}  4. Registered sources:${NC}"
-    curl -s "http://localhost:$port/v1/sources" \
+    echo -e "${BLUE}  3. Sources:${NC}"
+    curl -s "http://localhost:$PORT/v1/sources" \
         -H "Authorization: Bearer $api_key" | python3 -m json.tool | head -30
     echo ""
 
@@ -225,20 +298,12 @@ do_test_api() {
 do_integrate() {
     print_step "Wiring ToolsDNS into your AI agent (nanobot/openclaw)..."
     echo ""
-    print_info "This will:"
-    print_info "  1. Add ToolsDNS to your agent's MCP server list"
-    print_info "  2. Move heavy tool servers to ToolsDNS config (saves tokens)"
-    print_info "  3. Update AGENTS.md with correct ToolsDNS instructions"
-    echo ""
     cd "$REPO_DIR"
     $PYTHON -m tooldns.cli integrate
 }
 
 do_install_mcp() {
     print_step "Install a new MCP server..."
-    echo ""
-    print_info "Installs the package, saves credentials, and indexes its tools."
-    print_info "Works with npm/npx, pip/Python, or any custom command."
     echo ""
     cd "$REPO_DIR"
     $PYTHON -m tooldns.cli install-mcp
@@ -247,62 +312,8 @@ do_install_mcp() {
 do_new_skill() {
     print_step "Create a new skill file..."
     echo ""
-    print_info "Skills are markdown files that teach your agent how to use an API"
-    print_info "or perform a multi-step task. Saved to ~/.tooldns/skills/ or any"
-    print_info "skill folder configured in ~/.tooldns/config.json."
-    echo ""
     cd "$REPO_DIR"
     $PYTHON -m tooldns.cli new-skill
-}
-
-do_setup_service() {
-    print_step "Setting up ToolsDNS + Nanobot as system services..."
-    echo ""
-    print_info "This will:"
-    print_info "  • Enable tooldns.service  (auto-starts, restarts on crash)"
-    print_info "  • Enable nanobot.service  (auto-starts after tooldns)"
-    print_info "  • Stop any running background processes"
-    echo ""
-
-    if [ ! -f /etc/systemd/system/tooldns.service ]; then
-        print_error "Service files not found. Expected:"
-        print_info "  /etc/systemd/system/tooldns.service"
-        print_info "  /etc/systemd/system/nanobot.service"
-        print_info "These were created by Claude Code. Check if they exist."
-        return 1
-    fi
-
-    print_info "Stopping any running instances..."
-    pkill -f "tooldns.cli serve" 2>/dev/null || true
-    pkill -f "nanobot gateway" 2>/dev/null || true
-    sleep 1
-
-    print_info "Reloading systemd..."
-    systemctl daemon-reload
-
-    print_info "Enabling services (auto-start on boot)..."
-    systemctl enable tooldns.service
-    systemctl enable nanobot.service
-
-    print_info "Starting tooldns..."
-    systemctl start tooldns.service
-    sleep 3
-
-    print_info "Starting nanobot..."
-    systemctl start nanobot.service
-    sleep 2
-
-    echo ""
-    print_step "Service status:"
-    systemctl is-active tooldns.service && print_info "  ✅ tooldns: running" || print_error "  ❌ tooldns: failed — run: journalctl -u tooldns -n 30"
-    systemctl is-active nanobot.service && print_info "  ✅ nanobot: running" || print_error "  ❌ nanobot: failed — run: journalctl -u nanobot -n 30"
-    echo ""
-    print_info "Useful commands:"
-    print_info "  journalctl -u tooldns -f    # Follow tooldns logs"
-    print_info "  journalctl -u nanobot  -f   # Follow nanobot logs"
-    print_info "  systemctl restart tooldns   # Restart tooldns"
-    print_info "  systemctl restart nanobot   # Restart nanobot"
-    print_info "  systemctl stop tooldns      # Stop tooldns"
 }
 
 do_reset() {
@@ -312,7 +323,8 @@ do_reset() {
     if [ "$confirm" = "y" ] || [ "$confirm" = "Y" ]; then
         rm -f "$TOOLDNS_HOME/tooldns.db"
         print_info "Database deleted."
-        print_info "Run './tooldns.sh start' to restart, or './tooldns.sh add' to re-add sources."
+        print_info "Restarting service..."
+        systemctl restart tooldns 2>/dev/null || print_info "Start manually: ./tooldns.sh start"
     else
         print_info "Cancelled."
     fi
@@ -321,20 +333,18 @@ do_reset() {
 do_info() {
     print_step "ToolsDNS Configuration"
     echo ""
-    print_info "Home directory:   $TOOLDNS_HOME"
-    print_info "Repo directory:   $REPO_DIR"
-    print_info "Config file:      $TOOLDNS_HOME/.env"
-    print_info "Database:         $TOOLDNS_HOME/tooldns.db"
-    print_info "Log file:         $TOOLDNS_HOME/tooldns.log"
+    print_info "Home directory : $TOOLDNS_HOME"
+    print_info "Repo directory : $REPO_DIR"
+    print_info "Config file    : $TOOLDNS_HOME/.env"
+    print_info "Database       : $TOOLDNS_HOME/tooldns.db"
     echo ""
 
     if [ -f "$TOOLDNS_HOME/.env" ]; then
         print_step "Current .env settings:"
         while IFS= read -r line; do
-            # Mask API keys
-            if [[ "$line" == *"API_KEY"* ]]; then
+            if [[ "$line" == *"KEY"* || "$line" == *"SECRET"* || "$line" == *"PASSWORD"* ]]; then
                 key=$(echo "$line" | cut -d= -f1)
-                echo "    $key=td_****"
+                echo "    $key=****"
             elif [ -n "$line" ] && [[ "$line" != \#* ]]; then
                 echo "    $line"
             fi
@@ -344,10 +354,14 @@ do_info() {
     fi
     echo ""
 
-    if [ -f "$TOOLDNS_HOME/tooldns.db" ]; then
-        local db_size
-        db_size=$(du -h "$TOOLDNS_HOME/tooldns.db" | cut -f1)
-        print_info "Database size: $db_size"
+    [ -f "$TOOLDNS_HOME/tooldns.db" ] && \
+        print_info "Database size: $(du -h "$TOOLDNS_HOME/tooldns.db" | cut -f1)"
+
+    # Show Caddy config if present
+    if [ -f "/etc/caddy/conf.d/tooldns.caddy" ]; then
+        echo ""
+        print_step "Caddy config (/etc/caddy/conf.d/tooldns.caddy):"
+        cat /etc/caddy/conf.d/tooldns.caddy | grep -v "^#" | sed 's/^/    /'
     fi
 }
 
@@ -360,27 +374,28 @@ show_menu() {
     echo "  What do you want to do?"
     echo ""
     echo -e "  ${CYAN}Getting Started:${NC}"
-    echo "    1)  install      First-time setup (creates ~/.tooldns, installs deps)"
-    echo "    2)  integrate    Wire ToolsDNS into nanobot/openclaw (updates AGENTS.md)"
-    echo "    3)  start        Start the API server"
-    echo "    4)  status       Show system status & health"
+    echo "    1)  install        First-time setup"
+    echo "    2)  integrate      Wire ToolsDNS into nanobot/openclaw"
+    echo "    3)  start          Start the API server (foreground)"
+    echo "    4)  status         Show service status & health"
     echo ""
     echo -e "  ${CYAN}Add Tools & Skills:${NC}"
-    echo "    5)  install-mcp  Install a new MCP server + set env vars + index tools"
-    echo "    6)  new-skill    Create a new skill file template"
-    echo "    7)  add          Add an existing source (config file, URL, folder)"
-    echo "    8)  ingest       Re-scan all sources to pick up new tools"
+    echo "    5)  install-mcp    Install a new MCP server + index tools"
+    echo "    6)  new-skill      Create a new skill file"
+    echo "    7)  add            Add an existing source (config, URL, folder)"
+    echo "    8)  ingest         Re-scan all sources for new tools"
     echo ""
     echo -e "  ${CYAN}Search & Debug:${NC}"
-    echo "    9)  search       Search for a tool by description"
-    echo "   10)  test-api     Test all API endpoints with live requests"
-    echo "   11)  logs         View recent server log entries"
-    echo "   12)  info         Show configuration details (API key, paths, DB size)"
+    echo "    9)  search         Search for a tool by description"
+    echo "   10)  test-api       Test all API endpoints with live requests"
+    echo "   11)  logs           Follow live service logs"
+    echo "   12)  info           Show config details (key, paths, DB size)"
     echo ""
-    echo -e "  ${CYAN}Maintenance:${NC}"
-    echo "   13)  update          Pull latest code from git and reinstall"
-    echo "   14)  reset           Wipe database and start fresh"
-    echo "   15)  setup-service   Install as systemd service (auto-start/restart)"
+    echo -e "  ${CYAN}Deployment (host + Caddy):${NC}"
+    echo "   13)  setup-service  Install/update the systemd service"
+    echo "   14)  caddy-setup    Configure Caddy reverse proxy + HTTPS"
+    echo "   15)  update         Pull latest code and restart"
+    echo "   16)  reset          Wipe database and restart fresh"
     echo ""
     echo "    0)  exit"
     echo ""
@@ -392,63 +407,59 @@ show_menu() {
 # ============================================================
 
 if [ $# -gt 0 ]; then
-    # Direct command mode
     case "$1" in
-        install)      do_install ;;
-        integrate)    do_integrate ;;
-        start)        do_start ;;
-        status)       do_status ;;
-        install-mcp)  do_install_mcp ;;
-        new-skill)    do_new_skill ;;
-        search)       shift; do_search "$*" ;;
-        add)          do_add ;;
-        ingest)       do_ingest ;;
-        update)       do_update ;;
-        test-api)     do_test_api ;;
-        logs)         do_logs ;;
-        info)         do_info ;;
-        reset)        do_reset ;;
-        setup-service) do_setup_service ;;
-        docker)       shift; do_docker "$@" ;;
+        install)        do_install ;;
+        integrate)      do_integrate ;;
+        start)          do_start ;;
+        status)         do_status ;;
+        install-mcp)    do_install_mcp ;;
+        new-skill)      do_new_skill ;;
+        search)         shift; do_search "$*" ;;
+        add)            do_add ;;
+        ingest)         do_ingest ;;
+        update)         do_update ;;
+        test-api)       do_test_api ;;
+        logs)           do_logs ;;
+        info)           do_info ;;
+        reset)          do_reset ;;
+        setup-service)  do_setup_service ;;
+        caddy-setup)    do_caddy_setup ;;
         help|--help|-h)
             print_header
             echo "  Usage: ./tooldns.sh [command]"
-            echo "         ./tooldns.sh           (interactive menu)"
+            echo "         ./tooldns.sh            (interactive menu)"
             echo ""
             echo "  Getting Started:"
-            echo "    install      First-time setup (creates ~/.tooldns, installs deps)"
-            echo "    integrate    Wire ToolsDNS into nanobot/openclaw (updates AGENTS.md)"
-            echo "    start        Start the API server"
-            echo "    status       Show system status and health"
+            echo "    install        First-time setup"
+            echo "    integrate      Wire ToolsDNS into nanobot/openclaw"
+            echo "    start          Start the API server (foreground)"
+            echo "    status         Show service status and health"
             echo ""
             echo "  Add Tools & Skills:"
-            echo "    install-mcp  Install a new MCP server, set env vars, and index tools"
-            echo "    new-skill    Create a new skill file template"
-            echo "    add          Add an existing source (config file, URL, folder)"
-            echo "    ingest       Re-scan all sources to pick up new tools"
+            echo "    install-mcp    Install a new MCP server and index its tools"
+            echo "    new-skill      Create a new skill file template"
+            echo "    add            Add an existing source (config, URL, folder)"
+            echo "    ingest         Re-scan all sources for new tools"
             echo ""
             echo "  Search & Debug:"
-            echo "    search       Search for a tool  e.g: ./tooldns.sh search 'send email'"
-            echo "    test-api     Send live requests to all API endpoints"
-            echo "    logs         View recent server log entries"
-            echo "    info         Show config details (API key, paths, DB size)"
+            echo "    search         Search for a tool: ./tooldns.sh search 'send email'"
+            echo "    test-api       Send live requests to all API endpoints"
+            echo "    logs           Follow live service logs"
+            echo "    info           Show config details (key, paths, DB size)"
             echo ""
-            echo "  Maintenance:"
-            echo "    update         Pull latest code from git and reinstall"
-            echo "    reset          Wipe database and start fresh"
-            echo "    setup-service  Install as systemd service (auto-start/restart)"
-            echo "    docker [up|down|logs|build|status]  Manage Docker deployment"
+            echo "  Deployment (host + Caddy):"
+            echo "    setup-service  Install/update the systemd service"
+            echo "    caddy-setup    Configure Caddy reverse proxy + HTTPS"
+            echo "    update         Pull latest code and restart"
+            echo "    reset          Wipe database and restart fresh"
             ;;
         *)
             print_error "Unknown command: $1"
-            echo ""
-            echo "  Run './tooldns.sh help' to see all available commands."
-            echo "  Run './tooldns.sh' (no args) to open the interactive menu."
+            echo "  Run './tooldns.sh help' to see all commands."
             exit 1
             ;;
     esac
 else
-    # Interactive menu mode
     while true; do
         show_menu
         read -r choice
@@ -466,11 +477,12 @@ else
             10) do_test_api ;;
             11) do_logs ;;
             12) do_info ;;
-            13) do_update ;;
-            14) do_reset ;;
-            15) do_setup_service ;;
+            13) do_setup_service ;;
+            14) do_caddy_setup ;;
+            15) do_update ;;
+            16) do_reset ;;
             0)  echo "  Goodbye!"; exit 0 ;;
-            *)  print_error "Invalid choice. Enter a number from the menu above." ;;
+            *)  print_error "Invalid choice." ;;
         esac
         echo ""
         echo -n "  Press Enter to continue..."

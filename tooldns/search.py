@@ -73,6 +73,45 @@ class SearchEngine:
         # Cache for total index token count — recomputed when tool count changes
         self._cached_index_tokens: int = 0
         self._cached_tool_count: int = 0
+        # In-memory embedding matrix — rebuilt after ingestion, used on every search
+        self._emb_matrix: np.ndarray | None = None   # shape (N, D)
+        self._emb_tools: list[dict] = []              # parallel list of tool dicts (no embedding field)
+        self._emb_ids: list[str] = []                 # tool IDs in matrix row order
+        self._emb_lock = threading.Lock()
+
+    def invalidate_cache(self) -> None:
+        """Drop the in-memory embedding matrix so next search reloads from DB."""
+        with self._emb_lock:
+            self._emb_matrix = None
+            self._emb_tools = []
+            self._emb_ids = []
+
+    def _get_embedding_matrix(self) -> tuple[np.ndarray, list[dict], list[str]]:
+        """
+        Return cached (matrix, tools, ids). Rebuild from DB if not yet loaded.
+
+        The matrix stays in RAM across searches and is only rebuilt when
+        invalidate_cache() is called (after every ingestion run).
+        """
+        with self._emb_lock:
+            if self._emb_matrix is not None:
+                return self._emb_matrix, self._emb_tools, self._emb_ids
+
+            all_tools = self.db.get_all_tools_with_embeddings()
+            vectors, tools, ids = [], [], []
+            for t in all_tools:
+                emb = t.get("embedding")
+                if emb:
+                    vectors.append(emb)
+                    tool_copy = {k: v for k, v in t.items() if k != "embedding"}
+                    tools.append(tool_copy)
+                    ids.append(t["id"])
+
+            self._emb_matrix = np.array(vectors, dtype=np.float32) if vectors else np.empty((0, 1), dtype=np.float32)
+            self._emb_tools = tools
+            self._emb_ids = ids
+            logger.info(f"Embedding matrix built: {len(tools)} tools × {self._emb_matrix.shape[-1] if vectors else 0} dims")
+            return self._emb_matrix, self._emb_tools, self._emb_ids
 
     def _log_search_safe(self, **kwargs) -> None:
         """Fire-and-forget wrapper for db.log_search; swallows exceptions."""
@@ -176,14 +215,15 @@ class SearchEngine:
         """
         start_time = time.time()
 
-        # Embed the query
+        # Embed the query (LRU-cached — repeated queries are instant)
         query_embedding = self.embedder.embed(query)
+        query_vec = np.array(query_embedding, dtype=np.float32)
 
-        # Get all tools with embeddings for scoring
-        all_tools = self.db.get_all_tools_with_embeddings()
+        # Load in-memory matrix (built once, reused across searches)
+        emb_matrix, all_tools, tool_ids = self._get_embedding_matrix()
         total_tools = len(all_tools)
 
-        if not all_tools:
+        if total_tools == 0:
             return SearchResponse(
                 results=[],
                 total_tools_indexed=0,
@@ -191,18 +231,17 @@ class SearchEngine:
                 search_time_ms=0.0
             )
 
-        # BM25 keyword scores
+        # Vectorised cosine similarity — single matmul over all tools
+        semantic_scores = emb_matrix @ query_vec  # shape (N,)
+
+        # BM25 keyword scores (SQLite FTS5 — still fast at 1-5ms)
         bm25_scores = self.db.bm25_search(query, limit=50)
 
-        # Score every tool
+        # Hybrid score and filter
         scored_tools = []
-        for tool in all_tools:
-            embedding = tool.get("embedding", [])
-            if not embedding:
-                continue
-            semantic_score = self._cosine_similarity(query_embedding, embedding)
-            bm25_score = bm25_scores.get(tool["id"], 0.0)
-            hybrid = self.SEMANTIC_WEIGHT * semantic_score + self.BM25_WEIGHT * bm25_score
+        for i, tool in enumerate(all_tools):
+            bm25_score = bm25_scores.get(tool_ids[i], 0.0)
+            hybrid = self.SEMANTIC_WEIGHT * float(semantic_scores[i]) + self.BM25_WEIGHT * bm25_score
             if hybrid >= threshold:
                 scored_tools.append((tool, hybrid))
 

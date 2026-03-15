@@ -32,6 +32,7 @@ from tooldns.ingestion import IngestionPipeline
 from tooldns.health import HealthMonitor
 from tooldns.api import router, admin_router, init_api
 from tooldns.auth import init_auth
+from tooldns.mcp_server import mcp as _mcp_server
 
 # ---------------------------------------------------------------------------
 # Network access control middleware
@@ -79,9 +80,9 @@ class NetworkACLMiddleware(BaseHTTPMiddleware):
         is_ts = _is_tailscale(client_ip)
         is_private = _is_private(client_ip)  # Docker/Caddy proxy
 
-        # /v1/* (API) — allow from localhost, Tailscale, and private networks (Caddy proxy)
-        # Protected by API key auth — no need to restrict by IP
-        if path.startswith("/v1/"):
+        # /v1/* (API) and /mcp (MCP server) — allow from localhost, Tailscale, and
+        # private networks (Caddy proxy). Both are protected by API key auth.
+        if path.startswith("/v1/") or path.startswith("/mcp"):
             if not (is_local or is_ts or is_private):
                 return JSONResponse(
                     {"detail": "API access requires routing through the reverse proxy"},
@@ -104,7 +105,7 @@ def _get_key(request: Request) -> str:
 limiter = Limiter(key_func=_get_key, default_limits=["120/minute"])
 
 
-async def _auto_refresh(pipeline: IngestionPipeline, interval_min: int):
+async def _auto_refresh(pipeline: IngestionPipeline, interval_min: int, search_engine=None):
     """Background task: re-ingest all sources every interval_min minutes.
 
     Runs once immediately at startup (after a short delay) to register local
@@ -117,6 +118,8 @@ async def _auto_refresh(pipeline: IngestionPipeline, interval_min: int):
             loop = asyncio.get_event_loop()
             total = await loop.run_in_executor(None, pipeline.ingest_all)
             logger.info(f"Auto-refresh complete: {total} tools indexed")
+            if search_engine:
+                search_engine.invalidate_cache()
         except Exception as e:
             logger.error(f"Auto-refresh error: {e}")
         await asyncio.sleep(interval_min * 60)
@@ -288,11 +291,19 @@ async def lifespan(app: FastAPI):
         f"ToolsDNS ready — {tool_count} tools from {source_count} sources"
     )
 
+    # Pre-warm the in-memory embedding matrix so first search is instant
+    # (without this, first search builds the matrix at request time — ~500ms extra)
+    if tool_count > 0:
+        logger.info("Pre-warming embedding matrix...")
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, search_engine._get_embedding_matrix)
+        logger.info("Embedding matrix ready — first search will be fast")
+
     # Start background tasks
     tasks = []
     if settings.refresh_interval > 0:
         logger.info(f"Auto-refresh enabled: every {settings.refresh_interval} min")
-        tasks.append(asyncio.create_task(_auto_refresh(pipeline, settings.refresh_interval)))
+        tasks.append(asyncio.create_task(_auto_refresh(pipeline, settings.refresh_interval, search_engine)))
 
     tasks.append(asyncio.create_task(_health_check_loop(health_monitor, 60)))
 
@@ -332,6 +343,10 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.include_router(router)
 app.include_router(admin_router)
+
+# Mount the MCP server at /mcp (streamable-HTTP transport)
+# Users connect with: https://your-domain.com/mcp  +  Authorization: Bearer <api-key>
+app.mount("/mcp", _mcp_server.http_app(path="/", transport="streamable-http"))
 
 
 @app.get("/")

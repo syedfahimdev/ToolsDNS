@@ -1,9 +1,0 @@
-__pycache__/
-*.pyc
-*.pyo
-*.egg-info/
-.git/
-.env
-*.log
-server.log
-tooldns.sh

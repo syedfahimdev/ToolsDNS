@@ -13,10 +13,12 @@ Each endpoint validates input via Pydantic models (see models.py)
 and requires a valid API key (see auth.py).
 """
 
+import os
 import uuid
 import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException
+from tooldns.config import settings
 from tooldns.auth import require_api_key
 from tooldns.models import (
     SearchRequest, SearchResponse,
@@ -118,6 +120,7 @@ async def add_source(req: SourceRequest):
         from tooldns.ingestion import IngestionPipeline
         IngestionPipeline.enable_source(req.name)
         count = _ingestion_pipeline.ingest_source(config)
+        _search_engine.invalidate_cache()
         sources = _database.get_all_sources()
         source = next(
             (s for s in sources if s["name"] == req.name), None
@@ -176,6 +179,7 @@ async def delete_source(source_id: str):
         raise HTTPException(status_code=404, detail="Source not found.")
 
     _database.delete_source(source_id)
+    _search_engine.invalidate_cache()
 
     # Persist to disabled_sources.json so it isn't re-ingested on refresh
     disabled_file = TOOLDNS_HOME / "disabled_sources.json"
@@ -1029,6 +1033,7 @@ async def _run_ingest_job(job_id: str):
         loop = asyncio.get_event_loop()
         total = await loop.run_in_executor(None, _ingestion_pipeline.ingest_all)
         _database.update_job(job_id, "completed", total_tools=total)
+        _search_engine.invalidate_cache()
     except Exception as e:
         _database.update_job(job_id, "failed", error=str(e))
 
@@ -1216,3 +1221,81 @@ async def delete_api_key(key: str, _: dict = Depends(_require_admin)):
     """Permanently delete a sub-key (admin only)."""
     _database.delete_api_key(key)
     return {"ok": True}
+
+
+@router.get("/connect-info")
+async def connect_info(auth: dict = Depends(require_api_key)):
+    """
+    Return MCP connection config snippets for the authenticated API key.
+
+    The frontend uses this to show users how to connect their MCP clients
+    (Claude Desktop, Cursor, nanobot, etc.) to this ToolsDNS instance.
+    """
+    api_key = auth.get("key", settings.api_key)
+
+    # Resolve public base URL: prefer TOOLDNS_PUBLIC_URL / settings.public_url, fall back to port
+    public_url = (os.environ.get("TOOLDNS_PUBLIC_URL", "") or settings.public_url).rstrip("/")
+    if not public_url:
+        public_url = f"http://localhost:{settings.port}"
+
+    mcp_url = f"{public_url}/mcp"
+
+    return {
+        "mcp_url": mcp_url,
+        "api_key": api_key,
+        "snippets": {
+            "claude_desktop": {
+                "label": "Claude Desktop",
+                "file": "~/Library/Application Support/Claude/claude_desktop_config.json",
+                "config": {
+                    "mcpServers": {
+                        "tooldns": {
+                            "type": "streamable-http",
+                            "url": mcp_url,
+                            "headers": {"Authorization": f"Bearer {api_key}"}
+                        }
+                    }
+                }
+            },
+            "cursor": {
+                "label": "Cursor / Windsurf / Zed",
+                "note": "Add to your MCP settings (Settings → MCP)",
+                "config": {
+                    "mcpServers": {
+                        "tooldns": {
+                            "url": mcp_url,
+                            "headers": {"Authorization": f"Bearer {api_key}"}
+                        }
+                    }
+                }
+            },
+            "nanobot": {
+                "label": "Nanobot",
+                "file": "~/.nanobot/config.json",
+                "config": {
+                    "mcpServers": {
+                        "tooldns": {
+                            "url": mcp_url,
+                            "headers": {"Authorization": f"Bearer {api_key}"}
+                        }
+                    }
+                }
+            },
+            "stdio": {
+                "label": "Any MCP client (stdio fallback)",
+                "note": "Use this if your client does not support HTTP MCP. Requires: pip install tooldns",
+                "config": {
+                    "mcpServers": {
+                        "tooldns": {
+                            "command": "python3",
+                            "args": ["-m", "tooldns.mcp_server"],
+                            "env": {
+                                "TOOLDNS_API_URL": public_url,
+                                "TOOLDNS_API_KEY": api_key
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }

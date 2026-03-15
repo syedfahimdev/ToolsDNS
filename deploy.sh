@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
-# deploy.sh — One-command ToolsDNS backend installer for Ubuntu/Debian VPS
-# Usage: curl -sSL https://raw.githubusercontent.com/syedfahimdev/ToolsDNS/master/deploy.sh | bash
-# Or:    ./deploy.sh
+# deploy.sh — One-command ToolsDNS installer for Ubuntu/Debian VPS
+#
+# Installs ToolsDNS directly on the host (no Docker) and configures
+# Caddy as the HTTPS reverse proxy.
+#
+# Usage:
+#   curl -sSL https://raw.githubusercontent.com/syedfahimdev/ToolsDNS/master/deploy.sh | bash
+#   ./deploy.sh
+#   ./deploy.sh --domain api.example.com   # skip domain prompt
 
 set -euo pipefail
 
@@ -9,39 +15,69 @@ BOLD='\033[1m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
+CYAN='\033[0;36m'
 NC='\033[0m'
 
 info()    { echo -e "${GREEN}[✓]${NC} $*"; }
 warn()    { echo -e "${YELLOW}[!]${NC} $*"; }
 error()   { echo -e "${RED}[✗]${NC} $*"; exit 1; }
-section() { echo -e "\n${BOLD}──── $* ────${NC}"; }
+section() { echo -e "\n${BOLD}${CYAN}──── $* ────${NC}"; }
 
 # ── Config ────────────────────────────────────────────────────────────────────
 INSTALL_DIR="${TOOLDNS_INSTALL_DIR:-/opt/tooldns}"
 DATA_DIR="${TOOLDNS_DATA_DIR:-/root/.tooldns}"
 PORT="${TOOLDNS_PORT:-8787}"
 SERVICE_USER="root"
+DOMAIN=""
 
-section "ToolsDNS Backend Installer"
-echo "Install dir : $INSTALL_DIR"
-echo "Data dir    : $DATA_DIR"
-echo "Port        : $PORT"
+# Parse flags
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --domain) DOMAIN="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+
+# ── Banner ────────────────────────────────────────────────────────────────────
+echo ""
+echo -e "${CYAN}╔════════════════════════════════════════╗${NC}"
+echo -e "${CYAN}║            ⚡ ToolsDNS ⚡               ║${NC}"
+echo -e "${CYAN}║     VPS Installer (host + Caddy)       ║${NC}"
+echo -e "${CYAN}╚════════════════════════════════════════╝${NC}"
+echo ""
+echo "  Install dir : $INSTALL_DIR"
+echo "  Data dir    : $DATA_DIR"
+echo "  Port        : $PORT"
 echo ""
 
-# ── Check root ─────────────────────────────────────────────────────────────
-if [[ $EUID -ne 0 ]]; then
-  error "Run as root: sudo bash deploy.sh"
-fi
+# ── Root check ────────────────────────────────────────────────────────────────
+[[ $EUID -eq 0 ]] || error "Run as root: sudo bash deploy.sh"
 
-# ── Dependencies ─────────────────────────────────────────────────────────────
-section "Installing system dependencies"
+# ── System dependencies ───────────────────────────────────────────────────────
+section "System dependencies"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq python3 python3-pip python3-venv git curl 2>/dev/null
-info "System packages OK"
+apt-get install -y -qq python3 python3-pip python3-venv git curl openssl 2>/dev/null
+info "System packages installed"
+
+# ── Caddy ─────────────────────────────────────────────────────────────────────
+section "Caddy (reverse proxy)"
+if ! command -v caddy &>/dev/null; then
+  info "Installing Caddy..."
+  curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key \
+    | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+  echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] \
+    https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" \
+    > /etc/apt/sources.list.d/caddy-stable.list
+  apt-get update -qq
+  apt-get install -y -qq caddy
+  info "Caddy installed"
+else
+  info "Caddy already installed ($(caddy version))"
+fi
 
 # ── Clone / update repo ───────────────────────────────────────────────────────
-section "Setting up ToolsDNS code"
+section "ToolsDNS code"
 if [[ -d "$INSTALL_DIR/.git" ]]; then
   info "Repo exists — pulling latest"
   git -C "$INSTALL_DIR" pull --ff-only
@@ -50,47 +86,56 @@ else
   git clone https://github.com/syedfahimdev/ToolsDNS.git "$INSTALL_DIR"
 fi
 
-# ── Python env ────────────────────────────────────────────────────────────────
-section "Setting up Python environment"
+# ── Python environment ────────────────────────────────────────────────────────
+section "Python environment"
 python3 -m venv "$INSTALL_DIR/.venv"
 "$INSTALL_DIR/.venv/bin/pip" install -q --upgrade pip
 "$INSTALL_DIR/.venv/bin/pip" install -q -e "$INSTALL_DIR"
-info "Python venv ready"
 
-# ── Data directory ────────────────────────────────────────────────────────────
-section "Configuring data directory"
+# Install ONNX for fast query embedding (~35ms vs ~280ms uncached)
+info "Installing ONNX runtime for fast embeddings..."
+"$INSTALL_DIR/.venv/bin/pip" install -q "optimum[onnxruntime]" onnxruntime 2>/dev/null || \
+  warn "ONNX install failed — will fall back to sentence-transformers (still works, ~280ms)"
+
+info "Python environment ready"
+
+# ── Data directory & config ───────────────────────────────────────────────────
+section "Data directory"
 mkdir -p "$DATA_DIR/skills" "$DATA_DIR/tools"
 
 ENV_FILE="$DATA_DIR/.env"
 if [[ ! -f "$ENV_FILE" ]]; then
-  # Generate a random admin API key
   API_KEY="td_$(openssl rand -hex 24)"
   cat > "$ENV_FILE" << EOF
-# ToolsDNS configuration
-# Generated by deploy.sh on $(date -u +"%Y-%m-%d %H:%M UTC")
+# ToolsDNS configuration — generated by deploy.sh on $(date -u +"%Y-%m-%d %H:%M UTC")
 
 TOOLDNS_API_KEY=$API_KEY
 TOOLDNS_HOST=0.0.0.0
 TOOLDNS_PORT=$PORT
 TOOLDNS_APP_NAME=ToolsDNS
 TOOLDNS_APP_TAGLINE=DNS for AI Tools
+TOOLDNS_REFRESH_INTERVAL=60
 
-# Optional: set your model for token savings tracking
-# TOOLDNS_MODEL=claude-sonnet-4-6
+# Auto-discover tools from nanobot, openclaw, cursor, claude desktop etc.
+# TOOLDNS_AUTO_DISCOVER=true
 
-# Optional: Composio for 2000+ tools
+# Optional: extra tool paths to ingest (comma-separated, path[:apikey])
+# TOOLDNS_EXTRA_PATHS=/path/to/skills
+
+# Optional: Composio for 2000+ managed tools
 # COMPOSIO_API_KEY=your_key_here
 # COMPOSIO_MCP_URL=your_mcp_url_here
 EOF
-  info "Created $ENV_FILE with new API key: $API_KEY"
-  warn "Save this API key! You'll need it for the frontend."
+  info "Created $ENV_FILE"
+  warn "Your API key: ${BOLD}$API_KEY${NC}"
+  warn "Save this — you will need it for the frontend (Vercel env vars)."
 else
   info "Existing $ENV_FILE kept (not overwritten)"
-  API_KEY=$(grep TOOLDNS_API_KEY "$ENV_FILE" | cut -d= -f2 | tr -d ' ')
+  API_KEY=$(grep "^TOOLDNS_API_KEY=" "$ENV_FILE" | cut -d= -f2 | tr -d ' ')
 fi
 
 # ── Systemd service ───────────────────────────────────────────────────────────
-section "Installing systemd service"
+section "Systemd service"
 cat > /etc/systemd/system/tooldns.service << EOF
 [Unit]
 Description=ToolsDNS — AI Tool Discovery Service
@@ -120,36 +165,92 @@ EOF
 systemctl daemon-reload
 systemctl enable tooldns
 systemctl restart tooldns
-sleep 4
+info "Service enabled and started"
 
-if systemctl is-active --quiet tooldns; then
-  info "ToolsDNS service running"
-else
-  error "Service failed to start. Check: journalctl -u tooldns -n 30"
-fi
-
-# ── Health check ──────────────────────────────────────────────────────────────
-section "Verifying backend"
-for i in {1..12}; do
+# ── Wait for backend ──────────────────────────────────────────────────────────
+section "Waiting for backend"
+for i in {1..18}; do
   HEALTH=$(curl -s --max-time 3 "http://localhost:$PORT/health" 2>/dev/null || true)
   if echo "$HEALTH" | grep -q "healthy"; then
-    info "Backend healthy: $HEALTH"
+    info "Backend healthy"
     break
   fi
+  [[ $i -eq 18 ]] && { warn "Backend slow to start — check: journalctl -u tooldns -n 30"; break; }
+  printf "  Waiting... (%ds)\r" "$((i * 5))"
   sleep 5
 done
+
+# ── Caddy configuration ───────────────────────────────────────────────────────
+section "Caddy configuration"
+
+if [[ -z "$DOMAIN" ]]; then
+  echo ""
+  echo "  Enter the domain for the ToolsDNS API (e.g. api.toolsdns.com)."
+  echo "  Leave blank to skip — you can configure Caddy later."
+  echo ""
+  echo -n "  Domain: "
+  read -r DOMAIN
+fi
+
+CADDY_SNIPPET="/etc/caddy/conf.d/tooldns.caddy"
+
+if [[ -n "$DOMAIN" ]]; then
+  mkdir -p /etc/caddy/conf.d
+
+  cat > "$CADDY_SNIPPET" << EOF
+# ToolsDNS API — managed by deploy.sh
+$DOMAIN {
+    # HTTPS via Let's Encrypt (automatic — Caddy handles certs)
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        -Server
+    }
+
+    reverse_proxy localhost:$PORT {
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Real-IP {remote_host}
+    }
+}
+EOF
+
+  # Include conf.d in main Caddyfile if not already there
+  CADDYFILE="/etc/caddy/Caddyfile"
+  if ! grep -q "conf.d" "$CADDYFILE" 2>/dev/null; then
+    echo "" >> "$CADDYFILE"
+    echo "import /etc/caddy/conf.d/*.caddy" >> "$CADDYFILE"
+    info "Added conf.d import to $CADDYFILE"
+  fi
+
+  if caddy validate --config "$CADDYFILE" 2>/dev/null; then
+    systemctl reload caddy 2>/dev/null || systemctl restart caddy
+    info "Caddy reloaded — $DOMAIN will serve ToolsDNS over HTTPS"
+  else
+    warn "Caddy config validation failed — check $CADDY_SNIPPET manually"
+  fi
+else
+  warn "Skipped Caddy config. To add it later:"
+  warn "  ./tooldns.sh caddy-setup"
+  CADDY_SNIPPET="(not configured)"
+fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 section "Done!"
 echo ""
-echo -e "  ${BOLD}Backend URL${NC}  : http://localhost:$PORT"
-echo -e "  ${BOLD}Admin API Key${NC}: $API_KEY"
-echo -e "  ${BOLD}Web UI${NC}       : http://localhost:$PORT/ui"
-echo -e "  ${BOLD}Logs${NC}         : journalctl -u tooldns -f"
+echo -e "  ${BOLD}Backend${NC}       : http://localhost:$PORT"
+[[ -n "$DOMAIN" ]] && echo -e "  ${BOLD}Public URL${NC}    : https://$DOMAIN"
+echo -e "  ${BOLD}API key${NC}       : $API_KEY"
+echo -e "  ${BOLD}Logs${NC}          : journalctl -u tooldns -f"
+[[ "$CADDY_SNIPPET" != "(not configured)" ]] && echo -e "  ${BOLD}Caddy config${NC}  : $CADDY_SNIPPET"
 echo ""
-echo -e "  ${BOLD}Next steps:${NC}"
-echo "  1. Point api.toolsdns.com → this server's IP"
-echo "  2. Add TOOLDNS_API_URL=https://api.toolsdns.com to Vercel"
-echo "  3. Add TOOLDNS_API_KEY=$API_KEY to Vercel"
+echo -e "  ${BOLD}Vercel env vars to set:${NC}"
+[[ -n "$DOMAIN" ]] && echo "    TOOLDNS_API_URL=https://$DOMAIN" || echo "    TOOLDNS_API_URL=https://your-domain"
+echo "    TOOLDNS_API_KEY=$API_KEY"
 echo ""
-warn "If using Caddy/nginx, proxy port $PORT behind HTTPS."
+echo -e "  ${BOLD}Useful commands:${NC}"
+echo "    journalctl -u tooldns -f       # Live logs"
+echo "    systemctl restart tooldns      # Restart service"
+echo "    ./tooldns.sh                   # Developer helper menu"
+echo ""

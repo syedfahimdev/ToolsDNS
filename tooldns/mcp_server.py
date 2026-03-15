@@ -64,12 +64,23 @@ mcp = FastMCP(
 _client: Optional[httpx.AsyncClient] = None
 
 
+def _api_base_url() -> str:
+    """Resolve base URL — supports TOOLDNS_API_URL for remote connections."""
+    url = os.environ.get("TOOLDNS_API_URL", "").rstrip("/")
+    return url or f"http://127.0.0.1:{settings.port}"
+
+
+def _api_key() -> str:
+    """Resolve API key — prefers TOOLDNS_API_KEY env var over settings."""
+    return os.environ.get("TOOLDNS_API_KEY", "") or settings.api_key
+
+
 async def _get_client() -> httpx.AsyncClient:
     global _client
     if _client is None or _client.is_closed:
         _client = httpx.AsyncClient(
-            base_url=f"http://127.0.0.1:{settings.port}",
-            headers={"Authorization": f"Bearer {settings.api_key}"},
+            base_url=_api_base_url(),
+            headers={"Authorization": f"Bearer {_api_key()}"},
             timeout=httpx.Timeout(60.0),
         )
     return _client
