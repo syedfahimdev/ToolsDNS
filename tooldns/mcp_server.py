@@ -156,6 +156,9 @@ async def search_tools(
 
     results = result.get("results", [])
     if not results:
+        hint = result.get("hint", "")
+        if hint:
+            return f"No tools found for: {query!r}\n\n💡 HINT FOR AI: {hint}"
         return f"No tools found for: {query!r}\nTry rephrasing or use a different keyword."
 
     total = result.get("total_tools_indexed", 0)
@@ -185,6 +188,10 @@ async def search_tools(
         )
     else:
         lines.append("Use `get_tool` for skills (need full instructions), or `call_tool` to execute directly.")
+
+    hint = result.get("hint")
+    if hint:
+        lines.append(f"\n💡 HINT FOR AI: {hint}")
 
     return "\n".join(lines)
 

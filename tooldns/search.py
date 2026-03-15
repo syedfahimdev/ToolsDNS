@@ -202,7 +202,7 @@ class SearchEngine:
         # Detect real-time/web intent before searching
         is_realtime = self._is_realtime_query(query)
         expanded_query = self._expand_query(query) if is_realtime else query
-        web_boost = 0.15 if is_realtime else 0.0
+        web_boost = 0.30 if is_realtime else 0.0
 
         emb_matrix, all_tools, tool_ids = self._get_embedding_matrix()
         total_tools = len(all_tools)
@@ -219,7 +219,7 @@ class SearchEngine:
         top_results, results = self._run_search(expanded_query, emb_matrix, all_tools, tool_ids, top_k, threshold, web_boost=web_boost)
 
         # Fallback: if nothing found or best result is weak, try reformulated queries
-        LOW_CONFIDENCE = 0.25
+        LOW_CONFIDENCE = 0.40
         if not results or results[0].confidence < LOW_CONFIDENCE:
             for fallback_q in self._generate_fallbacks(query, is_realtime=is_realtime):
                 fb_top, fb_results = self._run_search(fallback_q, emb_matrix, all_tools, tool_ids, top_k, threshold * 0.7, web_boost=web_boost)
@@ -267,16 +267,27 @@ class SearchEngine:
         if not results:
             hint = (
                 f"No tools found for '{query}'. "
-                "Try rephrasing or search for a more specific capability (e.g. 'web search', 'send email', 'read file')."
+                "STOP and rephrase your query. You might be asking for something "
+                "ToolsDNS does not have. If you need general knowledge or real-time info (like 'price of tomato'), "
+                "search for a 'web search' or 'browser' tool instead."
             )
         elif top_conf < LOW_CONFIDENCE:
             top_names = ", ".join(r.name for r in results[:3])
-            hint = (
-                f"Low confidence match (best: {top_conf:.2f}). "
-                f"Closest tools found: {top_names}. "
-                "These may not be the right tools — consider trying a different search query "
-                "or using a general-purpose web search tool if you need real-time information."
-            )
+            if is_realtime:
+                hint = (
+                    f"Low confidence match (best: {top_conf:.2f}). "
+                    f"Closest tools returned: {top_names}. "
+                    "These tools are a low match. However, you are looking for real-time information. "
+                    "You MUST use one of the provided search or browser tools if one is available, otherwise stop."
+                )
+            else:
+                hint = (
+                    f"Low confidence match (best: {top_conf:.2f}). "
+                    f"Closest tools returned: {top_names}. "
+                    "WARNING: These tools are likely IRRELEVANT to your query. "
+                    "STOP and do not use them unless you are absolutely sure. "
+                    "Consider rephrasing your search or looking for a 'web search' tool instead."
+                )
 
         return SearchResponse(
             results=results,
@@ -306,7 +317,8 @@ class SearchEngine:
             # Boost web/search tools when caller signals real-time intent
             if web_boost:
                 name_lower = all_tools[i].get("name", "").lower()
-                if any(frag in name_lower for frag in self._WEB_TOOL_NAMES):
+                category_lower = all_tools[i].get("category", "").lower()
+                if any(frag in name_lower for frag in self._WEB_TOOL_NAMES) or category_lower in {"web search", "browser", "search"}:
                     hybrid += web_boost
             if hybrid >= threshold:
                 scored_tools.append((tool, hybrid))

@@ -61,7 +61,7 @@ def init_api(search_engine, ingestion_pipeline, database, health_monitor=None):
 # -----------------------------------------------------------------------
 
 @router.post("/search", response_model=SearchResponse)
-async def search_tools(req: SearchRequest, auth: dict = Depends(require_api_key)):
+def search_tools(req: SearchRequest, auth: dict = Depends(require_api_key)):
     """
     Search for tools matching a natural language query.
 
@@ -89,7 +89,7 @@ async def search_tools(req: SearchRequest, auth: dict = Depends(require_api_key)
 # -----------------------------------------------------------------------
 
 @router.post("/sources", response_model=SourceResponse)
-async def add_source(req: SourceRequest):
+def add_source(req: SourceRequest):
     """
     Register a new tool source and ingest its tools.
 
@@ -151,7 +151,7 @@ def _sanitize_source(source: dict, is_admin: bool) -> dict:
 
 
 @router.get("/sources")
-async def list_sources(key_info: dict = Depends(require_api_key)):
+def list_sources(key_info: dict = Depends(require_api_key)):
     """
     List all registered sources with their status and tool counts.
 
@@ -163,7 +163,7 @@ async def list_sources(key_info: dict = Depends(require_api_key)):
 
 
 @router.delete("/sources/{source_id}")
-async def delete_source(source_id: str):
+def delete_source(source_id: str):
     """
     Remove a source and all its indexed tools.
 
@@ -197,7 +197,7 @@ async def delete_source(source_id: str):
 
 
 @router.get("/stats")
-async def get_stats():
+def get_stats():
     """Search history and token savings statistics."""
     return _database.get_search_stats()
 
@@ -207,7 +207,7 @@ async def get_stats():
 # -----------------------------------------------------------------------
 
 @router.get("/categories")
-async def list_categories():
+def list_categories():
     """
     List all tool categories with counts.
 
@@ -224,7 +224,7 @@ async def list_categories():
 
 
 @router.get("/tools")
-async def list_tools(source: str = None, category: str = None):
+def list_tools(source: str = None, category: str = None):
     """
     List all indexed tools, optionally filtered by source or category.
 
@@ -250,7 +250,7 @@ async def list_tools(source: str = None, category: str = None):
 
 
 @router.get("/tool/{tool_id:path}")
-async def get_tool(tool_id: str):
+def get_tool(tool_id: str):
     """
     Get full details for a specific tool.
 
@@ -382,7 +382,7 @@ def _skill_name_matches(content: str, filename: str, target_name: str) -> bool:
 # -----------------------------------------------------------------------
 
 @router.post("/call")
-async def call_tool(req: dict):
+def call_tool(req: dict):
     """
     Proxy a tool call to the original MCP server.
 
@@ -643,7 +643,7 @@ def _resolve_env(val):
 # -----------------------------------------------------------------------
 
 @router.post("/register-mcp")
-async def register_mcp(req: RegisterMCPRequest):
+def register_mcp(req: RegisterMCPRequest):
     """
     Register a new MCP server into ToolsDNS — callable by AI agents.
 
@@ -758,7 +758,7 @@ async def register_mcp(req: RegisterMCPRequest):
 # -----------------------------------------------------------------------
 
 @router.get("/skills")
-async def list_skills():
+def list_skills():
     """List all skills in ~/.tooldns/skills/ with name and description."""
     from tooldns.config import TOOLDNS_HOME
     import re as _re
