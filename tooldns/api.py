@@ -163,13 +163,38 @@ async def delete_source(source_id: str):
     """
     Remove a source and all its indexed tools.
 
-    Args:
-        source_id: The source ID to delete.
+    Also writes the source name to disabled_sources.json so auto-discover
+    and ingest_local won't re-add it on the next refresh cycle.
     """
-    deleted = _database.delete_source(source_id)
-    if not deleted:
+    import json as _json
+    from tooldns.config import TOOLDNS_HOME
+
+    # Look up the source before deleting so we can record its name
+    sources = _database.get_all_sources()
+    source = next((s for s in sources if s["id"] == source_id), None)
+    if not source:
         raise HTTPException(status_code=404, detail="Source not found.")
-    return {"status": "deleted", "source_id": source_id}
+
+    _database.delete_source(source_id)
+
+    # Persist to disabled_sources.json so it isn't re-ingested on refresh
+    disabled_file = TOOLDNS_HOME / "disabled_sources.json"
+    try:
+        disabled: list = _json.loads(disabled_file.read_text()) if disabled_file.exists() else []
+        name = source.get("name", source_id)
+        if name not in disabled:
+            disabled.append(name)
+        disabled_file.write_text(_json.dumps(disabled, indent=2))
+    except Exception:
+        pass  # Non-fatal — source is deleted from DB regardless
+
+    return {"status": "deleted", "source_id": source_id, "source_name": source.get("name")}
+
+
+@router.get("/stats")
+async def get_stats():
+    """Search history and token savings statistics."""
+    return _database.get_search_stats()
 
 
 # -----------------------------------------------------------------------
