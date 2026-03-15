@@ -14,6 +14,7 @@ Both backends expose the same Embedder interface so all callers
 (search, ingestion) work without any changes.
 """
 
+from functools import lru_cache
 from tooldns.config import settings, logger
 
 _embedder_instance = None
@@ -37,6 +38,7 @@ class _SentenceTransformerBackend:
             self._model = SentenceTransformer(self.model_name)
             logger.info("Embedding model loaded successfully")
 
+    @lru_cache(maxsize=256)
     def embed(self, text: str) -> list[float]:
         self._load()
         return self._model.encode(text, normalize_embeddings=True).tolist()
@@ -81,6 +83,7 @@ class _OllamaBackend:
                 f"And the model is pulled: 'ollama pull {self.model_name}'"
             )
 
+    @lru_cache(maxsize=256)
     def embed(self, text: str) -> list[float]:
         import httpx
         resp = httpx.post(
