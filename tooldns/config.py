@@ -24,6 +24,11 @@ Environment Variables:
     TOOLDNS_APP_NAME: Branding name (default: ToolsDNS)
     TOOLDNS_GITHUB_URL: GitHub repo URL shown in UI/footer
     TOOLDNS_CONTACT_EMAIL: Contact email shown on pricing page
+    TOOLDNS_AUTO_DISCOVER: Auto-discover agent framework configs on startup (default: false)
+                           When true, scans nanobot, openclaw, cursor, claude desktop, etc.
+    TOOLDNS_EXTRA_PATHS: Comma-separated list of extra config/skill paths to always ingest.
+                         Format: path[:key] where key is the dot-path to mcpServers (optional).
+                         Example: ~/.cursor/mcp.json,~/.nanobot/config.json:tools.mcpServers
 """
 
 import os
@@ -66,6 +71,8 @@ class Settings(BaseSettings):
     model: str = ""  # LLM model name for cost calc (e.g. claude-sonnet-4-6)
     webhook_url: str = ""  # POST health alerts here (Slack/Discord/custom)
     webhook_secret: str = ""  # Added as X-ToolsDNS-Secret header if set
+    auto_discover: bool = False  # Auto-scan agent framework configs on startup
+    extra_paths: str = ""  # Comma-separated extra paths to ingest
     # Branding — override these in ~/.tooldns/.env to white-label
     app_name: str = "ToolsDNS"
     app_tagline: str = "DNS for AI Tools"
