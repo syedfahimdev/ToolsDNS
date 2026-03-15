@@ -115,7 +115,7 @@ class MCPFetcher:
     # -------------------------------------------------------------------
 
     def fetch_stdio(self, command: str, args: list[str],
-                    timeout: int = 15, env: Optional[dict] = None) -> list[dict]:
+                    timeout: int = 5, env: Optional[dict] = None) -> list[dict]:
         """
         Fetch tools from a stdio-based MCP server.
 

@@ -30,6 +30,7 @@ import json
 import hashlib
 from pathlib import Path
 from typing import Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import yaml
 
 from tooldns.config import logger
@@ -622,43 +623,57 @@ class IngestionPipeline:
 
         skip_servers = set(config.get("skip_servers", [])) | self.SELF_SERVER_NAMES
 
+        # Collect servers to fetch (skip excluded ones up front)
+        servers_to_fetch = [
+            (name, cfg) for name, cfg in mcp_section.items()
+            if name not in skip_servers
+        ]
+        for name in mcp_section:
+            if name in skip_servers:
+                logger.info(f"Skipping MCP server (excluded): {name}")
+
+        def _fetch_one(server_name: str, server_config: dict) -> tuple[str, list[dict]]:
+            """Fetch tools from one server; returns (server_name, tools)."""
+            server_type = server_config.get("type", "stdio")
+            if server_type in self.HTTP_SERVER_TYPES:
+                url = self._resolve_env_vars(server_config.get("url", ""))
+                headers = self._resolve_env_vars(server_config.get("headers"))
+                tools = self.fetcher.fetch_http(url=url, headers=headers)
+                for tool in tools:
+                    tool["_source_server"] = server_name
+                    tool["_source_type"] = server_type
+                    tool["_url"] = url
+                    tool["_headers"] = headers or {}
+            elif server_config.get("command"):
+                command = server_config.get("command", "python3")
+                args = self._resolve_env_vars(server_config.get("args", []))
+                tools = self.fetcher.fetch_stdio(command=command, args=args)
+                for tool in tools:
+                    tool["_source_server"] = server_name
+                    tool["_source_type"] = "stdio"
+                    tool["_command"] = command
+                    tool["_args"] = args
+            else:
+                logger.warning(f"  ⚠ {server_name}: unknown server type '{server_type}', skipping")
+                tools = []
+            return server_name, tools
+
         all_tools = []
-        for server_name, server_config in mcp_section.items():
-            if server_name in skip_servers:
-                logger.info(f"Skipping MCP server (excluded): {server_name}")
-                continue
-            logger.info(f"Fetching tools from MCP server: {server_name}")
-            try:
-                server_type = server_config.get("type", "stdio")
-                if server_type in self.HTTP_SERVER_TYPES:
-                    # Resolve env vars in URL and headers
-                    url = self._resolve_env_vars(server_config.get("url", ""))
-                    headers = self._resolve_env_vars(server_config.get("headers"))
-                    tools = self.fetcher.fetch_http(url=url, headers=headers)
-                    for tool in tools:
-                        tool["_source_server"] = server_name
-                        tool["_source_type"] = server_type
-                        tool["_url"] = url
-                        tool["_headers"] = headers or {}
-                elif server_config.get("command"):
-                    # stdio server — resolve env vars in args too
-                    command = server_config.get("command", "python3")
-                    args = self._resolve_env_vars(server_config.get("args", []))
-                    tools = self.fetcher.fetch_stdio(command=command, args=args)
-                    for tool in tools:
-                        tool["_source_server"] = server_name
-                        tool["_source_type"] = "stdio"
-                        tool["_command"] = command
-                        tool["_args"] = args
-                else:
-                    logger.warning(f"  ⚠ {server_name}: unknown server type '{server_type}', skipping")
-                    continue
-
-                all_tools.extend(tools)
-                logger.info(f"  → {server_name}: {len(tools)} tool(s)")
-
-            except Exception as e:
-                logger.warning(f"  ✗ {server_name}: {e}")
+        max_workers = min(8, len(servers_to_fetch)) if servers_to_fetch else 1
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {
+                pool.submit(_fetch_one, name, cfg): name
+                for name, cfg in servers_to_fetch
+            }
+            for future in as_completed(futures):
+                server_name = futures[future]
+                logger.info(f"Fetching tools from MCP server: {server_name}")
+                try:
+                    _, tools = future.result()
+                    all_tools.extend(tools)
+                    logger.info(f"  → {server_name}: {len(tools)} tool(s)")
+                except Exception as e:
+                    logger.warning(f"  ✗ {server_name}: {e}")
 
         return all_tools
 
@@ -756,41 +771,49 @@ class IngestionPipeline:
                 except Exception as e:
                     logger.warning(f"Error parsing skill {item.name}: {e}")
 
-                # Auto-detect tool scripts inside the skill folder
-                for script in sorted(item.glob("*.py")):
-                    try:
-                        logger.info(f"  Found tool script: {item.name}/{script.name}")
-                        script_tools = self.fetcher.fetch_stdio(
-                            "python3", ["-u", str(script)], timeout=10
-                        )
-                        for t in script_tools:
-                            t["_source_server"] = config.get("name", "skills")
-                            t["_source_type"] = "skill_tool_stdio"
-                            t["_command"] = "python3"
-                            t["_args"] = [str(script)]
-                            t["_skill_folder"] = str(item)
-                        tools.extend(script_tools)
-                        logger.info(f"    → {len(script_tools)} MCP tools from {script.name}")
-                    except Exception as e:
-                        # Not an MCP server — try static parsing
-                        logger.debug(f"    {script.name} not MCP, trying static parse: {e}")
+                # Auto-detect tool scripts inside the skill folder (parallel)
+                skill_scripts = sorted(item.glob("*.py"))
+                if skill_scripts:
+                    source_name_val = config.get("name", "skills")
+
+                    def _fetch_script(script, src=source_name_val, folder=str(item)):
                         try:
-                            sname, sdesc, sschema = self._parse_tool_py(
-                                script.read_text(encoding="utf-8"), script.stem
+                            logger.info(f"  Found tool script: {item.name}/{script.name}")
+                            script_tools = self.fetcher.fetch_stdio(
+                                "python3", ["-u", str(script)], timeout=5
                             )
-                            tools.append({
-                                "name": sname,
-                                "description": sdesc,
-                                "inputSchema": sschema,
-                                "_source_server": config.get("name", "skills"),
-                                "_source_type": "skill_tool_script",
-                                "_command": "python3",
-                                "_args": [str(script)],
-                                "_skill_folder": str(item),
-                            })
-                            logger.info(f"    → Static tool: {sname}")
-                        except Exception as e2:
-                            logger.warning(f"    Could not parse {script.name}: {e2}")
+                            for t in script_tools:
+                                t["_source_server"] = src
+                                t["_source_type"] = "skill_tool_stdio"
+                                t["_command"] = "python3"
+                                t["_args"] = [str(script)]
+                                t["_skill_folder"] = folder
+                            logger.info(f"    → {len(script_tools)} MCP tools from {script.name}")
+                            return script_tools
+                        except Exception as e:
+                            logger.debug(f"    {script.name} not MCP, trying static parse: {e}")
+                            try:
+                                sname, sdesc, sschema = self._parse_tool_py(
+                                    script.read_text(encoding="utf-8"), script.stem
+                                )
+                                logger.info(f"    → Static tool: {sname}")
+                                return [{
+                                    "name": sname,
+                                    "description": sdesc,
+                                    "inputSchema": sschema,
+                                    "_source_server": src,
+                                    "_source_type": "skill_tool_script",
+                                    "_command": "python3",
+                                    "_args": [str(script)],
+                                    "_skill_folder": folder,
+                                }]
+                            except Exception as e2:
+                                logger.warning(f"    Could not parse {script.name}: {e2}")
+                                return []
+
+                    with ThreadPoolExecutor(max_workers=min(4, len(skill_scripts))) as pool:
+                        for script_tools in pool.map(_fetch_script, skill_scripts):
+                            tools.extend(script_tools)
 
             # Pattern 2: flat .md file (e.g. github.md)
             elif item.is_file() and item.suffix == ".md" and not item.name.startswith("_"):
