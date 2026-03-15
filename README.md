@@ -163,8 +163,8 @@ Add ToolsDNS to any agent that supports MCP servers:
 User: "Create a work order for the maintenance team"
 
 Agent → list_skills()                    # What skills exist?
-      → sees "everi-work-order" listed
-      → read_skill("everi-work-order")   # Get full instructions
+      → sees "work-order" listed
+      → read_skill("work-order")   # Get full instructions
       → follows SKILL.md instructions
       → creates the Excel work order ✓
 ```
@@ -220,7 +220,7 @@ curl https://api.toolsdns.com/v1/skills \
 ### Get a skill's full instructions
 
 ```bash
-curl https://api.toolsdns.com/v1/skills/everi-work-order \
+curl https://api.toolsdns.com/v1/skills/work-order \
   -H "Authorization: Bearer td_your_key"
 ```
 
