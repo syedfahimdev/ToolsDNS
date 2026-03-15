@@ -315,8 +315,7 @@ class IngestionPipeline:
         """
         Ingest MCP servers from ~/.tooldns/config.json.
 
-        Same format as nanobot/openclaw configs. Credentials use
-        ${ENV_VAR} references which are resolved automatically.
+        Skips if the source was explicitly disabled (deleted by user).
 
         Args:
             config_path: Path to the config.json file.
@@ -324,13 +323,60 @@ class IngestionPipeline:
         Returns:
             int: Number of tools ingested.
         """
+        source_name = "tooldns"
+        if self._is_source_disabled(source_name):
+            logger.info(f"Skipping disabled source: {source_name}")
+            return 0
         config = {
             "type": SourceType.MCP_CONFIG.value,
-            "name": "tooldns",
+            "name": source_name,
             "path": str(config_path),
             "config_key": "mcpServers",
         }
         return self.ingest_source(config)
+
+    def _is_source_disabled(self, source_name: str) -> bool:
+        """Check if a source was explicitly deleted by the user."""
+        from tooldns.config import TOOLDNS_HOME
+        disabled_file = TOOLDNS_HOME / "disabled_sources.json"
+        if not disabled_file.exists():
+            return False
+        try:
+            import json as _j
+            disabled = _j.loads(disabled_file.read_text())
+            return source_name in disabled
+        except Exception:
+            return False
+
+    @staticmethod
+    def disable_source(source_name: str):
+        """Mark a source as disabled so ingest_local skips it. Called on delete."""
+        from tooldns.config import TOOLDNS_HOME
+        import json as _j
+        disabled_file = TOOLDNS_HOME / "disabled_sources.json"
+        try:
+            disabled = _j.loads(disabled_file.read_text()) if disabled_file.exists() else []
+            if source_name not in disabled:
+                disabled.append(source_name)
+                disabled_file.write_text(_j.dumps(disabled, indent=2))
+        except Exception as e:
+            logger.warning(f"Could not update disabled_sources.json: {e}")
+
+    @staticmethod
+    def enable_source(source_name: str):
+        """Remove a source from the disabled list (called when re-adding)."""
+        from tooldns.config import TOOLDNS_HOME
+        import json as _j
+        disabled_file = TOOLDNS_HOME / "disabled_sources.json"
+        if not disabled_file.exists():
+            return
+        try:
+            disabled = _j.loads(disabled_file.read_text())
+            if source_name in disabled:
+                disabled.remove(source_name)
+                disabled_file.write_text(_j.dumps(disabled, indent=2))
+        except Exception as e:
+            logger.warning(f"Could not update disabled_sources.json: {e}")
 
     def _ingest_local_skills(self, skills_dir: Path,
                               source_name: str = "tooldns-skills") -> int:

@@ -219,38 +219,71 @@ async def refresh_source(source_id: str):
 @ui_router.post("/sources/{source_id}/delete")
 async def delete_source(source_id: str):
     """Delete a source from DB and remove it from config.json so it doesn't come back on re-ingest."""
-    # Get source info before deleting so we know its name
     sources = _database.get_all_sources()
     source = next((s for s in sources if s["id"] == source_id), None)
 
     _database.delete_source(source_id)
 
-    # Also remove from ~/.tooldns/config.json to prevent resurrection on re-ingest
     if source:
-        _remove_source_from_config(source["name"])
+        _remove_source_from_config(source)
+        # Mark as disabled so ingest_local() won't resurrect it on next refresh
+        from tooldns.ingestion import IngestionPipeline
+        IngestionPipeline.disable_source(source["name"])
 
-    return HTMLResponse("")  # HTMX replaces row with nothing
+    return HTMLResponse("")
 
 
-def _remove_source_from_config(source_name: str):
-    """Remove a named MCP server entry from ~/.tooldns/config.json."""
+def _remove_source_from_config(source: dict):
+    """
+    Remove a source from the config file it came from so it won't resurrect on re-ingest.
+
+    Handles three cases:
+    1. mcp_config source (e.g. 'tooldns') — clears the entire mcpServers block
+       in the config file it points to (path stored in source config).
+    2. Named server match — removes that specific key from mcpServers.
+    3. External/imported source — removes from ~/.tooldns/config.json by name.
+    """
+    import json as _json
+    import logging
+    log = logging.getLogger("tooldns")
     from tooldns.config import TOOLDNS_HOME
-    config_file = TOOLDNS_HOME / "config.json"
-    if not config_file.exists():
+
+    source_type = source.get("type", "")
+    source_name = source.get("name", "")
+    source_config = source.get("config", {}) or {}
+
+    def _update_config_file(file_path: str, config_key: str, server_name: str = None):
+        """Remove server_name from config_key in file_path, or clear config_key entirely."""
+        import pathlib
+        p = pathlib.Path(file_path)
+        if not p.exists():
+            return
+        try:
+            data = _json.loads(p.read_text())
+            section = data.get(config_key, {})
+            if server_name and server_name in section:
+                del section[server_name]
+                log.info(f"Removed '{server_name}' from {config_key} in {p}")
+            elif not server_name and section:
+                data[config_key] = {}
+                log.info(f"Cleared {config_key} in {p}")
+            else:
+                return  # Nothing to change
+            data[config_key] = section if server_name else {}
+            p.write_text(_json.dumps(data, indent=2))
+        except Exception as e:
+            log.warning(f"Could not update {p}: {e}")
+
+    # Case 1: mcp_config source — knows its own file path
+    if source_type == "mcp_config" and source_config.get("path"):
+        config_key = source_config.get("config_key", "mcpServers")
+        # Clear the whole mcpServers block from that file
+        _update_config_file(source_config["path"], config_key)
         return
-    try:
-        import json as _json
-        data = _json.loads(config_file.read_text())
-        mcp_servers = data.get("mcpServers", {})
-        if source_name in mcp_servers:
-            del mcp_servers[source_name]
-            data["mcpServers"] = mcp_servers
-            config_file.write_text(_json.dumps(data, indent=2))
-            import logging
-            logging.getLogger("tooldns").info(f"Removed '{source_name}' from config.json")
-    except Exception as e:
-        import logging
-        logging.getLogger("tooldns").warning(f"Could not update config.json after delete: {e}")
+
+    # Case 2 & 3: try removing from ~/.tooldns/config.json by server name
+    default_config = str(TOOLDNS_HOME / "config.json")
+    _update_config_file(default_config, "mcpServers", source_name)
 
 
 @ui_router.post("/ingest-all")

@@ -113,6 +113,9 @@ async def add_source(req: SourceRequest):
     }
 
     try:
+        # Re-enable if it was previously deleted
+        from tooldns.ingestion import IngestionPipeline
+        IngestionPipeline.enable_source(req.name)
         count = _ingestion_pipeline.ingest_source(config)
         sources = _database.get_all_sources()
         source = next(
