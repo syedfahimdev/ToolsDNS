@@ -1,6 +1,4 @@
 """
-search.py — Semantic search engine for ToolsDNS.
-
 search.py — Hybrid search engine for ToolsDNS.
 
 Performs hybrid search combining:
@@ -146,9 +144,8 @@ class SearchEngine:
         """
         Detect which LLM model is being used.
 
-        Checks TOOLDNS_MODEL env var first, then nanobot config,
-        then openclaw config. Skips aliases like 'auto-fastest' that
-        don't map to real model IDs or pricing.
+        Checks TOOLDNS_MODEL env var first, then openclaw config.
+        Skips aliases like 'auto-fastest' that don't map to real model IDs or pricing.
 
         Returns:
             str: Model name, e.g. "claude-sonnet-4-6", or "" if unknown.
@@ -161,20 +158,7 @@ class SearchEngine:
         if _valid(model):
             return model
 
-        # 2. Nanobot config
-        try:
-            nanobot_cfg = os.path.expanduser("~/.nanobot/config.json")
-            with open(nanobot_cfg) as f:
-                cfg = json.load(f)
-            model = cfg.get("model", "") or (
-                (cfg.get("agents", {}).get("defaults") or {}).get("model", "")
-            )
-            if _valid(model):
-                return model
-        except Exception:
-            pass
-
-        # 3. OpenClaw config — first real model from any provider
+        # 2. OpenClaw config — first real model from any provider
         for cfg_path in [
             "~/.openclaw/openclaw.json",
             "~/.openclaw/workspace/openclaw.json",
@@ -215,11 +199,11 @@ class SearchEngine:
         """
         start_time = time.time()
 
-        # Embed the query (LRU-cached — repeated queries are instant)
-        query_embedding = self.embedder.embed(query)
-        query_vec = np.array(query_embedding, dtype=np.float32)
+        # Detect real-time/web intent before searching
+        is_realtime = self._is_realtime_query(query)
+        expanded_query = self._expand_query(query) if is_realtime else query
+        web_boost = 0.15 if is_realtime else 0.0
 
-        # Load in-memory matrix (built once, reused across searches)
         emb_matrix, all_tools, tool_ids = self._get_embedding_matrix()
         total_tools = len(all_tools)
 
@@ -231,24 +215,105 @@ class SearchEngine:
                 search_time_ms=0.0
             )
 
-        # Vectorised cosine similarity — single matmul over all tools
-        semantic_scores = emb_matrix @ query_vec  # shape (N,)
+        # Primary search (with web boost when real-time intent detected)
+        top_results, results = self._run_search(expanded_query, emb_matrix, all_tools, tool_ids, top_k, threshold, web_boost=web_boost)
 
-        # BM25 keyword scores (SQLite FTS5 — still fast at 1-5ms)
+        # Fallback: if nothing found or best result is weak, try reformulated queries
+        LOW_CONFIDENCE = 0.25
+        if not results or results[0].confidence < LOW_CONFIDENCE:
+            for fallback_q in self._generate_fallbacks(query, is_realtime=is_realtime):
+                fb_top, fb_results = self._run_search(fallback_q, emb_matrix, all_tools, tool_ids, top_k, threshold * 0.7, web_boost=web_boost)
+                if fb_results and fb_results[0].confidence >= 0.15:
+                    top_results, results = fb_top, fb_results
+                    expanded_query = fallback_q
+                    logger.info(f"Fallback search succeeded with: '{fallback_q[:60]}'")
+                    break
+
+        search_time = (time.time() - start_time) * 1000
+
+        # --- Real token counting (not estimates) ---
+        tokens_full_index = self._get_index_tokens(all_tools)
+        tokens_returned = sum(count_tool_tokens(t) for t, _ in top_results)
+        tokens_saved = max(0, tokens_full_index - tokens_returned)
+
+        model_name = self._get_model()
+        price = get_model_price(model_name) if model_name else None
+        cost_saved = tokens_to_cost(tokens_saved, price) if price else 0.0
+
+        log_kwargs = dict(
+            query=expanded_query[:500],
+            total_tools_in_index=total_tools,
+            tools_returned=len(results),
+            tokens_full_index=tokens_full_index,
+            tokens_returned=tokens_returned,
+            tokens_saved=tokens_saved,
+            model_name=model_name,
+            price_per_million=price or 0.0,
+            cost_saved_usd=cost_saved,
+            search_time_ms=round(search_time, 2),
+            api_key=api_key,
+        )
+        threading.Thread(target=self._log_search_safe, kwargs=log_kwargs, daemon=True).start()
+
+        logger.info(
+            f"Search '{expanded_query[:50]}' → {len(results)}/{total_tools} tools, "
+            f"{search_time:.1f}ms, {tokens_saved:,} tokens saved"
+            + (f" (${cost_saved:.4f} @ {model_name})" if price else "")
+        )
+
+        # Build a hint for the calling LLM when confidence is low
+        hint = None
+        top_conf = results[0].confidence if results else 0.0
+        if not results:
+            hint = (
+                f"No tools found for '{query}'. "
+                "Try rephrasing or search for a more specific capability (e.g. 'web search', 'send email', 'read file')."
+            )
+        elif top_conf < LOW_CONFIDENCE:
+            top_names = ", ".join(r.name for r in results[:3])
+            hint = (
+                f"Low confidence match (best: {top_conf:.2f}). "
+                f"Closest tools found: {top_names}. "
+                "These may not be the right tools — consider trying a different search query "
+                "or using a general-purpose web search tool if you need real-time information."
+            )
+
+        return SearchResponse(
+            results=results,
+            total_tools_indexed=total_tools,
+            tokens_saved=tokens_saved,
+            search_time_ms=round(search_time, 2),
+            hint=hint
+        )
+
+    # Name fragments that indicate a tool can search/browse the web
+    _WEB_TOOL_NAMES = {"search", "browse", "browser", "tavily", "web", "lookup", "crawl", "scrape", "fetch"}
+
+    def _run_search(self, query: str, emb_matrix, all_tools, tool_ids, top_k: int, threshold: float,
+                    web_boost: float = 0.0):
+        """Run hybrid search for a given query string. Returns (top_results, SearchResult list).
+
+        web_boost: extra score added to tools whose names contain web/search keywords.
+        """
+        query_vec = np.array(self.embedder.embed(query), dtype=np.float32)
+        semantic_scores = emb_matrix @ query_vec
         bm25_scores = self.db.bm25_search(query, limit=50)
 
-        # Hybrid score and filter
         scored_tools = []
         for i, tool in enumerate(all_tools):
             bm25_score = bm25_scores.get(tool_ids[i], 0.0)
             hybrid = self.SEMANTIC_WEIGHT * float(semantic_scores[i]) + self.BM25_WEIGHT * bm25_score
+            # Boost web/search tools when caller signals real-time intent
+            if web_boost:
+                name_lower = all_tools[i].get("name", "").lower()
+                if any(frag in name_lower for frag in self._WEB_TOOL_NAMES):
+                    hybrid += web_boost
             if hybrid >= threshold:
                 scored_tools.append((tool, hybrid))
 
         scored_tools.sort(key=lambda x: x[1], reverse=True)
         top_results = scored_tools[:top_k]
 
-        # Build result objects — deduplicate by tool name (keep highest score)
         results = []
         seen_names: set[str] = set()
         for tool, confidence in top_results:
@@ -267,67 +332,63 @@ class SearchEngine:
                 category=tool.get("category", "Other"),
                 how_to_call=self._build_call_instructions(source_info)
             ))
+        return top_results, results
 
-        search_time = (time.time() - start_time) * 1000
+    # Stop words to strip when generating keyword-only fallback queries
+    _STOP_WORDS = {
+        "a", "an", "the", "is", "it", "in", "on", "at", "to", "for",
+        "of", "and", "or", "me", "my", "i", "we", "you", "do", "can",
+        "how", "what", "when", "where", "who", "which", "that", "this",
+        "tell", "give", "get", "find", "show", "please", "want", "need",
+        "check", "look", "search", "about", "with", "from", "by", "are",
+    }
 
-        # --- Real token counting (not estimates) ---
-        # tokens_full_index: what the LLM would have consumed loading all tools
-        tokens_full_index = self._get_index_tokens(all_tools)
-        # tokens_returned: what ToolsDNS actually sent back
-        tokens_returned = sum(count_tool_tokens(t) for t, _ in top_results)
-        tokens_saved = max(0, tokens_full_index - tokens_returned)
-
-        # Model-aware cost calculation
-        model_name = self._get_model()
-        price = get_model_price(model_name) if model_name else None
-        cost_saved = tokens_to_cost(tokens_saved, price) if price else 0.0
-
-        # Log to DB in a background thread so it doesn't block the response
-        log_kwargs = dict(
-            query=query[:500],
-            total_tools_in_index=total_tools,
-            tools_returned=len(results),
-            tokens_full_index=tokens_full_index,
-            tokens_returned=tokens_returned,
-            tokens_saved=tokens_saved,
-            model_name=model_name,
-            price_per_million=price or 0.0,
-            cost_saved_usd=cost_saved,
-            search_time_ms=round(search_time, 2),
-            api_key=api_key,
-        )
-        threading.Thread(target=self._log_search_safe, kwargs=log_kwargs, daemon=True).start()
-
-        logger.info(
-            f"Search '{query[:50]}' → {len(results)}/{total_tools} tools, "
-            f"{search_time:.1f}ms, {tokens_saved:,} tokens saved"
-            + (f" (${cost_saved:.4f} @ {model_name})" if price else "")
-        )
-
-        return SearchResponse(
-            results=results,
-            total_tools_indexed=total_tools,
-            tokens_saved=tokens_saved,
-            search_time_ms=round(search_time, 2)
-        )
-
-    def _cosine_similarity(self, vec_a: list[float], vec_b: list[float]) -> float:
+    def _generate_fallbacks(self, query: str, is_realtime: bool = False) -> list[str]:
         """
-        Compute cosine similarity between two vectors using numpy.
-
-        Since our embeddings are already L2-normalized (from sentence-transformers
-        with normalize_embeddings=True), cosine similarity equals the dot product.
-
-        Args:
-            vec_a: First embedding vector.
-            vec_b: Second embedding vector.
-
-        Returns:
-            float: Similarity score (0.0 = unrelated, 1.0 = identical).
+        Generate progressively broader reformulations of a query for fallback search.
+        Tried in order until one produces a good result.
         """
-        if len(vec_a) != len(vec_b):
-            return 0.0
-        return float(np.dot(vec_a, vec_b))
+        words = query.lower().split()
+        keywords = [w for w in words if w not in self._STOP_WORDS and len(w) > 2]
+
+        fallbacks = []
+
+        # 1. Just the keywords — strips filler like "tell me about"
+        if keywords and keywords != words:
+            fallbacks.append(" ".join(keywords))
+
+        # 2. Keywords + "API tool" — shifts embedding toward tool-space
+        if keywords:
+            fallbacks.append(" ".join(keywords) + " API tool")
+
+        # 3. Rephrase as capability request — only if there are meaningful keywords
+        if keywords:
+            fallbacks.append(f"capability: {' '.join(keywords[:6])}")
+
+        # 4. "web search <keywords>" — only for real-time queries, not general fallback
+        if is_realtime and keywords:
+            fallbacks.append(f"web search {' '.join(keywords[:5])}")
+
+        return fallbacks
+
+    # Keywords that signal "I need live/real-time data from the web"
+    _REALTIME_KEYWORDS = {
+        "price", "prices", "cost", "rate", "rates", "today", "current",
+        "live", "now", "latest", "real-time", "realtime", "news", "weather",
+        "stock", "crypto", "bitcoin", "btc", "eth", "ethereum", "forex",
+        "gold", "silver", "oil", "commodity", "commodities", "usd", "eur",
+        "invest", "investment", "market", "trading", "volume", "cap",
+        "score", "scores", "breaking", "recent", "right now",
+    }
+
+    def _is_realtime_query(self, query: str) -> bool:
+        """Return True if the query is asking for live/real-time data from the web."""
+        lower = query.lower()
+        return any(kw in lower for kw in self._REALTIME_KEYWORDS)
+
+    def _expand_query(self, query: str) -> str:
+        """Append web/search terms to steer the embedding toward web-search tools."""
+        return query + " browser web search real-time lookup"
 
     def _build_call_instructions(self, source_info: dict) -> dict:
         """

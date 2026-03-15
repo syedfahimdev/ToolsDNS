@@ -170,6 +170,7 @@ class SearchResponse(BaseModel):
     total_tools_indexed: int = 0
     tokens_saved: int = 0
     search_time_ms: float = 0.0
+    hint: str | None = None  # LLM-readable suggestion when confidence is low
 
 
 class SourceRequest(BaseModel):

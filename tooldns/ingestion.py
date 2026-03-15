@@ -500,8 +500,7 @@ class IngestionPipeline:
         if not disabled_file.exists():
             return False
         try:
-            import json as _j
-            disabled = _j.loads(disabled_file.read_text())
+            disabled = json.loads(disabled_file.read_text())
             return source_name in disabled
         except Exception:
             return False
@@ -510,13 +509,12 @@ class IngestionPipeline:
     def disable_source(source_name: str):
         """Mark a source as disabled so ingest_local skips it. Called on delete."""
         from tooldns.config import TOOLDNS_HOME
-        import json as _j
         disabled_file = TOOLDNS_HOME / "disabled_sources.json"
         try:
-            disabled = _j.loads(disabled_file.read_text()) if disabled_file.exists() else []
+            disabled = json.loads(disabled_file.read_text()) if disabled_file.exists() else []
             if source_name not in disabled:
                 disabled.append(source_name)
-                disabled_file.write_text(_j.dumps(disabled, indent=2))
+                disabled_file.write_text(json.dumps(disabled, indent=2))
         except Exception as e:
             logger.warning(f"Could not update disabled_sources.json: {e}")
 
@@ -524,15 +522,14 @@ class IngestionPipeline:
     def enable_source(source_name: str):
         """Remove a source from the disabled list (called when re-adding)."""
         from tooldns.config import TOOLDNS_HOME
-        import json as _j
         disabled_file = TOOLDNS_HOME / "disabled_sources.json"
         if not disabled_file.exists():
             return
         try:
-            disabled = _j.loads(disabled_file.read_text())
+            disabled = json.loads(disabled_file.read_text())
             if source_name in disabled:
                 disabled.remove(source_name)
-                disabled_file.write_text(_j.dumps(disabled, indent=2))
+                disabled_file.write_text(json.dumps(disabled, indent=2))
         except Exception as e:
             logger.warning(f"Could not update disabled_sources.json: {e}")
 
@@ -679,39 +676,46 @@ class IngestionPipeline:
             try:
                 content = tool_file.read_text(encoding="utf-8")
                 # Extract module-level variables without executing the file
-                name, description, schema = self._parse_tool_py(content, tool_file.stem)
-                tools.append({
+                name, description, schema, mcp_server = self._parse_tool_py(content, tool_file.stem)
+                tool = {
                     "name": name,
                     "description": description,
                     "inputSchema": schema,
-                    "_source_server": "local-tools",
-                    "_source_type": "custom",
-                })
-                logger.info(f"  → Tool: {name}")
+                    "_source_server": mcp_server or "local-tools",
+                    "_source_type": "mcp_config" if mcp_server else "custom",
+                }
+                if mcp_server:
+                    tool["_mcp_server"] = mcp_server
+                tools.append(tool)
+                logger.info(f"  → Tool: {name}" + (f" (via {mcp_server})" if mcp_server else ""))
             except Exception as e:
                 logger.warning(f"  ✗ Tool {tool_file.name}: {e}")
 
         return self._index_tools(tools, source_name, "custom")
 
-    def _parse_tool_py(self, content: str, filename: str) -> tuple[str, str, dict]:
+    def _parse_tool_py(self, content: str, filename: str) -> tuple[str, str, dict, str]:
         """
-        Parse a custom tool .py file for name, description, and schema.
+        Parse a custom tool .py file for name, description, schema, and MCP server.
 
-        Extracts TOOL_NAME, TOOL_DESCRIPTION, and TOOL_INPUT_SCHEMA
-        from module-level variable assignments without executing code.
+        Extracts TOOL_NAME, TOOL_DESCRIPTION, TOOL_INPUT_SCHEMA, and optionally
+        TOOL_MCP_SERVER from module-level variable assignments without executing code.
+
+        Set TOOL_MCP_SERVER to route the tool call through an existing MCP server,
+        e.g. TOOL_MCP_SERVER = "browser-use" makes how_to_call point to that server.
 
         Args:
             content: The .py file contents.
             filename: The filename (used as fallback name).
 
         Returns:
-            tuple[str, str, dict]: (name, description, input_schema)
+            tuple[str, str, dict, str]: (name, description, input_schema, mcp_server)
         """
         import ast
 
         name = filename
         description = ""
         schema = {}
+        mcp_server = ""
 
         try:
             tree = ast.parse(content)
@@ -725,6 +729,8 @@ class IngestionPipeline:
                                 description = node.value.value
                             elif target.id == "TOOL_INPUT_SCHEMA":
                                 schema = ast.literal_eval(node.value)
+                            elif target.id == "TOOL_MCP_SERVER" and isinstance(node.value, ast.Constant):
+                                mcp_server = node.value.value
         except Exception:
             # Fallback: use docstring
             lines = content.strip().split("\n")
@@ -736,7 +742,7 @@ class IngestionPipeline:
         if not description:
             description = f"Custom tool: {name}"
 
-        return name, description, schema
+        return name, description, schema, mcp_server
 
     # -------------------------------------------------------------------
     # Source-specific handlers
@@ -950,7 +956,7 @@ class IngestionPipeline:
                         except Exception as e:
                             logger.debug(f"    {script.name} not MCP, trying static parse: {e}")
                             try:
-                                sname, sdesc, sschema = self._parse_tool_py(
+                                sname, sdesc, sschema, _ = self._parse_tool_py(
                                     script.read_text(encoding="utf-8"), script.stem
                                 )
                                 logger.info(f"    → Static tool: {sname}")
@@ -986,82 +992,6 @@ class IngestionPipeline:
                     })
                 except Exception as e:
                     logger.warning(f"Error parsing skill file {item.name}: {e}")
-
-        return tools
-
-    def _parse_skill_file(self, content: str, filename: str) -> list[dict]:
-        """
-        Parse a single skill markdown file into tool definitions.
-
-        Extracts the YAML header for the skill name and description,
-        then finds each ## Section with a TEMPLATE block and creates
-        a tool definition for each one.
-
-        Args:
-            content: The markdown file content.
-            filename: The filename (without extension) for fallback naming.
-
-        Returns:
-            list[dict]: Tool dicts extracted from the skill file.
-        """
-        # Parse YAML header
-        header = {}
-        header_match = re.match(r"^---\n(.+?)\n---", content, re.DOTALL)
-        if header_match:
-            header = yaml.safe_load(header_match.group(1)) or {}
-
-        skill_name = header.get("name", filename)
-        skill_desc = header.get("description", "")
-
-        tools = []
-
-        # Find all ## sections with TEMPLATE blocks
-        sections = re.finditer(
-            r"## (.+?)\nWHEN: (.+?)\nTEMPLATE:\n(.*?)(?=\n## |\Z)",
-            content, re.DOTALL
-        )
-
-        for match in sections:
-            action_name = match.group(1).strip()
-            when_desc = match.group(2).strip()
-            template = match.group(3).strip()
-
-            # Extract variables from EXTRACT section
-            extract_match = re.search(
-                r"EXTRACT:\n(.*?)(?=EXAMPLE:|$)", template, re.DOTALL
-            )
-            properties = {}
-            if extract_match:
-                for line in extract_match.group(1).strip().split("\n"):
-                    line = line.strip()
-                    if ":" in line and not line.startswith("("):
-                        key, desc = line.split(":", 1)
-                        properties[key.strip()] = {
-                            "type": "string",
-                            "description": desc.strip()
-                        }
-
-            tool = {
-                "name": f"{skill_name.lower().replace(' ', '_')}_{action_name.lower().replace(' ', '_')}",
-                "description": f"{skill_name}: {action_name} — {when_desc}",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": properties
-                },
-                "_source_server": f"skills:{filename}",
-                "_source_type": "skill_file"
-            }
-            tools.append(tool)
-
-        # If no template sections found, create a tool for the whole skill
-        if not tools and skill_name:
-            tools.append({
-                "name": skill_name.lower().replace(" ", "_"),
-                "description": f"{skill_name}: {skill_desc}",
-                "inputSchema": {"type": "object", "properties": {}},
-                "_source_server": f"skills:{filename}",
-                "_source_type": "skill_file"
-            })
 
         return tools
 
