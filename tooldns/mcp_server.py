@@ -428,6 +428,37 @@ async def update_skill(
     return "\n".join(lines)
 
 
+@mcp.tool()
+async def list_skills(ctx: Optional[Context] = None) -> str:
+    """
+    List all skills available in ToolsDNS.
+
+    Call this when the user asks "what skills do you have", "show me your skills",
+    "what can you do", or any similar question about capabilities.
+
+    Returns a formatted list of every skill with its name and description.
+    Use read_skill(name) to get the full instructions for a specific skill.
+    """
+    result = await _api("GET", "/v1/skills")
+    skills = result.get("skills", [])
+
+    if not skills:
+        return (
+            "No skills found. Skills live in ~/.tooldns/skills/ as SKILL.md files.\n"
+            "You can create one with create_skill()."
+        )
+
+    lines = [f"## {len(skills)} Skill(s) Available\n"]
+    for s in skills:
+        name = s.get("name", "?")
+        desc = s.get("description", "No description")[:120]
+        lines.append(f"• **{name}** — {desc}")
+
+    lines.append(f"\nUse `read_skill(name)` to get full instructions for any skill.")
+    lines.append("Use `search_tools(query)` to find tools by what you want to do.")
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Resources
 # ---------------------------------------------------------------------------

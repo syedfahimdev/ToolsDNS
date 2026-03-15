@@ -686,8 +686,49 @@ async def register_mcp(req: RegisterMCPRequest):
 
 
 # -----------------------------------------------------------------------
-# Agent-facing: Create skill
+# Agent-facing: List + Create skill
 # -----------------------------------------------------------------------
+
+@router.get("/skills")
+async def list_skills():
+    """List all skills in ~/.tooldns/skills/ with name and description."""
+    from tooldns.config import TOOLDNS_HOME
+    import re as _re
+    import yaml as _yaml
+
+    skills_dir = TOOLDNS_HOME / "skills"
+    skills = []
+
+    if skills_dir.exists():
+        for item in sorted(skills_dir.iterdir()):
+            if item.is_dir():
+                skill_file = item / "SKILL.md"
+                if not skill_file.exists():
+                    continue
+            elif item.is_file() and item.suffix == ".md":
+                skill_file = item
+            else:
+                continue
+            try:
+                content = skill_file.read_text(encoding="utf-8")
+                name = item.name
+                description = ""
+                # Simple line-by-line frontmatter parse (handles malformed YAML)
+                fm_match = _re.match(r"^---\s*\n(.*?)\n---", content, _re.DOTALL)
+                if fm_match:
+                    for line in fm_match.group(1).splitlines():
+                        m = _re.match(r'^(name|description)\s*:\s*"?(.+?)"?\s*$', line)
+                        if m:
+                            if m.group(1) == "name":
+                                name = m.group(2).strip('"')
+                            elif m.group(1) == "description":
+                                description = m.group(2).strip('"')
+                skills.append({"name": name, "description": description})
+            except Exception:
+                pass
+
+    return {"skills": skills, "total": len(skills)}
+
 
 @router.post("/skills")
 async def create_skill(req: CreateSkillRequest):
