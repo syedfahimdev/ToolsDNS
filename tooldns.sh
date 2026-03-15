@@ -183,8 +183,56 @@ do_add() {
 do_ingest() {
     print_step "Re-ingesting all sources..."
     echo ""
+
+    local api_key
+    api_key=$(_get_api_key)
+
+    # Show current state before ingest
+    local before
+    before=$(curl -s --max-time 5 "http://localhost:$PORT/health" \
+        -H "Authorization: Bearer $api_key" 2>/dev/null \
+        | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tools_indexed',0))" 2>/dev/null || echo "?")
+    print_info "Tools before: $before"
+    echo ""
+
+    # Run ingest and capture output
+    local tmp_log
+    tmp_log=$(mktemp)
     cd "$REPO_DIR"
-    $PYTHON -m tooldns.cli ingest
+    $PYTHON -m tooldns.cli ingest 2>&1 | tee "$tmp_log" | while IFS= read -r line; do
+        if echo "$line" | grep -q "Successfully ingested"; then
+            echo -e "  ${GREEN}✓${NC} $line"
+        elif echo "$line" | grep -q "ERROR\|Failed\|failed\|✗"; then
+            echo -e "  ${RED}✗${NC} $line"
+        elif echo "$line" | grep -q "WARNING\|Skipping\|excluded\|Unauthorized"; then
+            echo -e "  ${YELLOW}!${NC} $line"
+        elif echo "$line" | grep -q "Ingesting source\|Connecting\|Fetching\|Discovered"; then
+            echo -e "  ${BLUE}→${NC} $line"
+        fi
+    done
+
+    echo ""
+
+    # Show summary after ingest
+    sleep 1
+    local after sources errors
+    local health_resp
+    health_resp=$(curl -s --max-time 5 "http://localhost:$PORT/health" \
+        -H "Authorization: Bearer $api_key" 2>/dev/null)
+    after=$(echo "$health_resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tools_indexed',0))" 2>/dev/null || echo "?")
+    sources=$(echo "$health_resp" | python3 -c "import sys,json; d=json.load(sys.stdin); srcs=d.get('sources',[]); print(len(srcs) if isinstance(srcs,list) else srcs)" 2>/dev/null || echo "?")
+    errors=$(grep -c "ERROR\|Failed\|✗" "$tmp_log" 2>/dev/null || echo 0)
+
+    rm -f "$tmp_log"
+
+    echo -e "  ${BOLD}──── Ingest Summary ────${NC}"
+    echo -e "  Tools before : $before"
+    echo -e "  Tools after  : $after"
+    echo -e "  Sources      : $sources"
+    [[ "$errors" -gt 0 ]] && \
+        echo -e "  ${RED}Errors       : $errors (check logs above)${NC}" || \
+        echo -e "  ${GREEN}Errors       : 0${NC}"
+    echo ""
 }
 
 do_update() {
