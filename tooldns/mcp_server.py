@@ -27,6 +27,7 @@ Benefits of fastmcp over hand-rolled JSON-RPC:
     - Stdio transport handled by the library
 """
 
+import contextvars
 import json
 import os
 from typing import Optional
@@ -36,6 +37,13 @@ from fastmcp import FastMCP, Context
 from fastmcp.exceptions import ToolError
 
 from tooldns.config import settings
+
+# Per-request API key — set by MCPKeyMiddleware from the incoming Bearer token.
+# MCP tools read this to forward the caller's key to internal API calls so
+# usage and token counts are credited to the right sub-key.
+_request_api_key: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "_request_api_key", default=""
+)
 
 # ---------------------------------------------------------------------------
 # FastMCP app
@@ -87,13 +95,21 @@ async def _get_client() -> httpx.AsyncClient:
 
 
 async def _api(method: str, path: str, body: dict | None = None) -> dict:
-    """Make a request to the ToolsDNS HTTP API."""
+    """Make a request to the ToolsDNS HTTP API.
+
+    Uses the per-request caller key (set by MCPKeyMiddleware) so that usage
+    and token savings are credited to the right sub-key, not the admin key.
+    Falls back to the admin key when called outside an MCP request context.
+    """
     client = await _get_client()
+    # Prefer the caller's key captured from the incoming MCP request
+    caller_key = _request_api_key.get()
+    headers = {"Authorization": f"Bearer {caller_key}"} if caller_key else {}
     try:
         if method == "GET":
-            resp = await client.get(path)
+            resp = await client.get(path, headers=headers)
         else:
-            resp = await client.post(path, json=body)
+            resp = await client.post(path, json=body, headers=headers)
         resp.raise_for_status()
         return resp.json()
     except httpx.HTTPStatusError as e:

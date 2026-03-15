@@ -32,7 +32,7 @@ from tooldns.ingestion import IngestionPipeline
 from tooldns.health import HealthMonitor
 from tooldns.api import router, admin_router, init_api
 from tooldns.auth import init_auth
-from tooldns.mcp_server import mcp as _mcp_server
+from tooldns.mcp_server import mcp as _mcp_server, _request_api_key as _mcp_request_key
 
 # Build the MCP ASGI app once at module level so its lifespan can be composed
 # with the FastAPI lifespan below (required by fastmcp's task group init).
@@ -98,6 +98,25 @@ class NetworkACLMiddleware(BaseHTTPMiddleware):
             if not (is_local or is_ts or is_private):
                 return JSONResponse({"detail": "Access denied"}, status_code=403)
 
+        return await call_next(request)
+
+
+class MCPKeyMiddleware(BaseHTTPMiddleware):
+    """
+    For /mcp requests: extract the caller's Bearer token and store it in
+    _request_api_key ContextVar so MCP tools forward it to internal API calls.
+
+    This ensures search_tools() credits usage + tokens to the caller's sub-key
+    rather than always using the admin key.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        if request.url.path.startswith("/mcp"):
+            auth = request.headers.get("Authorization", "")
+            if auth.startswith("Bearer "):
+                token = auth[7:].strip()
+                if token:
+                    _mcp_request_key.set(token)
         return await call_next(request)
 
 
@@ -343,6 +362,10 @@ app = FastAPI(
 
 # Attach access control middleware (network ACL: Tailscale for UI, localhost for API)
 app.add_middleware(NetworkACLMiddleware)
+
+# Capture the caller's Bearer token on /mcp requests so MCP tools credit
+# usage + tokens to the correct sub-key (not the admin key).
+app.add_middleware(MCPKeyMiddleware)
 
 # Attach rate limiter
 app.state.limiter = limiter

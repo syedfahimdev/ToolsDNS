@@ -194,7 +194,7 @@ class SearchEngine:
         return ""
 
     def search(self, query: str, top_k: int = 3,
-               threshold: float = 0.1) -> SearchResponse:
+               threshold: float = 0.1, api_key: str = "") -> SearchResponse:
         """
         Search for tools matching a natural language query.
 
@@ -294,6 +294,7 @@ class SearchEngine:
             price_per_million=price or 0.0,
             cost_saved_usd=cost_saved,
             search_time_ms=round(search_time, 2),
+            api_key=api_key,
         )
         threading.Thread(target=self._log_search_safe, kwargs=log_kwargs, daemon=True).start()
 

@@ -316,6 +316,166 @@ do_new_skill() {
     $PYTHON -m tooldns.cli new-skill
 }
 
+do_key_list() {
+    local api_key
+    api_key=$(_get_api_key)
+    print_step "API Keys"
+    echo ""
+    local resp
+    resp=$(curl -s -H "Authorization: Bearer $api_key" "http://localhost:$PORT/v1/api-keys" 2>/dev/null)
+    if ! echo "$resp" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+keys = d.get('keys', [])
+if not keys:
+    print('  (no sub-keys yet)')
+else:
+    fmt = '  {:<20} {:<12} {:<8} {:>8} {:>12} {:>14} {}'
+    print(fmt.format('Name', 'Plan', 'Status', 'Searches', 'Tokens Used', 'Tokens Saved', 'Key'))
+    print('  ' + '-'*100)
+    for k in keys:
+        status = 'active' if k.get('is_active') else 'revoked'
+        print(fmt.format(
+            k.get('name','')[:20],
+            k.get('plan','')[:12],
+            status,
+            str(k.get('total_searches', 0)),
+            str(k.get('total_tokens_used', 0)),
+            str(k.get('total_tokens_saved', 0)),
+            k.get('key',''),
+        ))
+" 2>/dev/null; then
+        print_error "Could not reach API on port $PORT"
+    fi
+    echo ""
+}
+
+do_key_create() {
+    local api_key
+    api_key=$(_get_api_key)
+    print_step "Create a new API key"
+    echo ""
+    echo -n "  Name (e.g. nanobot, acme-corp): "
+    read -r name
+    [ -z "$name" ] && { print_warn "Name required."; return; }
+
+    echo -n "  Label (shown to key holder, optional): "
+    read -r label
+
+    echo -n "  Plan [free/pro/enterprise] (default: free): "
+    read -r plan
+    plan="${plan:-free}"
+
+    echo -n "  Monthly search limit (0 = unlimited, default: 0): "
+    read -r limit
+    limit="${limit:-0}"
+
+    local body
+    body=$(python3 -c "import json; print(json.dumps({'name': '$name', 'label': '$label', 'plan': '$plan', 'monthly_limit': $limit}))")
+
+    local resp
+    resp=$(curl -s -X POST "http://localhost:$PORT/v1/api-keys" \
+        -H "Authorization: Bearer $api_key" \
+        -H "Content-Type: application/json" \
+        -d "$body" 2>/dev/null)
+
+    local new_key
+    new_key=$(echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('key','ERROR'))" 2>/dev/null)
+
+    if [[ "$new_key" == td_* ]]; then
+        echo ""
+        echo -e "  ${GREEN}✅ Key created successfully!${NC}"
+        echo ""
+        echo -e "  ${BOLD}Name :${NC} $name"
+        echo -e "  ${BOLD}Key  :${NC} $new_key"
+        echo ""
+        echo -e "  ${CYAN}Use in agent config:${NC}"
+        echo "    Authorization: Bearer $new_key"
+        echo ""
+        echo -e "  ${CYAN}MCP connection (n8n / cursor / claude desktop):${NC}"
+        echo "    URL: https://your-domain.com/mcp"
+        echo "    Authorization: Bearer $new_key"
+    else
+        print_error "Failed to create key: $resp"
+    fi
+    echo ""
+}
+
+do_key_revoke() {
+    local api_key
+    api_key=$(_get_api_key)
+    print_step "Revoke an API key"
+    echo ""
+    do_key_list
+    echo -n "  Enter key to revoke (td_...): "
+    read -r target
+    [ -z "$target" ] && { print_warn "Cancelled."; return; }
+    echo -n "  Revoke $target? [y/N]: "
+    read -r confirm
+    if [ "$confirm" = "y" ] || [ "$confirm" = "Y" ]; then
+        local resp
+        resp=$(curl -s -X POST "http://localhost:$PORT/v1/api-keys/$target/revoke" \
+            -H "Authorization: Bearer $api_key" 2>/dev/null)
+        echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print('  ✅ Revoked' if d.get('ok') else f'  Error: {d}')" 2>/dev/null
+    else
+        print_info "Cancelled."
+    fi
+    echo ""
+}
+
+do_key_delete() {
+    local api_key
+    api_key=$(_get_api_key)
+    print_step "Delete an API key (permanent)"
+    echo ""
+    do_key_list
+    echo -n "  Enter key to delete (td_...): "
+    read -r target
+    [ -z "$target" ] && { print_warn "Cancelled."; return; }
+    echo -n "  Permanently delete $target? [y/N]: "
+    read -r confirm
+    if [ "$confirm" = "y" ] || [ "$confirm" = "Y" ]; then
+        local resp
+        resp=$(curl -s -X DELETE "http://localhost:$PORT/v1/api-keys/$target" \
+            -H "Authorization: Bearer $api_key" 2>/dev/null)
+        echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print('  ✅ Deleted' if d.get('ok') else f'  Error: {d}')" 2>/dev/null
+    else
+        print_info "Cancelled."
+    fi
+    echo ""
+}
+
+do_stats() {
+    local api_key
+    api_key=$(_get_api_key)
+    print_step "Token Savings Stats"
+    echo ""
+    curl -s -H "Authorization: Bearer $api_key" "http://localhost:$PORT/v1/stats" 2>/dev/null | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print('  Could not reach API')
+    sys.exit(0)
+print(f\"  Total searches      : {d.get('total_searches', 0):,}\")
+print(f\"  Tokens saved        : {d.get('total_tokens_saved', 0):,}\")
+print(f\"  Tokens actually used: {d.get('total_tokens_actually_used', 0):,}\")
+print(f\"  Cost saved (USD)    : \${d.get('total_cost_saved_usd', 0):.4f}\")
+print(f\"  Avg tokens saved    : {d.get('avg_tokens_saved', 0):,} per search\")
+print(f\"  Avg search time     : {d.get('avg_search_time_ms', 0):.1f}ms\")
+recent = d.get('recent_searches', [])
+if recent:
+    print()
+    print('  Recent searches:')
+    for r in recent[:5]:
+        q = str(r.get('query',''))[:40]
+        ts = int(r.get('tokens_saved') or 0)
+        ms = float(r.get('search_time_ms') or 0)
+        print(f\"    '{q}' -> saved {ts:,} tokens ({ms:.0f}ms)\")
+"
+    echo ""
+}
+
 do_reset() {
     print_warn "This will delete the ToolsDNS database and re-ingest everything."
     echo -n "  Continue? [y/N]: "
@@ -385,17 +545,24 @@ show_menu() {
     echo "    7)  add            Add an existing source (config, URL, folder)"
     echo "    8)  ingest         Re-scan all sources for new tools"
     echo ""
+    echo -e "  ${CYAN}API Key Management:${NC}"
+    echo "    9)  key-list       List all sub-keys with usage + token stats"
+    echo "   10)  key-create     Create a new sub-key for an agent or customer"
+    echo "   11)  key-revoke     Disable a key (reversible)"
+    echo "   12)  key-delete     Permanently delete a key"
+    echo "   13)  stats          Show global token savings stats"
+    echo ""
     echo -e "  ${CYAN}Search & Debug:${NC}"
-    echo "    9)  search         Search for a tool by description"
-    echo "   10)  test-api       Test all API endpoints with live requests"
-    echo "   11)  logs           Follow live service logs"
-    echo "   12)  info           Show config details (key, paths, DB size)"
+    echo "   14)  search         Search for a tool by description"
+    echo "   15)  test-api       Test all API endpoints with live requests"
+    echo "   16)  logs           Follow live service logs"
+    echo "   17)  info           Show config details (key, paths, DB size)"
     echo ""
     echo -e "  ${CYAN}Deployment (host + Caddy):${NC}"
-    echo "   13)  setup-service  Install/update the systemd service"
-    echo "   14)  caddy-setup    Configure Caddy reverse proxy + HTTPS"
-    echo "   15)  update         Pull latest code and restart"
-    echo "   16)  reset          Wipe database and restart fresh"
+    echo "   18)  setup-service  Install/update the systemd service"
+    echo "   19)  caddy-setup    Configure Caddy reverse proxy + HTTPS"
+    echo "   20)  update         Pull latest code and restart"
+    echo "   21)  reset          Wipe database and restart fresh"
     echo ""
     echo "    0)  exit"
     echo ""
@@ -414,6 +581,11 @@ if [ $# -gt 0 ]; then
         status)         do_status ;;
         install-mcp)    do_install_mcp ;;
         new-skill)      do_new_skill ;;
+        key-list)       do_key_list ;;
+        key-create)     do_key_create ;;
+        key-revoke)     do_key_revoke ;;
+        key-delete)     do_key_delete ;;
+        stats)          do_stats ;;
         search)         shift; do_search "$*" ;;
         add)            do_add ;;
         ingest)         do_ingest ;;
@@ -440,6 +612,13 @@ if [ $# -gt 0 ]; then
             echo "    new-skill      Create a new skill file template"
             echo "    add            Add an existing source (config, URL, folder)"
             echo "    ingest         Re-scan all sources for new tools"
+            echo ""
+            echo "  API Key Management:"
+            echo "    key-list       List all sub-keys with usage + token stats"
+            echo "    key-create     Create a new sub-key"
+            echo "    key-revoke     Disable a key"
+            echo "    key-delete     Permanently delete a key"
+            echo "    stats          Show global token savings stats"
             echo ""
             echo "  Search & Debug:"
             echo "    search         Search for a tool: ./tooldns.sh search 'send email'"
@@ -473,14 +652,19 @@ else
             6)  do_new_skill ;;
             7)  do_add ;;
             8)  do_ingest ;;
-            9)  do_search ;;
-            10) do_test_api ;;
-            11) do_logs ;;
-            12) do_info ;;
-            13) do_setup_service ;;
-            14) do_caddy_setup ;;
-            15) do_update ;;
-            16) do_reset ;;
+            9)  do_key_list ;;
+            10) do_key_create ;;
+            11) do_key_revoke ;;
+            12) do_key_delete ;;
+            13) do_stats ;;
+            14) do_search ;;
+            15) do_test_api ;;
+            16) do_logs ;;
+            17) do_info ;;
+            18) do_setup_service ;;
+            19) do_caddy_setup ;;
+            20) do_update ;;
+            21) do_reset ;;
             0)  echo "  Goodbye!"; exit 0 ;;
             *)  print_error "Invalid choice." ;;
         esac

@@ -61,7 +61,7 @@ def init_api(search_engine, ingestion_pipeline, database, health_monitor=None):
 # -----------------------------------------------------------------------
 
 @router.post("/search", response_model=SearchResponse)
-async def search_tools(req: SearchRequest):
+async def search_tools(req: SearchRequest, auth: dict = Depends(require_api_key)):
     """
     Search for tools matching a natural language query.
 
@@ -79,7 +79,8 @@ async def search_tools(req: SearchRequest):
     return _search_engine.search(
         query=req.query,
         top_k=req.top_k,
-        threshold=req.threshold
+        threshold=req.threshold,
+        api_key=auth.get("key", ""),
     )
 
 

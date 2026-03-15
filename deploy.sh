@@ -2,12 +2,14 @@
 # deploy.sh — One-command ToolsDNS installer for Ubuntu/Debian VPS
 #
 # Installs ToolsDNS directly on the host (no Docker) and configures
-# Caddy as the HTTPS reverse proxy.
+# Caddy as the HTTPS reverse proxy. The web frontend is optional —
+# everything can be managed via tooldns.sh from the command line.
 #
 # Usage:
 #   curl -sSL https://raw.githubusercontent.com/syedfahimdev/ToolsDNS/master/deploy.sh | bash
 #   ./deploy.sh
 #   ./deploy.sh --domain api.example.com   # skip domain prompt
+#   ./deploy.sh --domain api.example.com --no-caddy  # skip Caddy setup
 
 set -euo pipefail
 
@@ -29,12 +31,14 @@ DATA_DIR="${TOOLDNS_DATA_DIR:-/root/.tooldns}"
 PORT="${TOOLDNS_PORT:-8787}"
 SERVICE_USER="root"
 DOMAIN=""
+NO_CADDY=false
 
 # Parse flags
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --domain) DOMAIN="$2"; shift 2 ;;
-    *) shift ;;
+    --domain)   DOMAIN="$2"; shift 2 ;;
+    --no-caddy) NO_CADDY=true; shift ;;
+    *)          shift ;;
   esac
 done
 
@@ -61,19 +65,21 @@ apt-get install -y -qq python3 python3-pip python3-venv git curl openssl 2>/dev/
 info "System packages installed"
 
 # ── Caddy ─────────────────────────────────────────────────────────────────────
-section "Caddy (reverse proxy)"
-if ! command -v caddy &>/dev/null; then
-  info "Installing Caddy..."
-  curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key \
-    | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-  echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] \
-    https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" \
-    > /etc/apt/sources.list.d/caddy-stable.list
-  apt-get update -qq
-  apt-get install -y -qq caddy
-  info "Caddy installed"
-else
-  info "Caddy already installed ($(caddy version))"
+if [[ "$NO_CADDY" == false ]]; then
+  section "Caddy (reverse proxy)"
+  if ! command -v caddy &>/dev/null; then
+    info "Installing Caddy..."
+    curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key \
+      | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+    echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] \
+      https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" \
+      > /etc/apt/sources.list.d/caddy-stable.list
+    apt-get update -qq
+    apt-get install -y -qq caddy
+    info "Caddy installed"
+  else
+    info "Caddy already installed ($(caddy version))"
+  fi
 fi
 
 # ── Clone / update repo ───────────────────────────────────────────────────────
@@ -85,6 +91,11 @@ else
   info "Cloning repo to $INSTALL_DIR"
   git clone https://github.com/syedfahimdev/ToolsDNS.git "$INSTALL_DIR"
 fi
+
+# Make tooldns.sh executable and symlink to /usr/local/bin
+chmod +x "$INSTALL_DIR/tooldns.sh"
+ln -sf "$INSTALL_DIR/tooldns.sh" /usr/local/bin/tooldns
+info "tooldns command available system-wide"
 
 # ── Python environment ────────────────────────────────────────────────────────
 section "Python environment"
@@ -116,10 +127,13 @@ TOOLDNS_APP_NAME=ToolsDNS
 TOOLDNS_APP_TAGLINE=DNS for AI Tools
 TOOLDNS_REFRESH_INTERVAL=60
 
+# Public URL used in MCP connect-info snippets (set this to your domain)
+# TOOLDNS_PUBLIC_URL=https://api.yourdomain.com
+
 # Auto-discover tools from nanobot, openclaw, cursor, claude desktop etc.
 # TOOLDNS_AUTO_DISCOVER=true
 
-# Optional: extra tool paths to ingest (comma-separated, path[:apikey])
+# Optional: extra tool paths to ingest (comma-separated)
 # TOOLDNS_EXTRA_PATHS=/path/to/skills
 
 # Optional: Composio for 2000+ managed tools
@@ -127,8 +141,6 @@ TOOLDNS_REFRESH_INTERVAL=60
 # COMPOSIO_MCP_URL=your_mcp_url_here
 EOF
   info "Created $ENV_FILE"
-  warn "Your API key: ${BOLD}$API_KEY${NC}"
-  warn "Save this — you will need it for the frontend (Vercel env vars)."
 else
   info "Existing $ENV_FILE kept (not overwritten)"
   API_KEY=$(grep "^TOOLDNS_API_KEY=" "$ENV_FILE" | cut -d= -f2 | tr -d ' ')
@@ -172,7 +184,8 @@ section "Waiting for backend"
 for i in {1..18}; do
   HEALTH=$(curl -s --max-time 3 "http://localhost:$PORT/health" 2>/dev/null || true)
   if echo "$HEALTH" | grep -q "healthy"; then
-    info "Backend healthy"
+    TOOLS=$(echo "$HEALTH" | python3 -c "import sys,json; print(json.load(sys.stdin).get('tools_indexed',0))" 2>/dev/null || echo "?")
+    info "Backend healthy — $TOOLS tools indexed"
     break
   fi
   [[ $i -eq 18 ]] && { warn "Backend slow to start — check: journalctl -u tooldns -n 30"; break; }
@@ -181,23 +194,25 @@ for i in {1..18}; do
 done
 
 # ── Caddy configuration ───────────────────────────────────────────────────────
-section "Caddy configuration"
+CADDY_SNIPPET="(not configured)"
 
-if [[ -z "$DOMAIN" ]]; then
-  echo ""
-  echo "  Enter the domain for the ToolsDNS API (e.g. api.toolsdns.com)."
-  echo "  Leave blank to skip — you can configure Caddy later."
-  echo ""
-  echo -n "  Domain: "
-  read -r DOMAIN
-fi
+if [[ "$NO_CADDY" == false ]]; then
+  section "Caddy configuration"
 
-CADDY_SNIPPET="/etc/caddy/conf.d/tooldns.caddy"
+  if [[ -z "$DOMAIN" ]]; then
+    echo ""
+    echo "  Enter the domain for the ToolsDNS API (e.g. api.toolsdns.com)."
+    echo "  Leave blank to skip — run 'tooldns caddy-setup' later."
+    echo ""
+    echo -n "  Domain: "
+    read -r DOMAIN
+  fi
 
-if [[ -n "$DOMAIN" ]]; then
-  mkdir -p /etc/caddy/conf.d
+  if [[ -n "$DOMAIN" ]]; then
+    CADDY_SNIPPET="/etc/caddy/conf.d/tooldns.caddy"
+    mkdir -p /etc/caddy/conf.d
 
-  cat > "$CADDY_SNIPPET" << EOF
+    cat > "$CADDY_SNIPPET" << EOF
 # ToolsDNS API — managed by deploy.sh
 $DOMAIN {
     # HTTPS via Let's Encrypt (automatic — Caddy handles certs)
@@ -216,41 +231,75 @@ $DOMAIN {
 }
 EOF
 
-  # Include conf.d in main Caddyfile if not already there
-  CADDYFILE="/etc/caddy/Caddyfile"
-  if ! grep -q "conf.d" "$CADDYFILE" 2>/dev/null; then
-    echo "" >> "$CADDYFILE"
-    echo "import /etc/caddy/conf.d/*.caddy" >> "$CADDYFILE"
-    info "Added conf.d import to $CADDYFILE"
-  fi
+    # Include conf.d in main Caddyfile if not already there
+    CADDYFILE="/etc/caddy/Caddyfile"
+    if ! grep -q "conf.d" "$CADDYFILE" 2>/dev/null; then
+      echo "" >> "$CADDYFILE"
+      echo "import /etc/caddy/conf.d/*.caddy" >> "$CADDYFILE"
+      info "Added conf.d import to $CADDYFILE"
+    fi
 
-  if caddy validate --config "$CADDYFILE" 2>/dev/null; then
-    systemctl reload caddy 2>/dev/null || systemctl restart caddy
-    info "Caddy reloaded — $DOMAIN will serve ToolsDNS over HTTPS"
+    if caddy validate --config "$CADDYFILE" 2>/dev/null; then
+      systemctl reload caddy 2>/dev/null || systemctl restart caddy
+      info "Caddy reloaded — $DOMAIN → localhost:$PORT"
+    else
+      warn "Caddy config validation failed — check $CADDY_SNIPPET manually"
+    fi
+
+    # Write public URL into .env if not already set
+    if ! grep -q "^TOOLDNS_PUBLIC_URL=" "$ENV_FILE" 2>/dev/null; then
+      echo "" >> "$ENV_FILE"
+      echo "TOOLDNS_PUBLIC_URL=https://$DOMAIN" >> "$ENV_FILE"
+      systemctl restart tooldns
+      info "TOOLDNS_PUBLIC_URL set to https://$DOMAIN"
+    fi
   else
-    warn "Caddy config validation failed — check $CADDY_SNIPPET manually"
+    warn "Skipped Caddy config. Add it later: tooldns caddy-setup"
   fi
-else
-  warn "Skipped Caddy config. To add it later:"
-  warn "  ./tooldns.sh caddy-setup"
-  CADDY_SNIPPET="(not configured)"
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 section "Done!"
 echo ""
-echo -e "  ${BOLD}Backend${NC}       : http://localhost:$PORT"
-[[ -n "$DOMAIN" ]] && echo -e "  ${BOLD}Public URL${NC}    : https://$DOMAIN"
-echo -e "  ${BOLD}API key${NC}       : $API_KEY"
-echo -e "  ${BOLD}Logs${NC}          : journalctl -u tooldns -f"
-[[ "$CADDY_SNIPPET" != "(not configured)" ]] && echo -e "  ${BOLD}Caddy config${NC}  : $CADDY_SNIPPET"
+echo -e "  ${BOLD}Backend${NC}      : http://localhost:$PORT"
+[[ -n "$DOMAIN" ]] && echo -e "  ${BOLD}Public URL${NC}   : https://$DOMAIN"
+echo -e "  ${BOLD}Admin key${NC}    : $API_KEY"
+echo -e "  ${BOLD}Config${NC}       : $ENV_FILE"
+echo -e "  ${BOLD}Logs${NC}         : journalctl -u tooldns -f"
+[[ "$CADDY_SNIPPET" != "(not configured)" ]] && echo -e "  ${BOLD}Caddy config${NC} : $CADDY_SNIPPET"
 echo ""
-echo -e "  ${BOLD}Vercel env vars to set:${NC}"
-[[ -n "$DOMAIN" ]] && echo "    TOOLDNS_API_URL=https://$DOMAIN" || echo "    TOOLDNS_API_URL=https://your-domain"
-echo "    TOOLDNS_API_KEY=$API_KEY"
+echo -e "  ${BOLD}${CYAN}Next steps:${NC}"
+echo ""
+echo "  1. Create API keys for your agents:"
+echo "       tooldns key-create"
+echo ""
+echo "  2. Connect an agent (add to its MCP config):"
+if [[ -n "$DOMAIN" ]]; then
+  echo "       URL  : https://$DOMAIN/mcp"
+else
+  echo "       URL  : http://localhost:$PORT/mcp"
+fi
+echo "       Auth : Bearer <key from step 1>"
+echo ""
+echo "  3. Add tool sources (MCP servers, skills, etc.):"
+echo "       tooldns add"
+echo "       tooldns install-mcp"
 echo ""
 echo -e "  ${BOLD}Useful commands:${NC}"
-echo "    journalctl -u tooldns -f       # Live logs"
-echo "    systemctl restart tooldns      # Restart service"
-echo "    ./tooldns.sh                   # Developer helper menu"
+echo "    tooldns key-list           # List keys + usage stats"
+echo "    tooldns key-create         # Create a new sub-key"
+echo "    tooldns stats              # Token savings report"
+echo "    tooldns status             # Service health check"
+echo "    tooldns logs               # Follow live logs"
+echo "    tooldns update             # Pull latest + restart"
+echo "    tooldns                    # Interactive menu"
+echo ""
+echo -e "  ${BOLD}Optional — Web UI (frontend):${NC}"
+echo "    Deploy toolsdns-web to Vercel (free) for a browser-based dashboard."
+if [[ -n "$DOMAIN" ]]; then
+  echo "    Set these env vars in Vercel:"
+  echo "      TOOLDNS_API_URL=https://$DOMAIN"
+  echo "      TOOLDNS_API_KEY=$API_KEY"
+fi
+echo "    Or skip it entirely — tooldns.sh covers all management tasks."
 echo ""

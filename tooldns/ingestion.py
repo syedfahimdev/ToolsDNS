@@ -190,6 +190,39 @@ class IngestionPipeline:
             )
             raise
 
+    def _cleanup_orphaned_tools(self) -> None:
+        """
+        Delete tools whose source_name no longer exists in the sources table.
+
+        Called at the start of ingest_all so deleted sources don't leave
+        stale tools behind in the index.
+        """
+        import sqlite3 as _sqlite3
+        db_path = self.db.db_path
+        conn = _sqlite3.connect(db_path)
+        try:
+            active = {r[0] for r in conn.execute("SELECT name FROM sources").fetchall()}
+            orphaned_rows = conn.execute(
+                "SELECT DISTINCT json_extract(source_info, '$.source_name') FROM tools"
+            ).fetchall()
+            orphaned = {r[0] for r in orphaned_rows if r[0] and r[0] not in active}
+            for sn in orphaned:
+                conn.execute(
+                    "DELETE FROM tools_fts WHERE tool_id IN "
+                    "(SELECT id FROM tools WHERE json_extract(source_info, '$.source_name') = ?)",
+                    [sn]
+                )
+                c = conn.execute(
+                    "DELETE FROM tools WHERE json_extract(source_info, '$.source_name') = ?", [sn]
+                )
+                if c.rowcount:
+                    logger.info(f"Cleaned up {c.rowcount} orphaned tools from deleted source '{sn}'")
+            conn.commit()
+        except Exception as e:
+            logger.warning(f"Orphan cleanup error: {e}")
+        finally:
+            conn.close()
+
     def ingest_all(self) -> int:
         """
         Re-ingest all registered sources AND local config directories.
@@ -200,6 +233,9 @@ class IngestionPipeline:
         Returns:
             int: Total number of tools ingested across all sources.
         """
+        # Remove tools from sources that no longer exist in the DB
+        self._cleanup_orphaned_tools()
+
         sources = self.db.get_all_sources()
         total = 0
         errors = []

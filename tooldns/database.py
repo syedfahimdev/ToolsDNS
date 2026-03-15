@@ -172,11 +172,27 @@ class ToolDatabase:
                 monthly_limit INTEGER DEFAULT 0,
                 search_count INTEGER DEFAULT 0,
                 total_searches INTEGER DEFAULT 0,
+                total_tokens_used INTEGER DEFAULT 0,
+                total_tokens_saved INTEGER DEFAULT 0,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 last_used_at TEXT,
                 is_active INTEGER DEFAULT 1
             )
         """)
+        # Migrations: add token tracking columns if missing
+        for col in [
+            "total_tokens_used INTEGER DEFAULT 0",
+            "total_tokens_saved INTEGER DEFAULT 0",
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE api_keys ADD COLUMN {col}")
+            except Exception:
+                pass
+        # Migration: add api_key column to search_log if missing
+        try:
+            conn.execute("ALTER TABLE search_log ADD COLUMN api_key TEXT DEFAULT ''")
+        except Exception:
+            pass
 
         conn.commit()
         conn.close()
@@ -828,7 +844,8 @@ class ToolDatabase:
                    tools_returned: int, tokens_full_index: int,
                    tokens_returned: int, tokens_saved: int,
                    model_name: str, price_per_million: float,
-                   cost_saved_usd: float, search_time_ms: float) -> None:
+                   cost_saved_usd: float, search_time_ms: float,
+                   api_key: str = "") -> None:
         """Record a search event with real token counts and cost savings."""
         conn = self._get_conn()
         conn.execute("""
@@ -836,14 +853,21 @@ class ToolDatabase:
             (query, total_tools_in_index, tools_returned,
              tokens_full_index, tokens_returned, tokens_saved,
              model_name, price_per_million, cost_saved_usd,
-             search_time_ms, searched_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             search_time_ms, searched_at, api_key)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, [
             query, total_tools_in_index, tools_returned,
             tokens_full_index, tokens_returned, tokens_saved,
             model_name, price_per_million, cost_saved_usd,
-            search_time_ms, datetime.utcnow().isoformat()
+            search_time_ms, datetime.utcnow().isoformat(), api_key
         ])
+        if api_key:
+            conn.execute("""
+                UPDATE api_keys
+                SET total_tokens_used = total_tokens_used + ?,
+                    total_tokens_saved = total_tokens_saved + ?
+                WHERE key = ?
+            """, [tokens_returned, tokens_saved, api_key])
         conn.commit()
         conn.close()
 
