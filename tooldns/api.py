@@ -1041,6 +1041,31 @@ async def trigger_health_check():
 
 
 # -----------------------------------------------------------------------
+# Marketplace
+# -----------------------------------------------------------------------
+
+@router.get("/marketplace")
+async def list_marketplace(query: str = "", limit: int = 20):
+    """
+    Browse the MCP server marketplace.
+
+    Returns the curated list of popular servers merged with live results
+    from the Smithery registry. Curated entries always take priority;
+    dynamic results fill in additional servers not already listed.
+
+    Args:
+        query: Optional search term forwarded to Smithery.
+        limit: Maximum number of dynamic servers to fetch from Smithery (default 20).
+
+    Returns:
+        dict: Combined server list with total count.
+    """
+    from tooldns.marketplace import get_dynamic_servers
+    servers = get_dynamic_servers(query=query, limit=limit)
+    return {"servers": servers, "total": len(servers)}
+
+
+# -----------------------------------------------------------------------
 # Discover
 # -----------------------------------------------------------------------
 

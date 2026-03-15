@@ -19,7 +19,7 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -31,7 +31,6 @@ from tooldns.search import SearchEngine
 from tooldns.ingestion import IngestionPipeline
 from tooldns.health import HealthMonitor
 from tooldns.api import router, init_api
-from tooldns.ui import ui_router, init_ui
 from tooldns.auth import init_auth
 
 # ---------------------------------------------------------------------------
@@ -68,9 +67,8 @@ def _is_private(ip: str) -> bool:
 class NetworkACLMiddleware(BaseHTTPMiddleware):
     """
     Enforce network-based access control:
-      - /ui/*  paths: Tailscale (100.64.0.0/10) OR localhost
-      - /v1/*  paths: localhost only
-      - /health, /: localhost OR Tailscale (monitoring)
+      - /v1/*  paths: localhost, Tailscale, or private networks (Caddy proxy)
+      - /health, /docs, /: localhost OR Tailscale (monitoring)
       - Everything else: block from non-localhost non-Tailscale IPs
     """
 
@@ -87,14 +85,6 @@ class NetworkACLMiddleware(BaseHTTPMiddleware):
             if not (is_local or is_ts or is_private):
                 return JSONResponse(
                     {"detail": "API access requires routing through the reverse proxy"},
-                    status_code=403
-                )
-
-        # /ui/* — Tailscale, localhost, or private networks (Caddy proxy)
-        elif path.startswith("/ui") or path.startswith("/static"):
-            if not (is_local or is_ts or is_private):
-                return HTMLResponse(
-                    "<h1>403 Forbidden</h1><p>UI is accessible via the configured domain only.</p>",
                     status_code=403
                 )
 
@@ -288,10 +278,9 @@ async def lifespan(app: FastAPI):
     cache_stats = db.get_embedding_cache_stats()
     logger.info(f"Embedding cache: {cache_stats['cached_embeddings']} vectors cached")
 
-    # Inject into API and UI routes
+    # Inject dependencies into API routes
     init_api(search_engine, pipeline, db, health_monitor)
     init_auth(db)
-    init_ui(db, pipeline, health_monitor)
 
     tool_count = db.get_tool_count()
     source_count = len(db.get_all_sources())
@@ -341,26 +330,16 @@ app.add_middleware(NetworkACLMiddleware)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-from fastapi.staticfiles import StaticFiles
-import os as _os
-
 app.include_router(router)
-app.include_router(ui_router)
-
-# Mount static files (CSS, JS) for the web UI
-_static_dir = _os.path.join(_os.path.dirname(__file__), "tooldns", "static")
-if _os.path.exists(_static_dir):
-    app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 
 
 @app.get("/")
 async def root():
-    """Health check and welcome endpoint."""
+    """API entry point — returns service info."""
     return {
-        "service": "ToolsDNS",
-        "version": "1.0.0",
-        "description": "DNS for AI Tools",
-        "docs": "/docs"
+        "name": "ToolsDNS",
+        "docs": "/docs",
+        "health": "/health",
     }
 
 

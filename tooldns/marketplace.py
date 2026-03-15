@@ -1159,3 +1159,58 @@ def get_all_items(category: str = "All") -> list[dict]:
     if category == "Skills":
         return skills
     return [s for s in servers if s["category"] == category]
+
+
+# ---------------------------------------------------------------------------
+# Smithery dynamic fetcher
+# ---------------------------------------------------------------------------
+
+class SmitheryFetcher:
+    BASE_URL = "https://registry.smithery.ai/servers"
+
+    def fetch(self, query: str = "", limit: int = 20) -> list[dict]:
+        """Fetch servers from Smithery registry, normalize to marketplace format."""
+        import httpx
+        try:
+            params = {"limit": limit}
+            if query:
+                params["q"] = query
+            resp = httpx.get(self.BASE_URL, params=params, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            servers = data.get("servers", data if isinstance(data, list) else [])
+            return [self._normalize(s) for s in servers if s]
+        except Exception as e:
+            from tooldns.config import logger
+            logger.warning(f"Smithery fetch failed: {e}")
+            return []
+
+    def _normalize(self, s: dict) -> dict:
+        """Convert Smithery server format to ToolsDNS marketplace format."""
+        return {
+            "id": s.get("qualifiedName", s.get("name", "")).replace("/", "-").replace("@", ""),
+            "name": s.get("displayName") or s.get("name", "Unknown"),
+            "description": s.get("description", ""),
+            "category": "Search & Web",  # default; can be improved with tag mapping
+            "icon": "🔌",
+            "transport": "stdio",
+            "command": "npx",
+            "args": ["-y", s.get("qualifiedName", "")],
+            "env_vars": {},
+            "install_note": f"Install from Smithery: {s.get('qualifiedName', '')}",
+            "package": s.get("qualifiedName", ""),
+            "popular": s.get("useCount", 0) > 1000,
+            "source": "smithery",
+        }
+
+
+_smithery = SmitheryFetcher()
+
+
+def get_dynamic_servers(query: str = "", limit: int = 20) -> list[dict]:
+    """Fetch from Smithery and merge with curated list (curated takes priority)."""
+    curated_packages = {s.get("package", "") for s in MCP_SERVERS}
+    dynamic = _smithery.fetch(query=query, limit=limit)
+    # Only add dynamic servers not already in curated list
+    new_servers = [s for s in dynamic if s.get("package", "") not in curated_packages]
+    return MCP_SERVERS + new_servers
