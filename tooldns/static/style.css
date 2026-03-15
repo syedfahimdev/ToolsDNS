@@ -348,3 +348,51 @@ code { font-family: var(--mono); font-size: 12px; background: var(--surface2); p
 /* Client portal nav link */
 .nav-portal-link { font-size:12px; color:var(--text-dim) !important; border:1px solid var(--border); border-radius:var(--radius); }
 .nav-portal-link:hover { color:var(--text) !important; }
+
+/* ── Category pills (Browse Tools page) ─────────────────────────── */
+.category-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  border-radius: 20px;
+  background: #0f172a;
+  border: 1px solid #1e293b;
+  color: #94a3b8;
+  font-size: 13px;
+  text-decoration: none;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.category-pill:hover {
+  border-color: #7c3aed;
+  color: #e2e8f0;
+}
+.category-pill.active {
+  background: #7c3aed;
+  border-color: #7c3aed;
+  color: #fff;
+  font-weight: 600;
+}
+.pill-count {
+  background: rgba(255,255,255,0.15);
+  border-radius: 10px;
+  padding: 1px 6px;
+  font-size: 11px;
+}
+.category-pill.active .pill-count {
+  background: rgba(255,255,255,0.25);
+}
+
+/* ── Category tag in table ──────────────────────────────────────── */
+.category-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: #0f172a;
+  border: 1px solid #1e293b;
+  color: #7c3aed;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}

@@ -218,9 +218,39 @@ async def refresh_source(source_id: str):
 
 @ui_router.post("/sources/{source_id}/delete")
 async def delete_source(source_id: str):
-    """Delete a source (HTMX trigger — returns empty row)."""
+    """Delete a source from DB and remove it from config.json so it doesn't come back on re-ingest."""
+    # Get source info before deleting so we know its name
+    sources = _database.get_all_sources()
+    source = next((s for s in sources if s["id"] == source_id), None)
+
     _database.delete_source(source_id)
+
+    # Also remove from ~/.tooldns/config.json to prevent resurrection on re-ingest
+    if source:
+        _remove_source_from_config(source["name"])
+
     return HTMLResponse("")  # HTMX replaces row with nothing
+
+
+def _remove_source_from_config(source_name: str):
+    """Remove a named MCP server entry from ~/.tooldns/config.json."""
+    from tooldns.config import TOOLDNS_HOME
+    config_file = TOOLDNS_HOME / "config.json"
+    if not config_file.exists():
+        return
+    try:
+        import json as _json
+        data = _json.loads(config_file.read_text())
+        mcp_servers = data.get("mcpServers", {})
+        if source_name in mcp_servers:
+            del mcp_servers[source_name]
+            data["mcpServers"] = mcp_servers
+            config_file.write_text(_json.dumps(data, indent=2))
+            import logging
+            logging.getLogger("tooldns").info(f"Removed '{source_name}' from config.json")
+    except Exception as e:
+        import logging
+        logging.getLogger("tooldns").warning(f"Could not update config.json after delete: {e}")
 
 
 @ui_router.post("/ingest-all")
@@ -240,65 +270,98 @@ async def ingest_all_ui():
 # Tools browser
 # ---------------------------------------------------------------------------
 
+_CATEGORY_EMOJI = {
+    "Dev & Code": "💻",
+    "Communication": "📧",
+    "Productivity": "📋",
+    "Files & Docs": "📁",
+    "Data & Analytics": "📊",
+    "Media & Content": "🎬",
+    "CRM & Sales": "💼",
+    "Finance": "💰",
+    "E-commerce": "🛒",
+    "Design & UI": "🎨",
+    "AI & Agents": "🤖",
+    "Search & Web": "🔍",
+    "DevOps & Infra": "⚙️",
+    "Skills": "🧠",
+    "Other": "🔧",
+}
+
+
 @ui_router.get("/tools", response_class=HTMLResponse)
-async def tools_page(request: Request, q: str = "", source: str = ""):
-    """Tools browser with live search."""
+async def tools_page(request: Request, q: str = "", source: str = "", category: str = ""):
+    """Tools browser with category pills, live search, and source filter."""
+    all_tools = _database.get_all_tools()
+    total_all = len(all_tools)
+
     if q:
-        results = _search_engine_search(q, top_k=20)
-        tools = [{
-            "id": r["id"], "name": r["name"],
-            "description": r["description"],
-            "source": r["source"],
-            "confidence": f"{r['confidence']:.0%}",
-            "health_status": "unknown",
-        } for r in results]
-    elif source:
-        raw = _database.get_tools_by_source(source)
-        tools = [_tool_row(t) for t in raw]
+        results = _search_engine_search(q, top_k=50)
+        tools = [dict(
+            id=r["id"], name=r["name"],
+            description=r["description"],
+            source_info={"source_name": r["source"]},
+            category=r.get("category", "Other"),
+            confidence=f"{r['confidence']:.0%}",
+        ) for r in results]
     else:
-        raw = _database.get_all_tools()
-        tools = [_tool_row(t) for t in raw]
+        tools = [_tool_row(t) for t in all_tools]
+
+    if source:
+        tools = [t for t in tools if t.get("source_info", {}).get("source_name") == source]
+    if category:
+        tools = [t for t in tools if (t.get("category") or "Other") == category]
+
+    # Build category list with emojis
+    raw_cats = _database.get_categories()
+    categories = [{"category": c["category"], "count": c["count"],
+                   "emoji": _CATEGORY_EMOJI.get(c["category"], "🔧")} for c in raw_cats]
 
     sources = _database.get_all_sources()
     return templates.TemplateResponse("tools.html", {
         "request": request,
-        "tools": tools,
+        "tools": tools[:50],
         "query": q,
         "selected_source": source,
+        "selected_category": category,
         "sources": sources,
+        "categories": categories,
         "total": len(tools),
+        "total_all": total_all,
         "page": "tools",
     })
 
 
 @ui_router.get("/tools/search", response_class=HTMLResponse)
-async def tools_search_partial(q: str = Query(""), source: str = Query("")):
+async def tools_search_partial(q: str = Query(""), source: str = Query(""), category: str = Query("")):
     """HTMX partial: search results table body."""
     if q:
-        results = _search_engine_search(q, top_k=20)
-        tools = [{
-            "id": r["id"], "name": r["name"],
-            "description": r["description"],
-            "source": r["source"],
-            "confidence": f"{r['confidence']:.0%}",
-        } for r in results]
-    elif source:
-        raw = _database.get_tools_by_source(source)
-        tools = [_tool_row(t) for t in raw]
+        results = _search_engine_search(q, top_k=50)
+        tools = [dict(
+            name=r["name"], description=r["description"],
+            source_info={"source_name": r["source"]},
+            category=r.get("category", "Other"),
+        ) for r in results]
     else:
         raw = _database.get_all_tools()
         tools = [_tool_row(t) for t in raw]
 
+    if source:
+        tools = [t for t in tools if t.get("source_info", {}).get("source_name") == source]
+    if category:
+        tools = [t for t in tools if (t.get("category") or "Other") == category]
+
     rows = ""
     for t in tools[:50]:
-        conf = t.get("confidence", "")
-        conf_badge = f"<span class='conf'>{conf}</span>" if conf else ""
+        cat = t.get("category", "Other")
+        emoji = _CATEGORY_EMOJI.get(cat, "🔧")
+        src = t.get("source_info", {}).get("source_name", "?")
         rows += f"""
         <tr>
             <td><code>{t['name']}</code></td>
             <td class='desc'>{t['description'][:100]}</td>
-            <td><span class='src'>{t.get('source','?')}</span></td>
-            <td>{conf_badge}</td>
+            <td><span class='category-tag'>{emoji} {cat}</span></td>
+            <td><span class='src'>{src}</span></td>
         </tr>"""
     if not rows:
         rows = "<tr><td colspan='4' class='empty'>No tools found</td></tr>"
@@ -311,7 +374,9 @@ def _tool_row(t: dict) -> dict:
         "id": t["id"],
         "name": t["name"],
         "description": t.get("description", ""),
+        "source_info": si,
         "source": si.get("source_name", "?"),
+        "category": t.get("category", "Other"),
         "confidence": "",
         "health_status": t.get("health_status", "unknown"),
     }

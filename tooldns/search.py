@@ -225,6 +225,7 @@ class SearchEngine:
                 confidence=round(confidence, 4),
                 input_schema=tool.get("input_schema", {}),
                 source=source_info.get("source_name", "unknown"),
+                category=tool.get("category", "Other"),
                 how_to_call=self._build_call_instructions(source_info)
             ))
 

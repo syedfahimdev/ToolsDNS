@@ -1,12 +1,28 @@
 {% extends "base.html" %}
-{% block title %} — Tools{% endblock %}
+{% block title %} — Browse Tools{% endblock %}
 
 {% block content %}
 <div class="page-header">
-  <h1>Tools <span class="count-badge">{{ total }}</span></h1>
+  <h1>Browse Tools <span class="count-badge">{{ total }}</span></h1>
 </div>
 
-<!-- Search + Filter -->
+<!-- Category pills -->
+<div class="category-pills" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px">
+  <a href="/ui/tools"
+     class="category-pill {% if not selected_category %}active{% endif %}">
+    All <span class="pill-count">{{ total_all }}</span>
+  </a>
+  {% for cat in categories %}
+  {% if cat.count > 0 %}
+  <a href="/ui/tools?category={{ cat.category | urlencode }}"
+     class="category-pill {% if cat.category == selected_category %}active{% endif %}">
+    {{ cat.emoji }} {{ cat.category }} <span class="pill-count">{{ cat.count }}</span>
+  </a>
+  {% endif %}
+  {% endfor %}
+</div>
+
+<!-- Search + Source filter -->
 <section class="card">
   <div class="search-filter-row">
     <input type="text" name="q" value="{{ query }}"
@@ -14,14 +30,16 @@
       hx-get="/ui/tools/search"
       hx-trigger="keyup changed delay:300ms"
       hx-target="#tool-tbody"
-      hx-include="[name='q'],[name='source']"
+      hx-include="[name='q'],[name='source'],[name='category']"
       class="search-input">
+
+    <input type="hidden" name="category" value="{{ selected_category or '' }}">
 
     <select name="source"
       hx-get="/ui/tools/search"
       hx-trigger="change"
       hx-target="#tool-tbody"
-      hx-include="[name='q'],[name='source']"
+      hx-include="[name='q'],[name='source'],[name='category']"
       class="source-filter">
       <option value="">All sources</option>
       {% for s in sources %}
@@ -32,15 +50,17 @@
 
   <table class="tool-table">
     <thead>
-      <tr><th>Tool</th><th>Description</th><th>Source</th><th>Match</th></tr>
+      <tr><th>Tool</th><th>Description</th><th>Category</th><th>Source</th></tr>
     </thead>
     <tbody id="tool-tbody">
       {% for t in tools %}
       <tr>
         <td><code>{{ t.name }}</code></td>
         <td class="desc">{{ t.description[:120] }}</td>
-        <td><span class="src">{{ t.source }}</span></td>
-        <td>{{ t.confidence }}</td>
+        <td>
+          <span class="category-tag">{{ t.get('category', 'Other') }}</span>
+        </td>
+        <td><span class="src">{{ t.source_info.get('source_name','?') if t.source_info else '?' }}</span></td>
       </tr>
       {% else %}
       <tr><td colspan="4" class="empty">No tools found</td></tr>

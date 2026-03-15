@@ -159,13 +159,31 @@ async def delete_source(source_id: str):
 # Tools
 # -----------------------------------------------------------------------
 
-@router.get("/tools")
-async def list_tools(source: str = None):
+@router.get("/categories")
+async def list_categories():
     """
-    List all indexed tools, optionally filtered by source.
+    List all tool categories with counts.
+
+    Returns categories sorted by tool count descending.
+    """
+    from tooldns.categories import CATEGORIES
+    cats = _database.get_categories()
+    # Ensure all known categories appear even if count is 0
+    present = {c["category"] for c in cats}
+    for cat in CATEGORIES:
+        if cat not in present:
+            cats.append({"category": cat, "count": 0})
+    return {"categories": cats, "total_categories": len([c for c in cats if c["count"] > 0])}
+
+
+@router.get("/tools")
+async def list_tools(source: str = None, category: str = None):
+    """
+    List all indexed tools, optionally filtered by source or category.
 
     Args:
         source: Optional source name to filter by.
+        category: Optional category name to filter by (e.g. "Dev & Code").
 
     Returns:
         dict: Tool list with count.
@@ -174,6 +192,9 @@ async def list_tools(source: str = None):
         tools = _database.get_tools_by_source(source)
     else:
         tools = _database.get_all_tools()
+
+    if category:
+        tools = [t for t in tools if (t.get("category") or "Other") == category]
 
     return {
         "tools": tools,

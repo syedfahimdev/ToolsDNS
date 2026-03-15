@@ -148,6 +148,7 @@ class SearchResult(BaseModel):
     confidence: float
     input_schema: dict = Field(default_factory=dict)
     source: str
+    category: str = "Other"
     how_to_call: dict = Field(default_factory=dict)
 
 

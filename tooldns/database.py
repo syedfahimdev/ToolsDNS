@@ -88,11 +88,15 @@ class ToolDatabase:
                 indexed_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        # Migration: add health_status column if missing (for existing databases)
-        try:
-            conn.execute("ALTER TABLE tools ADD COLUMN health_status TEXT DEFAULT 'unknown'")
-        except Exception:
-            pass  # Column already exists
+        # Migrations: add columns if missing (for existing databases)
+        for migration in [
+            "ALTER TABLE tools ADD COLUMN health_status TEXT DEFAULT 'unknown'",
+            "ALTER TABLE tools ADD COLUMN category TEXT DEFAULT 'Other'",
+        ]:
+            try:
+                conn.execute(migration)
+            except Exception:
+                pass
 
         conn.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS tools_fts
@@ -201,17 +205,20 @@ class ToolDatabase:
             embedding: Float vector from sentence-transformers embedding.
         """
         conn = self._get_conn()
+        from tooldns.categories import categorize_tool
+        category = categorize_tool(name, description, source_info)
         conn.execute("""
             INSERT OR REPLACE INTO tools
-            (id, name, description, input_schema, source_info, tags, embedding, indexed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (id, name, description, input_schema, source_info, tags, embedding, indexed_at, category)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, [
             tool_id, name, description,
             json.dumps(input_schema),
             json.dumps(source_info),
             json.dumps(tags),
             json.dumps(embedding),
-            datetime.utcnow().isoformat()
+            datetime.utcnow().isoformat(),
+            category,
         ])
 
         # Update FTS5 index (delete old entry first, then insert)
@@ -241,6 +248,7 @@ class ToolDatabase:
         if not tools:
             return
         now = datetime.utcnow().isoformat()
+        from tooldns.categories import categorize_tool
         tool_rows = [
             (
                 t["tool_id"], t["name"], t["description"],
@@ -249,6 +257,7 @@ class ToolDatabase:
                 json.dumps(t["tags"]),
                 json.dumps(t["embedding"]),
                 now,
+                categorize_tool(t["name"], t["description"], t.get("source_info", {})),
             )
             for t in tools
         ]
@@ -261,8 +270,8 @@ class ToolDatabase:
         conn = self._get_conn()
         conn.executemany(
             "INSERT OR REPLACE INTO tools "
-            "(id, name, description, input_schema, source_info, tags, embedding, indexed_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "(id, name, description, input_schema, source_info, tags, embedding, indexed_at, category) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             tool_rows,
         )
         # Remove stale FTS entries then re-insert
@@ -351,7 +360,7 @@ class ToolDatabase:
         conn = self._get_conn()
         rows = conn.execute(
             "SELECT id, name, description, input_schema, source_info, "
-            "tags, indexed_at FROM tools"
+            "tags, indexed_at, category FROM tools"
         ).fetchall()
         conn.close()
 
@@ -362,8 +371,18 @@ class ToolDatabase:
             "input_schema": json.loads(row["input_schema"]),
             "source_info": json.loads(row["source_info"]),
             "tags": json.loads(row["tags"]),
-            "indexed_at": row["indexed_at"]
+            "indexed_at": row["indexed_at"],
+            "category": row["category"] or "Other",
         } for row in rows]
+
+    def get_categories(self) -> list[dict]:
+        """Return all categories with tool counts."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT category, COUNT(*) as count FROM tools GROUP BY category ORDER BY count DESC"
+        ).fetchall()
+        conn.close()
+        return [{"category": row["category"] or "Other", "count": row["count"]} for row in rows]
 
     def get_tools_by_source(self, source_name: str) -> list[dict]:
         """
