@@ -1,94 +1,87 @@
 # Contributing to ToolsDNS
 
-Thank you for helping make ToolsDNS better! Here's how to get started.
+Thank you for helping make ToolsDNS better! This guide gets you from zero to your first merged PR.
 
 ## Quick Start
 
 ```bash
-git clone https://github.com/syedfahimdev/ToolsDNS
+# Fork on GitHub, then:
+git clone https://github.com/YOUR_USERNAME/ToolsDNS.git
 cd ToolsDNS
-pip install -e ".[dev]"
-python -m tooldns.cli setup
-python -m tooldns.cli serve
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e .
+toolsdns serve   # → http://localhost:8787/ui
 ```
 
-Open `http://localhost:8787/ui` to see the dashboard.
+## What to Work On
 
-## Ways to Contribute
+Check the [open issues](https://github.com/syedfahimdev/ToolsDNS/issues) — anything labelled `good first issue` is a great starting point.
 
-- **Add marketplace skills** — edit `tooldns/marketplace.py`, add to `SKILLS`
-- **Add MCP servers** — edit `tooldns/marketplace.py`, add to `MCP_SERVERS`
-- **Report bugs** — open a GitHub Issue with steps to reproduce
-- **Fix bugs** — open a PR with a clear description
-- **Add features** — open an Issue first to discuss, then PR
+| Label | Meaning |
+|---|---|
+| `good first issue` | Small, well-defined, great for first-timers |
+| `help wanted` | We'd love a contributor to pick this up |
+| `marketplace` | Adding a new MCP server to the catalog |
+| `skill` | Adding or improving a SKILL.md file |
+| `bug` | Something broken that needs fixing |
 
-## Pull Request Guidelines
+## PR Guidelines
 
-1. One feature or fix per PR
-2. Test your change locally before submitting
-3. Update `README.md` if you add a new feature or config option
-4. Keep commits clean — squash WIP commits before merging
+1. **One thing per PR** — focused PRs get reviewed faster
+2. **Test it manually** — run the server and verify your change works end-to-end
+3. **Don't include unrelated changes** — no reformatting unrelated files
+4. **Describe what and why** — a short PR description helps reviewers
 
-## Project Structure
+## Common Tasks
 
-```
-tooldns/
-├── main.py          # FastAPI app entry point + background tasks
-├── tooldns/
-│   ├── config.py    # All settings (env vars) — add new config here
-│   ├── database.py  # SQLite storage — all DB access goes through here
-│   ├── ingestion.py # Multi-source tool ingestion pipeline
-│   ├── search.py    # Semantic + BM25 hybrid search
-│   ├── api.py       # REST API routes (/v1/*)
-│   ├── ui.py        # Web UI routes (/ui/*)
-│   ├── auth.py      # API key auth + per-key usage tracking
-│   ├── marketplace.py # Curated MCP server + skill catalog
-│   └── discover.py  # URL auto-discovery
-└── templates/       # Jinja2 HTML templates
-```
+### Add a Marketplace Server
 
-## Adding a Skill to the Marketplace
-
-In `tooldns/marketplace.py`, add to the `SKILLS` list:
+Edit `tooldns/marketplace.py` — add to the `MARKETPLACE` list:
 
 ```python
 {
-    "id": "my-skill",
-    "name": "My Skill",
-    "description": "What this skill does in one sentence.",
-    "icon": "🎯",
-    "tags": ["category"],
-    "content": """---
-name: my-skill
-description: What this skill does
-tags: [category]
----
-
-## Instructions
-
-Step by step instructions for the LLM...
-
-## TEMPLATE
-{input}
-""",
-},
+    "id": "your-server",
+    "name": "Your Server Name",
+    "description": "One sentence: what it does",
+    "category": "Dev & Code",  # use an existing category
+    "emoji": "🔧",
+    "install": {
+        "type": "mcp_http",  # or "mcp_stdio"
+        "url": "https://your-mcp-server.com/mcp",
+        "env_vars": ["YOUR_API_KEY"],
+    }
+}
 ```
 
-## Adding an MCP Server to the Marketplace
+### Add a Tool Category
 
-In `tooldns/marketplace.py`, add to the `MCP_SERVERS` list:
+Edit `tooldns/categories.py` — add to `_PREFIX_MAP` or `_KEYWORD_RULES`:
 
 ```python
-{
-    "id": "my-server",
-    "name": "My Server",
-    "description": "What it does.",
-    "icon": "🔧",
-    "category": "Developer Tools",
-    "transport": "stdio",
-    "command": "npx",
-    "args": ["-y", "@scope/my-mcp-server"],
-    "package": "@scope/my-mcp-server",
-    "popular": False,
-},
+_PREFIX_MAP = {
+    "YOURSERVICE": "Your Category",  # matches YOURSERVICE_* tool names
+    ...
+}
 ```
+
+### Fix a Bug
+
+1. Reproduce the bug locally
+2. Fix it
+3. Verify the fix in the UI or via `curl`
+4. Submit PR with "fix: description of what was broken"
+
+## Commit Messages
+
+Use conventional commits:
+- `feat:` — new feature
+- `fix:` — bug fix
+- `perf:` — performance improvement
+- `docs:` — documentation only
+- `refactor:` — code change that neither fixes a bug nor adds a feature
+
+## Questions?
+
+- [Open a discussion](https://github.com/syedfahimdev/ToolsDNS/discussions/new) for ideas
+- [Open an issue](https://github.com/syedfahimdev/ToolsDNS/issues/new) for bugs
+- Email [hello@toolsdns.com](mailto:hello@toolsdns.com) for anything else
