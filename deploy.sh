@@ -114,6 +114,8 @@ info "Python environment ready"
 section "Data directory"
 mkdir -p "$DATA_DIR/skills" "$DATA_DIR/tools"
 
+MCP_PORT="${TOOLDNS_MCP_PORT:-8788}"
+
 ENV_FILE="$DATA_DIR/.env"
 if [[ ! -f "$ENV_FILE" ]]; then
   API_KEY="td_$(openssl rand -hex 24)"
@@ -126,6 +128,11 @@ TOOLDNS_PORT=$PORT
 TOOLDNS_APP_NAME=ToolsDNS
 TOOLDNS_APP_TAGLINE=DNS for AI Tools
 TOOLDNS_REFRESH_INTERVAL=60
+
+# MCP HTTP server (persistent — eliminates cold-start latency for agents)
+TOOLDNS_MCP_TRANSPORT=http
+TOOLDNS_MCP_HOST=127.0.0.1
+TOOLDNS_MCP_PORT=$MCP_PORT
 
 # Public URL used in MCP connect-info snippets (set this to your domain)
 # TOOLDNS_PUBLIC_URL=https://api.yourdomain.com
@@ -144,6 +151,19 @@ EOF
 else
   info "Existing $ENV_FILE kept (not overwritten)"
   API_KEY=$(grep "^TOOLDNS_API_KEY=" "$ENV_FILE" | cut -d= -f2 | tr -d ' ')
+  MCP_PORT=$(grep "^TOOLDNS_MCP_PORT=" "$ENV_FILE" | cut -d= -f2 | tr -d ' ')
+  MCP_PORT="${MCP_PORT:-8788}"
+  # Add MCP vars to existing .env if missing
+  if ! grep -q "^TOOLDNS_MCP_TRANSPORT=" "$ENV_FILE"; then
+    cat >> "$ENV_FILE" << EOF
+
+# MCP HTTP server (persistent — eliminates cold-start latency for agents)
+TOOLDNS_MCP_TRANSPORT=http
+TOOLDNS_MCP_HOST=127.0.0.1
+TOOLDNS_MCP_PORT=$MCP_PORT
+EOF
+    info "Added MCP server config to $ENV_FILE"
+  fi
 fi
 
 # ── Systemd service ───────────────────────────────────────────────────────────
@@ -174,10 +194,40 @@ NoNewPrivileges=true
 WantedBy=multi-user.target
 EOF
 
+cat > /etc/systemd/system/tooldns-mcp.service << EOF
+[Unit]
+Description=ToolsDNS MCP Server (HTTP persistent)
+Documentation=https://github.com/syedfahimdev/ToolsDNS
+After=network.target tooldns.service
+Wants=tooldns.service
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=$SERVICE_USER
+WorkingDirectory=$INSTALL_DIR
+EnvironmentFile=$DATA_DIR/.env
+ExecStart=$INSTALL_DIR/.venv/bin/python3 -m tooldns.mcp_server
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tooldns-mcp
+ReadWritePaths=$DATA_DIR $INSTALL_DIR
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 systemctl daemon-reload
-systemctl enable tooldns
+systemctl enable tooldns tooldns-mcp
 systemctl restart tooldns
-info "Service enabled and started"
+# Give the main API a moment before the MCP server tries to connect
+sleep 2
+systemctl restart tooldns-mcp
+info "Services enabled and started (tooldns + tooldns-mcp)"
 
 # ── Wait for backend ──────────────────────────────────────────────────────────
 section "Waiting for backend"
@@ -185,12 +235,24 @@ for i in {1..18}; do
   HEALTH=$(curl -s --max-time 3 "http://localhost:$PORT/health" 2>/dev/null || true)
   if echo "$HEALTH" | grep -q "healthy"; then
     TOOLS=$(echo "$HEALTH" | python3 -c "import sys,json; print(json.load(sys.stdin).get('tools_indexed',0))" 2>/dev/null || echo "?")
-    info "Backend healthy — $TOOLS tools indexed"
+    info "API healthy — $TOOLS tools indexed"
     break
   fi
   [[ $i -eq 18 ]] && { warn "Backend slow to start — check: journalctl -u tooldns -n 30"; break; }
   printf "  Waiting... (%ds)\r" "$((i * 5))"
   sleep 5
+done
+
+# Check MCP HTTP server
+for i in {1..6}; do
+  MCP_STATUS=$(curl -s --max-time 3 "http://127.0.0.1:${MCP_PORT}/mcp" \
+    -H "Accept: text/event-stream" 2>/dev/null || true)
+  if [[ -n "$MCP_STATUS" ]]; then
+    info "MCP server healthy — http://127.0.0.1:${MCP_PORT}/mcp"
+    break
+  fi
+  [[ $i -eq 6 ]] && { warn "MCP server slow to start — check: journalctl -u tooldns-mcp -n 30"; break; }
+  sleep 3
 done
 
 # ── Caddy configuration ───────────────────────────────────────────────────────
@@ -261,11 +323,13 @@ fi
 # ── Summary ───────────────────────────────────────────────────────────────────
 section "Done!"
 echo ""
-echo -e "  ${BOLD}Backend${NC}      : http://localhost:$PORT"
+echo -e "  ${BOLD}API backend${NC}  : http://localhost:$PORT"
+echo -e "  ${BOLD}MCP server${NC}   : http://127.0.0.1:${MCP_PORT}/mcp  (persistent HTTP)"
 [[ -n "$DOMAIN" ]] && echo -e "  ${BOLD}Public URL${NC}   : https://$DOMAIN"
 echo -e "  ${BOLD}Admin key${NC}    : $API_KEY"
 echo -e "  ${BOLD}Config${NC}       : $ENV_FILE"
 echo -e "  ${BOLD}Logs${NC}         : journalctl -u tooldns -f"
+echo -e "  ${BOLD}MCP logs${NC}     : journalctl -u tooldns-mcp -f"
 [[ "$CADDY_SNIPPET" != "(not configured)" ]] && echo -e "  ${BOLD}Caddy config${NC} : $CADDY_SNIPPET"
 echo ""
 echo -e "  ${BOLD}${CYAN}Next steps:${NC}"
@@ -275,11 +339,10 @@ echo "       tooldns key-create"
 echo ""
 echo "  2. Connect an agent (add to its MCP config):"
 if [[ -n "$DOMAIN" ]]; then
-  echo "       URL  : https://$DOMAIN/mcp"
-else
-  echo "       URL  : http://localhost:$PORT/mcp"
+  echo "       URL (public) : https://$DOMAIN/mcp"
 fi
-echo "       Auth : Bearer <key from step 1>"
+echo "       URL (local)  : http://127.0.0.1:${MCP_PORT}/mcp  ← persistent, no cold start"
+echo "       Auth         : Bearer <key from step 1>"
 echo ""
 echo "  3. Add tool sources (MCP servers, skills, etc.):"
 echo "       tooldns add"

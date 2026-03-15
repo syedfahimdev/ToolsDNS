@@ -312,28 +312,48 @@ class SearchEngine:
 
         scored_tools = []
         for i, tool in enumerate(all_tools):
-            bm25_score = bm25_scores.get(tool_ids[i], 0.0)
-            hybrid = self.SEMANTIC_WEIGHT * float(semantic_scores[i]) + self.BM25_WEIGHT * bm25_score
+            sem = float(semantic_scores[i])
+            bm25 = bm25_scores.get(tool_ids[i], 0.0)
+            hybrid = self.SEMANTIC_WEIGHT * sem + self.BM25_WEIGHT * bm25
+            boosted = False
             # Boost web/search tools when caller signals real-time intent
             if web_boost:
                 name_lower = all_tools[i].get("name", "").lower()
                 category_lower = all_tools[i].get("category", "").lower()
                 if any(frag in name_lower for frag in self._WEB_TOOL_NAMES) or category_lower in {"web search", "browser", "search"}:
                     hybrid += web_boost
+                    boosted = True
             if hybrid >= threshold:
-                scored_tools.append((tool, hybrid))
+                scored_tools.append((tool, hybrid, sem, bm25, boosted))
 
         scored_tools.sort(key=lambda x: x[1], reverse=True)
-        top_results = scored_tools[:top_k]
+        top_results_raw = scored_tools[:top_k]
+        # Keep (tool, score) pairs for callers that use top_results
+        top_results = [(t, s) for t, s, *_ in top_results_raw]
 
         results = []
         seen_names: set[str] = set()
-        for tool, confidence in top_results:
+        for tool, confidence, sem, bm25, boosted in top_results_raw:
             name = tool["name"]
             if name in seen_names:
                 continue
             seen_names.add(name)
             source_info = tool.get("source_info", {})
+
+            # Build a human-readable reason
+            reasons = []
+            if sem >= 0.5:
+                reasons.append(f"strong semantic match ({sem:.2f})")
+            elif sem >= 0.3:
+                reasons.append(f"semantic match ({sem:.2f})")
+            else:
+                reasons.append(f"weak semantic match ({sem:.2f})")
+            if bm25 > 0:
+                reasons.append(f"keyword match (BM25 {bm25:.2f})")
+            if boosted:
+                reasons.append("web/search boost applied (real-time query)")
+            match_reason = "; ".join(reasons)
+
             results.append(SearchResult(
                 id=tool["id"],
                 name=name,
@@ -342,7 +362,8 @@ class SearchEngine:
                 input_schema=tool.get("input_schema", {}),
                 source=source_info.get("source_name", "unknown"),
                 category=tool.get("category", "Other"),
-                how_to_call=self._build_call_instructions(source_info)
+                how_to_call=self._build_call_instructions(source_info),
+                match_reason=match_reason,
             ))
         return top_results, results
 

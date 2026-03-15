@@ -174,7 +174,11 @@ async def search_tools(
     ]
     for r in results:
         schema = r.get("input_schema", {})
-        lines.append(f"• **{r['name']}** (ID: `{r['id']}`, confidence: {r['confidence']:.0%})")
+        reason = r.get("match_reason", "")
+        confidence_str = f"{r['confidence']:.0%}"
+        if reason:
+            confidence_str += f" — {reason}"
+        lines.append(f"• **{r['name']}** (ID: `{r['id']}`, confidence: {confidence_str})")
         lines.append(f"  {r['description'][:140]}")
         if schema:
             lines.append(f"  Schema: {json.dumps(schema)[:300]}")
@@ -589,7 +593,12 @@ async def sources_resource() -> str:
 def run():
     """Run the ToolsDNS MCP server (transport selected via TOOLDNS_MCP_TRANSPORT env var)."""
     transport = os.environ.get("TOOLDNS_MCP_TRANSPORT", "stdio")
-    mcp.run(transport=transport)
+    host = os.environ.get("TOOLDNS_MCP_HOST", "127.0.0.1")
+    port = int(os.environ.get("TOOLDNS_MCP_PORT", "8788"))
+    if transport == "stdio":
+        mcp.run(transport=transport)
+    else:
+        mcp.run(transport=transport, host=host, port=port)
 
 
 if __name__ == "__main__":

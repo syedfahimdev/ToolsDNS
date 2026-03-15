@@ -17,6 +17,20 @@ REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 TOOLDNS_HOME="${TOOLDNS_HOME:-$HOME/.tooldns}"
 PYTHON="${PYTHON:-python3}"
 PORT="${TOOLDNS_PORT:-8787}"
+MCP_PORT="${TOOLDNS_MCP_PORT:-8788}"
+
+# Load MCP port from .env if present
+_load_env() {
+    local env_file="$TOOLDNS_HOME/.env"
+    if [ -f "$env_file" ]; then
+        local p
+        p=$(grep "^TOOLDNS_MCP_PORT=" "$env_file" | cut -d= -f2 | tr -d ' ')
+        [ -n "$p" ] && MCP_PORT="$p"
+        p=$(grep "^TOOLDNS_PORT=" "$env_file" | cut -d= -f2 | tr -d ' ')
+        [ -n "$p" ] && PORT="$p"
+    fi
+}
+_load_env
 
 _get_api_key() {
     local env_file="$TOOLDNS_HOME/.env"
@@ -75,7 +89,7 @@ do_start() {
 do_status() {
     print_step "Checking ToolsDNS status..."
     echo ""
-    # Systemd status
+    # Main API service
     if systemctl is-active --quiet tooldns 2>/dev/null; then
         echo -e "  ${GREEN}✅ tooldns.service: running${NC}"
         systemctl status tooldns --no-pager -l 2>/dev/null | grep -E "(Active|Main PID|Memory|CPU)" | sed 's/^/     /'
@@ -85,6 +99,16 @@ do_status() {
         print_info "Logs:  journalctl -u tooldns -n 30"
     fi
     echo ""
+    # MCP HTTP service
+    if systemctl is-active --quiet tooldns-mcp 2>/dev/null; then
+        echo -e "  ${GREEN}✅ tooldns-mcp.service: running (http://127.0.0.1:${MCP_PORT}/mcp)${NC}"
+        systemctl status tooldns-mcp --no-pager -l 2>/dev/null | grep -E "(Active|Main PID|Memory|CPU)" | sed 's/^/     /'
+    else
+        echo -e "  ${YELLOW}⚠ tooldns-mcp.service: not running${NC}"
+        print_info "Start: systemctl start tooldns-mcp"
+        print_info "Logs:  journalctl -u tooldns-mcp -n 30"
+    fi
+    echo ""
     # Caddy status
     if systemctl is-active --quiet caddy 2>/dev/null; then
         echo -e "  ${GREEN}✅ caddy: running${NC}"
@@ -92,7 +116,7 @@ do_status() {
         echo -e "  ${YELLOW}⚠ caddy: not running${NC}"
     fi
     echo ""
-    # Health check
+    # API health check
     HEALTH=$(curl -s --max-time 3 "http://localhost:$PORT/health" 2>/dev/null || true)
     if echo "$HEALTH" | grep -q "healthy"; then
         TOOLS=$(echo "$HEALTH" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tools_indexed',0))" 2>/dev/null || echo "?")
@@ -101,9 +125,40 @@ do_status() {
     else
         echo -e "  ${RED}❌ API not responding on port $PORT${NC}"
     fi
+    # MCP health check
+    MCP_RESP=$(curl -s --max-time 3 "http://127.0.0.1:${MCP_PORT}/mcp" \
+        -H "Accept: text/event-stream" 2>/dev/null || true)
+    if [[ -n "$MCP_RESP" ]]; then
+        echo -e "  ${GREEN}✅ MCP server responding on port ${MCP_PORT}${NC}"
+    else
+        echo -e "  ${YELLOW}⚠ MCP server not responding on port ${MCP_PORT}${NC}"
+    fi
     echo ""
     cd "$REPO_DIR"
     $PYTHON -m tooldns.cli status 2>/dev/null || true
+}
+
+do_mcp_status() {
+    print_step "MCP Server Status"
+    echo ""
+    if systemctl is-active --quiet tooldns-mcp 2>/dev/null; then
+        echo -e "  ${GREEN}✅ tooldns-mcp.service: running${NC}"
+        echo ""
+        systemctl status tooldns-mcp --no-pager -l 2>/dev/null | grep -E "(Active|Main PID|Memory|CPU|Restart)" | sed 's/^/     /'
+        echo ""
+        print_info "Endpoint : http://127.0.0.1:${MCP_PORT}/mcp"
+        print_info "Transport: HTTP (persistent — no cold-start overhead)"
+        print_info "Logs     : journalctl -u tooldns-mcp -f"
+    else
+        echo -e "  ${RED}❌ tooldns-mcp.service: not running${NC}"
+        echo ""
+        print_info "Start : systemctl start tooldns-mcp"
+        print_info "Enable: systemctl enable tooldns-mcp"
+        print_info "Logs  : journalctl -u tooldns-mcp -n 30"
+        echo ""
+        print_info "Or run deploy.sh to install it automatically."
+    fi
+    echo ""
 }
 
 do_search() {
@@ -143,7 +198,8 @@ do_update() {
     else
         $PYTHON -m pip install -q -e "$REPO_DIR"
     fi
-    systemctl restart tooldns 2>/dev/null && print_info "Service restarted" || true
+    systemctl restart tooldns 2>/dev/null && print_info "tooldns restarted" || true
+    systemctl restart tooldns-mcp 2>/dev/null && print_info "tooldns-mcp restarted" || true
     print_info "Update complete. Logs: journalctl -u tooldns -n 20"
 }
 
@@ -563,6 +619,7 @@ show_menu() {
     echo "   19)  caddy-setup    Configure Caddy reverse proxy + HTTPS"
     echo "   20)  update         Pull latest code and restart"
     echo "   21)  reset          Wipe database and restart fresh"
+    echo "   22)  mcp-status     MCP HTTP server status + endpoint info"
     echo ""
     echo "    0)  exit"
     echo ""
@@ -596,6 +653,7 @@ if [ $# -gt 0 ]; then
         reset)          do_reset ;;
         setup-service)  do_setup_service ;;
         caddy-setup)    do_caddy_setup ;;
+        mcp-status)     do_mcp_status ;;
         help|--help|-h)
             print_header
             echo "  Usage: ./tooldns.sh [command]"
@@ -631,6 +689,7 @@ if [ $# -gt 0 ]; then
             echo "    caddy-setup    Configure Caddy reverse proxy + HTTPS"
             echo "    update         Pull latest code and restart"
             echo "    reset          Wipe database and restart fresh"
+            echo "    mcp-status     MCP HTTP server status + endpoint info"
             ;;
         *)
             print_error "Unknown command: $1"
@@ -665,6 +724,7 @@ else
             19) do_caddy_setup ;;
             20) do_update ;;
             21) do_reset ;;
+            22) do_mcp_status ;;
             0)  echo "  Goodbye!"; exit 0 ;;
             *)  print_error "Invalid choice." ;;
         esac

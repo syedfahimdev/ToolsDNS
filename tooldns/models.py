@@ -141,6 +141,7 @@ class SearchResult(BaseModel):
         input_schema: The tool's parameter schema — ready for the LLM to use.
         source: Which source this tool came from.
         how_to_call: Instructions for calling this tool (MCP server info, etc).
+        match_reason: Human-readable explanation of why this tool was returned.
     """
     id: str
     name: str
@@ -150,6 +151,7 @@ class SearchResult(BaseModel):
     source: str
     category: str = "Other"
     how_to_call: dict = Field(default_factory=dict)
+    match_reason: str = ""
 
 
 class SearchResponse(BaseModel):
