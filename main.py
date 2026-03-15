@@ -30,7 +30,7 @@ from tooldns.embedder import get_embedder
 from tooldns.search import SearchEngine
 from tooldns.ingestion import IngestionPipeline
 from tooldns.health import HealthMonitor
-from tooldns.api import router, init_api
+from tooldns.api import router, admin_router, init_api
 from tooldns.auth import init_auth
 
 # ---------------------------------------------------------------------------
@@ -331,6 +331,7 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.include_router(router)
+app.include_router(admin_router)
 
 
 @app.get("/")

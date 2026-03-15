@@ -25,6 +25,7 @@ from tooldns.models import (
 )
 
 router = APIRouter(prefix="/v1", dependencies=[Depends(require_api_key)])
+admin_router = APIRouter(prefix="/v1")
 
 # These get injected by main.py at startup
 _search_engine = None
@@ -133,15 +134,28 @@ async def add_source(req: SourceRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+def _sanitize_source(source: dict, is_admin: bool) -> dict:
+    """Strip server-internal paths and config from non-admin responses."""
+    if is_admin:
+        return source
+    safe = {k: v for k, v in source.items() if k not in ("config",)}
+    if "config" in source:
+        # Only expose type and name — never paths, URLs, headers, or env vars
+        cfg = source["config"]
+        safe["config"] = {"type": cfg.get("type", ""), "name": cfg.get("name", "")}
+    return safe
+
+
 @router.get("/sources")
-async def list_sources():
+async def list_sources(key_info: dict = Depends(require_api_key)):
     """
     List all registered sources with their status and tool counts.
 
-    Returns:
-        list[dict]: All sources with metadata.
+    Admin keys see full config. Sub-keys see name/type/status only.
     """
-    return _database.get_all_sources()
+    sources = _database.get_all_sources()
+    is_admin = key_info.get("is_admin", False)
+    return [_sanitize_source(s, is_admin) for s in sources]
 
 
 @router.delete("/sources/{source_id}")
@@ -1118,3 +1132,62 @@ async def discover_source(req: dict):
             response["ingest_error"] = str(e)
 
     return response
+
+
+# -----------------------------------------------------------------------
+# API Key Management (admin only)
+# -----------------------------------------------------------------------
+
+def _require_admin(key_info: dict = Depends(require_api_key)):
+    if not key_info.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Admin key required")
+    return key_info
+
+
+@admin_router.get("/api-keys")
+async def list_api_keys(_: dict = Depends(_require_admin)):
+    """List all sub-keys (admin only)."""
+    keys = _database.get_all_api_keys()
+    return {"keys": keys, "total": len(keys)}
+
+
+@admin_router.post("/api-keys")
+async def create_api_key(
+    body: dict,
+    _: dict = Depends(_require_admin),
+):
+    """Create a new sub-key (admin only).
+
+    Body: { "name": "acme-corp", "label": "Acme Corp", "plan": "pro", "monthly_limit": 1000 }
+    """
+    name = body.get("name", "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    key = _database.create_api_key(
+        name=name,
+        label=body.get("label", ""),
+        plan=body.get("plan", "free"),
+        monthly_limit=int(body.get("monthly_limit", 1000)),
+    )
+    return {"key": key, "name": name}
+
+
+@admin_router.post("/api-keys/{key}/revoke")
+async def revoke_api_key(key: str, _: dict = Depends(_require_admin)):
+    """Revoke a sub-key (admin only)."""
+    _database.revoke_api_key(key)
+    return {"ok": True}
+
+
+@admin_router.post("/api-keys/{key}/reset")
+async def reset_api_key(key: str, _: dict = Depends(_require_admin)):
+    """Reset monthly usage counter for a sub-key (admin only)."""
+    _database.reset_key_monthly_count(key)
+    return {"ok": True}
+
+
+@admin_router.delete("/api-keys/{key}")
+async def delete_api_key(key: str, _: dict = Depends(_require_admin)):
+    """Permanently delete a sub-key (admin only)."""
+    _database.delete_api_key(key)
+    return {"ok": True}
