@@ -481,6 +481,9 @@ async def upload_file(request: Request):
         data = await request.body()
     if not data:
         return JSONResponse({"error": "No file data received"}, status_code=400)
+    # Sanitize filename — only allow safe characters to prevent Content-Disposition injection
+    import re as _re
+    filename = _re.sub(r'[^\w\s.\-()]', '_', str(filename)).strip() or "file"
     token = register_download(filename, data)
     base_url = os.environ.get("TOOLDNS_PUBLIC_URL", f"http://127.0.0.1:{settings.port}").rstrip("/")
     download_url = f"{base_url}/dl/{token}"

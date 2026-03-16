@@ -13,11 +13,16 @@ Usage:
     def list_tools(): ...
 """
 
+import logging
+
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from tooldns.config import settings
 
+logger = logging.getLogger(__name__)
 security = HTTPBearer(auto_error=False)
+
+_dev_key_warned = False
 
 _database = None
 
@@ -48,6 +53,13 @@ async def require_api_key(
     """
     # Dev mode — skip auth with default key
     if settings.api_key == "td_dev_key":
+        global _dev_key_warned
+        if not _dev_key_warned:
+            logger.warning(
+                "⚠️  Running with default dev key (td_dev_key) — authentication is DISABLED. "
+                "Set TOOLDNS_API_KEY in your .env file before exposing this server publicly."
+            )
+            _dev_key_warned = True
         return {"key": "dev", "name": "dev", "plan": "admin", "is_admin": True}
 
     if not credentials:
