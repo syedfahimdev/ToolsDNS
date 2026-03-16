@@ -16,6 +16,7 @@ and requires a valid API key (see auth.py).
 import os
 import uuid
 import asyncio
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from tooldns.config import settings
@@ -199,7 +200,9 @@ def delete_source(source_id: str):
 @router.get("/stats")
 def get_stats():
     """Search history and token savings statistics."""
-    return _database.get_search_stats()
+    stats = _database.get_search_stats()
+    stats["query_cache"] = _search_engine._cache.stats
+    return stats
 
 
 # -----------------------------------------------------------------------
@@ -1300,3 +1303,56 @@ async def connect_info(auth: dict = Depends(require_api_key)):
             }
         }
     }
+
+
+@router.get("/system-prompt")
+async def get_system_prompt(format: str = "text"):
+    """
+    Generate a ready-to-paste system prompt for your AI agent.
+    Reflects the live tool count at call time.
+
+    Query params:
+        format: "text" (default) or "json"
+    """
+    total = _database.get_tool_count() if _database else 0
+    public_url = (os.environ.get("TOOLDNS_PUBLIC_URL", "") or "").rstrip("/") or "http://localhost:8787"
+    app_name = os.environ.get("TOOLDNS_APP_NAME", "ToolsDNS")
+
+    prompt = f"""## {app_name} — Tool Discovery Layer
+
+You have access to **{total:,} tools** indexed in {app_name}. Do NOT try to remember or guess tool names — always use {app_name} to find and run them.
+
+### How to Use {app_name}
+
+**Find the right tool**
+```
+search_tools(query="send an email")
+search_tools(query="create a GitHub issue")
+```
+Returns the best matching tools with schemas and call instructions.
+
+**Execute a tool**
+```
+call_tool(tool_id="GMAIL_SEND_EMAIL", arguments={{"to": "alice@example.com", "body": "Hi!"}})
+```
+Always pass `arguments` as a JSON object, never as a string.
+
+**Discover custom skills**
+```
+list_skills()        # see all available skills
+read_skill("name")   # get full instructions before running a skill
+```
+
+### Rules
+1. **Never guess tool IDs** — always `search_tools` first.
+2. **Never say you can't do something** without searching first — you have {total:,} tools.
+3. **For skills**: `list_skills` → `read_skill(name)` → follow the instructions.
+4. **File links**: if a tool returns a `download_url`, send that URL to the user — do not embed base64.
+
+*Powered by {app_name} · {public_url}*
+"""
+
+    if format == "json":
+        return {"system_prompt": prompt, "tools_indexed": total, "public_url": public_url}
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse(prompt)

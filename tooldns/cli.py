@@ -1007,6 +1007,35 @@ Include any API endpoints, request formats, or external calls needed.
     print(f"\n   Then run './tooldns.sh ingest' to index it.")
 
 
+def cmd_system_prompt():
+    """
+    Generate a ready-to-paste system prompt for your AI agent.
+    Fetches live tool count + skill list from the running server.
+    """
+    import urllib.request
+    import urllib.error
+
+    api_key = settings.api_key
+    base_url = f"http://127.0.0.1:{settings.port}"
+
+    try:
+        req = urllib.request.Request(
+            f"{base_url}/v1/system-prompt",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            prompt = r.read().decode()
+        print("\n" + "=" * 70)
+        print("  TOOLDNS SYSTEM PROMPT — paste this into your agent's system prompt")
+        print("=" * 70 + "\n")
+        print(prompt)
+        print("=" * 70)
+        print("\nTip: copy everything between the === lines and paste into your agent.")
+    except urllib.error.URLError:
+        print("❌  Could not connect to ToolsDNS. Is the server running?")
+        print(f"   Start it with: tooldns serve   (expected on {base_url})")
+
+
 def cmd_ingest():
     """Re-ingest all registered sources."""
     _, _, _, pipeline = get_components()
@@ -1077,6 +1106,7 @@ def main():
         print("  search       Search for a tool")
         print("  status       Show system status and health")
         print("  ingest       Re-ingest all sources")
+        print("  system-prompt  Generate system prompt to paste into your agent")
         print("  serve        Start the API server")
         return
 
@@ -1119,6 +1149,8 @@ def main():
         cmd_ingest()
     elif cmd == "serve":
         cmd_serve()
+    elif cmd == "system-prompt":
+        cmd_system_prompt()
     else:
         print(f"Unknown command: {cmd}")
         print("Run 'python3 -m tooldns.cli' for help.")

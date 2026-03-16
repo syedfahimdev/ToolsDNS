@@ -27,10 +27,13 @@ Benefits of fastmcp over hand-rolled JSON-RPC:
     - Stdio transport handled by the library
 """
 
+import base64
 import contextvars
 import json
 import os
-from typing import Optional
+import time
+from collections import OrderedDict
+from typing import Optional, Union
 
 import httpx
 from fastmcp import FastMCP, Context
@@ -70,6 +73,12 @@ mcp = FastMCP(
 # ---------------------------------------------------------------------------
 
 _client: Optional[httpx.AsyncClient] = None
+
+# Recent call dedup — tracks (tool_id, args_hash) → (last_called_at, result)
+# Prevents agent loops where the same failing call is repeated within a session
+_recent_calls: OrderedDict[tuple, tuple] = OrderedDict()
+_DEDUP_TTL = 30.0   # seconds — same call within this window returns cached result
+_DEDUP_MAX = 64     # max entries before evicting oldest
 
 
 def _api_base_url() -> str:
@@ -241,8 +250,14 @@ async def get_tool(
 @mcp.tool()
 async def call_tool(
     tool_id: str,
-    arguments: Optional[dict] = None,
+    arguments: Optional[Union[dict, str]] = None,
     ctx: Optional[Context] = None,
+    # Extra params models sometimes mistakenly pass at the top level instead of inside arguments:
+    limit: Optional[int] = None,
+    max_results: Optional[int] = None,
+    top_k: Optional[int] = None,
+    query: Optional[str] = None,
+    filter: Optional[str] = None,
 ) -> str:
     """
     Execute a tool via ToolsDNS.
@@ -252,8 +267,46 @@ async def call_tool(
 
     Args:
         tool_id: The tool ID to execute (from search_tools results).
-        arguments: Arguments to pass to the tool as a JSON object.
+        arguments: Arguments to pass to the tool as a JSON object (dict or JSON string).
+            Do NOT pass tool arguments as top-level parameters — always put them inside `arguments`.
     """
+    # Coerce string arguments to dict (model sometimes passes JSON as a string)
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except Exception:
+            arguments = {}
+
+    arguments = dict(arguments or {})
+
+    # Absorb stray top-level params back into arguments (don't overwrite existing keys)
+    _stray = {
+        "limit": limit, "max_results": max_results, "top_k": top_k,
+        "query": query, "filter": filter,
+    }
+    for k, v in _stray.items():
+        if v is not None and k not in arguments:
+            arguments[k] = v
+
+    args_hash = hash(json.dumps(arguments, sort_keys=True))
+    dedup_key = (tool_id, args_hash)
+    now = time.monotonic()
+
+    # Check dedup cache — same tool + same args within TTL
+    if dedup_key in _recent_calls:
+        called_at, cached_result = _recent_calls[dedup_key]
+        if now - called_at < _DEDUP_TTL:
+            warning = (
+                f"\n\n⚠️  DUPLICATE CALL DETECTED: `{tool_id}` was already called with "
+                f"identical arguments {int(now - called_at)}s ago.\n"
+                "DO NOT call this tool again with the same arguments. "
+                "If the previous call failed, try a different approach or tool. "
+                "Cached result from previous call shown above."
+            )
+            if ctx:
+                await ctx.info(f"Duplicate call blocked: {tool_id!r}")
+            return cached_result + warning
+
     if ctx:
         await ctx.info(f"Calling tool: {tool_id!r} with arguments: {json.dumps(arguments or {})[:200]}")
 
@@ -270,21 +323,51 @@ async def call_tool(
     if result_type == "skill":
         content = result.get("content", "")
         instruction = result.get("instruction", "")
-        return f"{instruction}\n\n{content}".strip()
-
-    if result_type == "mcp_result":
+        final = f"{instruction}\n\n{content}".strip()
+    elif result_type == "mcp_result":
         inner = result.get("result", {})
-        # Extract text content if it's an MCP response
         if isinstance(inner, dict) and "content" in inner:
             parts = []
             for block in inner["content"]:
                 if isinstance(block, dict) and block.get("type") == "text":
                     parts.append(block.get("text", ""))
-            if parts:
-                return "\n".join(parts)
-        return json.dumps(inner, indent=2)
+            final = "\n".join(parts) if parts else json.dumps(inner, indent=2)
+        else:
+            final = json.dumps(inner, indent=2)
+    else:
+        final = json.dumps(result, indent=2)
 
-    return json.dumps(result, indent=2)
+    # If the result contains a generated file (content_base64), swap it for a download URL
+    # so the large base64 never enters the LLM context and causes 400 errors from Anthropic.
+    try:
+        parsed = json.loads(final) if isinstance(final, str) else result
+        if isinstance(parsed, dict) and parsed.get("content_base64"):
+            b64 = parsed.pop("content_base64")
+            file_name = parsed.get("file_name", "file.xlsx")
+            file_bytes = base64.b64decode(b64)
+            try:
+                from main import register_download
+                token = register_download(file_name, file_bytes)
+                base_url = os.environ.get("TOOLDNS_PUBLIC_URL", f"http://127.0.0.1:{settings.port}")
+                download_url = f"{base_url}/dl/{token}"
+                parsed["download_url"] = download_url
+                parsed["message"] = (
+                    f"{parsed.get('message', '')} "
+                    f"Download URL (expires 15 min): {download_url}"
+                ).strip()
+            except Exception:
+                # If register_download isn't available, keep the base64 truncated
+                parsed["content_base64"] = b64[:100] + "...[truncated — file too large for context]"
+            final = json.dumps(parsed, indent=2)
+    except Exception:
+        pass  # leave final unchanged if anything goes wrong
+
+    # Store in dedup cache
+    _recent_calls[dedup_key] = (time.monotonic(), final)
+    if len(_recent_calls) > _DEDUP_MAX:
+        _recent_calls.popitem(last=False)
+
+    return final
 
 
 @mcp.tool()
@@ -547,6 +630,19 @@ async def list_skills(ctx: Optional[Context] = None) -> str:
     lines.append(f"\nUse `read_skill(name)` to get full instructions for any skill.")
     lines.append("Use `search_tools(query)` to find tools by what you want to do.")
     return "\n".join(lines)
+
+
+@mcp.tool()
+async def get_system_prompt(ctx: Optional[Context] = None) -> str:
+    """
+    Generate a ready-to-paste system prompt that tells an AI agent how to use
+    ToolsDNS — what tools are available, all skills, and how to call each MCP tool.
+
+    Call this during first-time setup or when onboarding a new agent to ToolsDNS.
+    The output is a complete system prompt block the user can paste into their agent.
+    """
+    result = await _api("GET", "/v1/system-prompt?format=json")
+    return result.get("system_prompt", str(result))
 
 
 # ---------------------------------------------------------------------------

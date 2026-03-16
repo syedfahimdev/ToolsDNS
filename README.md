@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/syedfahimdev/ToolsDNS/actions/workflows/ci.yml/badge.svg)](https://github.com/syedfahimdev/ToolsDNS/actions/workflows/ci.yml)
 [![Security](https://github.com/syedfahimdev/ToolsDNS/actions/workflows/security.yml/badge.svg)](https://github.com/syedfahimdev/ToolsDNS/actions/workflows/security.yml)
-[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-purple.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://python.org)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
@@ -27,7 +27,7 @@ Loading 500 tool schemas into every LLM message is like making someone memorize 
 | Agent confused by too many choices | Agent gets exactly what it needs |
 | Tied to one MCP provider | Works with any MCP server, skill, or API |
 
-> **Real numbers from production:** searching 1,709 tools returns ~3 results, saving **284,000+ tokens per search** — roughly **$0.85 per query** at Claude Sonnet pricing.
+> **Real numbers from production:** searching 5,000+ tools returns ~3 results, saving **284,000+ tokens per search** — roughly **$0.85 per query** at Claude Sonnet pricing.
 
 ---
 
@@ -38,7 +38,7 @@ Loading 500 tool schemas into every LLM message is like making someone memorize 
 │  Your Tools      │     │      ToolsDNS          │     │  AI Agent    │
 │                  │     │                       │     │              │
 │ • MCP Servers    │────▶│  Index + Embed        │     │ "What can    │
-│ • Skill files    │     │  1,700+ tool schemas  │◀────│  you do?"    │
+│ • Skill files    │     │  5,000+ tool schemas  │◀────│  you do?"    │
 │ • Config files   │     │                       │     │              │
 │ • Custom tools   │     │  list_skills()        │────▶│ (sees your   │
 │ • OpenAPI specs  │     │  search_tools(query)  │     │  skills)     │
@@ -60,18 +60,23 @@ Loading 500 tool schemas into every LLM message is like making someone memorize 
 | Feature | Description |
 |---|---|
 | 🔍 **Semantic Search** | Natural language queries — "send email" finds `GMAIL_SEND_EMAIL` even without exact name match |
-| ⚡ **Hybrid Scoring** | Semantic similarity (70%) + BM25 keyword (30%) — exact names AND fuzzy descriptions both work |
+| ⚡ **Hybrid Scoring** | Semantic similarity (70%) + BM25 keyword (30%) + `match_reason` explains every result |
+| 🚀 **Persistent MCP Server** | Runs as a systemd service on port 8788 — 11ms connect vs 1.3s cold-start spawn |
+| ⚡ **Query Cache** | Thread-safe LRU cache (256 entries, 60s TTL) — repeat searches return in ~17ms |
+| 🛡️ **Duplicate Call Guard** | 30-second dedup window — prevents agents from calling the same tool twice |
 | 📋 **Skill Listing** | `list_skills()` MCP tool — agents instantly discover all your custom skills |
+| 🤖 **System Prompt Generator** | `GET /v1/system-prompt` or `tooldns system-prompt` — ready-to-paste agent onboarding |
+| 📎 **File Download Endpoint** | `GET /dl/{token}` — skills return download URLs instead of raw base64, preventing 400 errors |
 | 📊 **Token Savings Tracker** | Real token counting with per-model cost savings (not estimates) |
 | 🏥 **Health Monitoring** | Auto-checks if MCP servers are online/degraded/down — webhooks on status change |
 | 🛒 **Marketplace** | One-click install for GitHub, Slack, Gmail, Notion, and 30+ popular MCP servers |
 | 🎨 **Web Dashboard** | Full browser UI — manage sources, search tools, view savings, generate API keys |
 | 🔌 **MCP Protocol** | Exposes itself as an MCP server — plug into nanobot, Claude Desktop, any agent |
-| 📦 **Skill Management** | Create, read, update skill files from UI or API |
+| 📦 **Skill Management** | Create, read, update skill files from UI or API. Drop `.xlsx`/`.pdf` files alongside `SKILL.md` |
 | 🔧 **Auto-Discovery** | Point at any Smithery URL, npm package, GitHub repo, or HTTP MCP endpoint |
 | 🔑 **API Key Manager** | Multi-tenant sub-keys with per-key usage tracking and monthly limits |
 | 🏷️ **White-Label Ready** | Rebrand via env vars — your name, your domain, no code changes |
-| 🚀 **One-Command Deploy** | `curl | bash` installer for any Ubuntu/Debian VPS |
+| 🚀 **One-Command Deploy** | `curl \| bash` installer for any Ubuntu/Debian VPS |
 | 🔄 **Hot Reload** | Edit `config.json` → tools re-index in ~1 second, no restart needed |
 | 🏷️ **Tool Categories** | 15 categories auto-assigned (Dev & Code, Communication, AI & Agents, etc.) |
 | 🔒 **Security First** | Bandit static analysis + CVE scanning in CI, API key auth on all endpoints |
@@ -86,7 +91,7 @@ Loading 500 tool schemas into every LLM message is like making someone memorize 
 curl -sSL https://raw.githubusercontent.com/syedfahimdev/ToolsDNS/master/deploy.sh | sudo bash
 ```
 
-Installs Python env, configures systemd service, generates API key, and verifies health. Done in ~60 seconds.
+Installs Python env, configures **two** systemd services (`tooldns` API + `tooldns-mcp` persistent MCP server), generates API key, and verifies health. Done in ~60 seconds.
 
 ### Option 2 — Local Dev
 
@@ -109,6 +114,37 @@ Your `~/.tooldns/` folder is bind-mounted — config, skills, database all persi
 
 ---
 
+## First-Time Agent Setup
+
+After installing, generate a system prompt for your AI agent in one command:
+
+```bash
+tooldns system-prompt
+```
+
+Or via the API:
+
+```bash
+curl https://api.toolsdns.com/v1/system-prompt \
+  -H "Authorization: Bearer td_your_key"
+```
+
+This outputs a complete, ready-to-paste block explaining ToolsDNS to your agent — including live tool count, all your skills, and usage rules. Paste it into your agent's system prompt and it will immediately know how to use all your tools.
+
+**Example output:**
+```
+## ToolsDNS — Tool Discovery Layer
+
+You have access to 5,056 tools indexed in ToolsDNS...
+
+### Available Skills
+- **cea-weekly-report**: Fill the weekly Excel report...
+- **everi-work-order**: Create Excel work orders for parts and returns...
+...
+```
+
+---
+
 ## Web Dashboard
 
 Everything manageable through the browser — no config editing required:
@@ -117,7 +153,7 @@ Everything manageable through the browser — no config editing required:
 |---|---|
 | **Dashboard** | Tool count, recent searches, savings summary, onboarding wizard |
 | **Add Tools** | Marketplace — one-click install 30+ popular MCP servers |
-| **Browse Tools** | Search and filter 1,700+ indexed tools by category, source, keyword |
+| **Browse Tools** | Search and filter 5,000+ indexed tools by category, source, keyword |
 | **Sources** | Add/remove/edit MCP server sources, auto-discover from any URL |
 | **Savings** | Token savings tracker with shareable savings card image |
 | **API Keys** | Create sub-keys, set monthly limits, track per-key usage |
@@ -129,22 +165,55 @@ Everything manageable through the browser — no config editing required:
 
 ## MCP Integration
 
-Add ToolsDNS to any agent that supports MCP servers:
+### Persistent HTTP MCP Server (recommended)
 
-**nanobot / Claude Desktop / any MCP client:**
+ToolsDNS runs a dedicated MCP HTTP server on port **8788** as a background service. Connecting via URL eliminates the ~1.3s cold-start of spawning a new Python process per session.
+
+**nanobot / OpenClaw / mcporter:**
 
 ```json
 {
   "mcpServers": {
     "tooldns": {
-      "command": "python3",
-      "args": ["-m", "tooldns.mcp_server"]
+      "url": "http://127.0.0.1:8788/mcp",
+      "transport": "http"
     }
   }
 }
 ```
 
-**Tools your agent gets:**
+**ZeroClaw (`~/.zeroclaw/config.toml`):**
+
+```toml
+[[mcp.servers]]
+name = "tooldns"
+transport = "http"
+url = "http://127.0.0.1:8788/mcp"
+```
+
+**Claude Desktop / Cursor / any remote client:**
+
+```json
+{
+  "mcpServers": {
+    "tooldns": {
+      "type": "streamable-http",
+      "url": "https://api.yourdomain.com/mcp",
+      "headers": { "Authorization": "Bearer td_your_key" }
+    }
+  }
+}
+```
+
+**copaw / agentscope / older MCP clients:**
+
+ToolsDNS automatically handles clients that don't send `Accept: application/json, text/event-stream` — the server injects the required headers server-side. Both `/mcp` and `/mcp/` are accepted (no 307 redirect). Connect using the standard streamable-HTTP URL:
+
+```
+https://api.yourdomain.com/mcp
+```
+
+### Tools your agent gets
 
 | MCP Tool | When to call it |
 |---|---|
@@ -153,8 +222,8 @@ Add ToolsDNS to any agent that supports MCP servers:
 | `get_tool(id)` | Need full schema for a specific tool |
 | `call_tool(id, args)` | Execute a tool through ToolsDNS |
 | `read_skill(name)` | Get full SKILL.md instructions before running a skill |
+| `get_system_prompt()` | Get the system prompt to onboard a new agent |
 | `create_skill(...)` | Create a new skill file |
-| `update_skill(...)` | Edit an existing skill |
 | `register_mcp_server(...)` | Add a new MCP server to the index |
 
 **Example agent workflow:**
@@ -163,17 +232,82 @@ Add ToolsDNS to any agent that supports MCP servers:
 User: "Create a work order for the maintenance team"
 
 Agent → list_skills()                    # What skills exist?
-      → sees "work-order" listed
-      → read_skill("work-order")   # Get full instructions
+      → sees "everi-work-order" listed
+      → read_skill("everi-work-order")   # Get full instructions
       → follows SKILL.md instructions
       → creates the Excel work order ✓
+      → work_order_get_file()            # Returns download URL, not base64
+      → sends file to user ✓
+```
+
+---
+
+## Skills
+
+Skills are custom workflows defined as a `SKILL.md` file (+ optional `tools.py`) in `~/.tooldns/skills/your-skill-name/`.
+
+### Creating a skill
+
+```bash
+tooldns new-skill
+```
+
+Or drop a folder manually:
+
+```
+~/.tooldns/skills/
+└── my-workflow/
+    ├── SKILL.md        ← required: frontmatter + agent instructions
+    ├── tools.py        ← optional: Python tool functions called via bash
+    └── template.xlsx   ← optional: any supporting files (xlsx, pdf, etc.)
+```
+
+**SKILL.md format:**
+
+```markdown
+---
+name: my-workflow
+description: "One sentence — what this skill does and when to use it"
+user-invocable: true
+---
+
+# My Workflow
+
+Step-by-step instructions for the agent...
+```
+
+### File handling in skills
+
+Skills can read/write local files (`.xlsx`, `.pdf`, etc.) alongside `SKILL.md`. The pattern used by built-in skills:
+
+1. Template file (`Work_Order_Form.xlsx`, `CEA Weekly Report.xlsx`) stays in the skill folder — **never modified**
+2. `generate` tool does `shutil.copy2(template, dated_copy)` then edits only the copy
+3. `get_file` tool reads the copy → returns a **download URL** (not base64) → deletes the copy
+
+This prevents large base64 blobs from entering the LLM context and causing `400 BadRequest` errors from Anthropic/OpenAI.
+
+### Re-indexing after changes
+
+```bash
+tooldns ingest
+# or for a specific skill only:
+python3 -m tooldns.cli ingest --skill my-workflow
 ```
 
 ---
 
 ## API Reference
 
-All endpoints require `Authorization: Bearer <your_api_key>` (except `/health`).
+All endpoints require `Authorization: Bearer <your_api_key>` (except `/health` and `/dl/{token}`).
+
+### Generate agent system prompt
+
+```bash
+curl https://api.toolsdns.com/v1/system-prompt \
+  -H "Authorization: Bearer td_your_key"
+```
+
+Returns a ready-to-paste system prompt block for your AI agent.
 
 ### Search tools
 
@@ -190,6 +324,7 @@ curl -X POST https://api.toolsdns.com/v1/search \
     "name": "GITHUB_CREATE_ISSUE",
     "description": "Creates a new issue in a GitHub repository",
     "confidence": 0.94,
+    "match_reason": "strong semantic match (0.94); keyword match (BM25 0.87)",
     "category": "Dev & Code",
     "how_to_call": {
       "type": "mcp",
@@ -197,9 +332,9 @@ curl -X POST https://api.toolsdns.com/v1/search \
       "instruction": "Call this tool via the 'composio' MCP server."
     }
   }],
-  "total_tools_indexed": 1709,
+  "total_tools_indexed": 5056,
   "tokens_saved": 284710,
-  "search_time_ms": 42.3
+  "search_time_ms": 17.4
 }
 ```
 
@@ -217,29 +352,19 @@ curl https://api.toolsdns.com/v1/skills \
   -H "Authorization: Bearer td_your_key"
 ```
 
-### Get a skill's full instructions
+### Download a generated file (no auth required)
 
 ```bash
-curl https://api.toolsdns.com/v1/skills/work-order \
-  -H "Authorization: Bearer td_your_key"
+curl https://api.toolsdns.com/dl/{token} --output report.xlsx
 ```
 
-### Auto-discover tools from a URL
-
-```bash
-curl -X POST https://api.toolsdns.com/v1/discover \
-  -H "Authorization: Bearer td_your_key" \
-  -H "Content-Type: application/json" \
-  -d '{"url": "https://smithery.ai/server/@modelcontextprotocol/server-github"}'
-```
-
-Supports: Smithery URLs, npm packages, GitHub repos, raw HTTP MCP endpoints.
+Tokens are issued by skill tools (e.g. `work_order_get_file`, `cea_report_get_file`) and expire after 15 minutes.
 
 ### Health check (no auth)
 
 ```bash
 curl https://api.toolsdns.com/health
-# {"status":"healthy","tools_indexed":1709,"sources":4}
+# {"status":"healthy","tools_indexed":5056,"sources":4}
 ```
 
 ---
@@ -252,7 +377,11 @@ All settings via environment variables or `~/.tooldns/.env`:
 |---|---|---|
 | `TOOLDNS_API_KEY` | `td_dev_key` | Master API key (change in production!) |
 | `TOOLDNS_HOST` | `0.0.0.0` | Bind address |
-| `TOOLDNS_PORT` | `8787` | Server port |
+| `TOOLDNS_PORT` | `8787` | API server port |
+| `TOOLDNS_PUBLIC_URL` | *(empty)* | Public base URL (e.g. `https://api.yourdomain.com`) — used in download URLs |
+| `TOOLDNS_MCP_TRANSPORT` | `http` | MCP server transport: `http` or `stdio` |
+| `TOOLDNS_MCP_HOST` | `127.0.0.1` | MCP server bind address |
+| `TOOLDNS_MCP_PORT` | `8788` | MCP server port |
 | `TOOLDNS_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Sentence-transformer model for search |
 | `TOOLDNS_REFRESH_INTERVAL` | `15` | Auto re-index interval in minutes (0 = off) |
 | `TOOLDNS_MODEL` | *(auto-detect)* | LLM model name for token cost calculations |
@@ -273,6 +402,10 @@ All settings via environment variables or `~/.tooldns/.env`:
 ```bash
 curl -sSL https://raw.githubusercontent.com/syedfahimdev/ToolsDNS/master/deploy.sh | sudo bash
 ```
+
+Installs and enables **two** systemd services:
+- `tooldns.service` — REST API + Web UI on port 8787
+- `tooldns-mcp.service` — Persistent MCP HTTP server on port 8788
 
 Then add a reverse proxy (Caddy handles HTTPS automatically):
 
@@ -310,15 +443,16 @@ See the **🚀 Deploy** page in the web UI at `/ui/deploy` for platform-specific
 
 ```
 ToolsDNS/
-├── deploy.sh              # One-command VPS installer
-├── main.py                # FastAPI app + network ACL middleware
-├── docker-compose.yml     # Bind-mounts ~/.tooldns, exposes port 8787
+├── deploy.sh              # One-command VPS installer (creates both systemd services)
+├── tooldns.sh             # Management CLI (status, ingest, mcp-status, update)
+├── main.py                # FastAPI app + network ACL + /dl/{token} download endpoint
+├── docker-compose.yml     # Bind-mounts ~/.tooldns, exposes ports 8787 + 8788
 ├── pyproject.toml         # Package config — CLI: toolsdns / tooldns
 ├── tooldns/               # Main Python package
-│   ├── api.py             # REST API routes (/v1/*)
+│   ├── api.py             # REST API routes (/v1/*) incl. /v1/system-prompt
 │   ├── auth.py            # API key auth — admin key + named sub-keys
 │   ├── categories.py      # Auto-categorization (15 categories)
-│   ├── cli.py             # CLI: toolsdns setup / serve / add / search
+│   ├── cli.py             # CLI: toolsdns setup / serve / system-prompt / ...
 │   ├── config.py          # Settings from env vars
 │   ├── database.py        # SQLite with FTS5 full-text + embedding cache
 │   ├── discover.py        # Auto-discover from Smithery/npm/GitHub/HTTP
@@ -327,9 +461,9 @@ ToolsDNS/
 │   ├── health.py          # Source health monitor + webhook alerts
 │   ├── ingestion.py       # Parallel tool indexing pipeline
 │   ├── marketplace.py     # Pre-built MCP server catalog
-│   ├── mcp_server.py      # FastMCP server — exposes ToolsDNS via MCP
-│   ├── models.py          # Pydantic models
-│   ├── search.py          # Hybrid semantic + BM25 search engine
+│   ├── mcp_server.py      # FastMCP server — persistent HTTP on port 8788
+│   ├── models.py          # Pydantic models (SearchResult.match_reason field)
+│   ├── search.py          # Hybrid semantic + BM25 + LRU query cache
 │   ├── tokens.py          # Real token counting + per-model cost calc
 │   ├── ui.py              # Web UI routes (/ui/*) — Jinja2 + HTMX
 │   ├── templates/         # HTML templates (base, tools, sources, etc.)
@@ -390,6 +524,7 @@ git push origin feat/my-new-feature
 - **Don't break existing behavior** — the CI pipeline checks imports and branding
 - **Add to `marketplace.py`** if adding a new MCP server — name, description, install command
 - **No secrets in code** — the security workflow scans for API keys and tokens
+- **Update README.md** — document new features, env vars, or API endpoints
 
 ### Adding a Marketplace Server
 
@@ -443,7 +578,7 @@ Share useful skills by submitting them to the [skills library discussion](https:
 
 ## License
 
-**AGPL-3.0** for open-source use. See [LICENSE](LICENSE).
+MIT License. See [LICENSE](LICENSE).
 
 For commercial/proprietary use (closed-source products, SaaS resale, white-label), contact [syed@toolsdns.com](mailto:syed@toolsdns.com) for a commercial license.
 

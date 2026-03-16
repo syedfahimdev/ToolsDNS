@@ -28,12 +28,72 @@ import json
 import time
 import os
 import threading
+from collections import OrderedDict
 import numpy as np
 from tooldns.config import logger, settings
 from tooldns.database import ToolDatabase
 from tooldns.embedder import Embedder
 from tooldns.models import SearchResult, SearchResponse
 from tooldns.tokens import count_tool_tokens, get_model_price, tokens_to_cost
+
+
+class _SearchCache:
+    """
+    Thread-safe LRU cache for search results.
+
+    Keyed on (query, top_k, threshold). Entries expire after `ttl_secs`
+    seconds. Max `maxsize` entries — oldest evicted when full.
+    Invalidated entirely on ingestion so stale tool data is never served.
+    """
+
+    def __init__(self, maxsize: int = 256, ttl_secs: float = 60.0):
+        self._cache: OrderedDict[tuple, tuple] = OrderedDict()  # key → (expires_at, SearchResponse)
+        self._maxsize = maxsize
+        self._ttl = ttl_secs
+        self._lock = threading.Lock()
+        self._hits = 0
+        self._misses = 0
+
+    def get(self, key: tuple) -> "SearchResponse | None":
+        with self._lock:
+            entry = self._cache.get(key)
+            if entry is None:
+                self._misses += 1
+                return None
+            expires_at, response = entry
+            if time.monotonic() > expires_at:
+                del self._cache[key]
+                self._misses += 1
+                return None
+            # Move to end (most recently used)
+            self._cache.move_to_end(key)
+            self._hits += 1
+            return response
+
+    def set(self, key: tuple, response: "SearchResponse") -> None:
+        with self._lock:
+            if key in self._cache:
+                self._cache.move_to_end(key)
+            self._cache[key] = (time.monotonic() + self._ttl, response)
+            if len(self._cache) > self._maxsize:
+                self._cache.popitem(last=False)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._cache.clear()
+
+    @property
+    def stats(self) -> dict:
+        with self._lock:
+            total = self._hits + self._misses
+            return {
+                "hits": self._hits,
+                "misses": self._misses,
+                "hit_rate": round(self._hits / total, 3) if total else 0.0,
+                "size": len(self._cache),
+                "maxsize": self._maxsize,
+                "ttl_secs": self._ttl,
+            }
 
 
 class SearchEngine:
@@ -76,13 +136,16 @@ class SearchEngine:
         self._emb_tools: list[dict] = []              # parallel list of tool dicts (no embedding field)
         self._emb_ids: list[str] = []                 # tool IDs in matrix row order
         self._emb_lock = threading.Lock()
+        # Query result cache — avoids re-embedding identical queries within TTL
+        self._cache = _SearchCache(maxsize=256, ttl_secs=60.0)
 
     def invalidate_cache(self) -> None:
-        """Drop the in-memory embedding matrix so next search reloads from DB."""
+        """Drop the in-memory embedding matrix and query cache so next search reloads from DB."""
         with self._emb_lock:
             self._emb_matrix = None
             self._emb_tools = []
             self._emb_ids = []
+        self._cache.clear()
 
     def _get_embedding_matrix(self) -> tuple[np.ndarray, list[dict], list[str]]:
         """
@@ -199,6 +262,13 @@ class SearchEngine:
         """
         start_time = time.time()
 
+        # Cache hit — return instantly without re-embedding
+        cache_key = (query.strip().lower(), top_k, round(threshold, 4))
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            logger.info(f"Cache hit: '{query[:50]}' (stats: {self._cache.stats})")
+            return cached
+
         # Detect real-time/web intent before searching
         is_realtime = self._is_realtime_query(query)
         expanded_query = self._expand_query(query) if is_realtime else query
@@ -289,13 +359,15 @@ class SearchEngine:
                     "Consider rephrasing your search or looking for a 'web search' tool instead."
                 )
 
-        return SearchResponse(
+        response = SearchResponse(
             results=results,
             total_tools_indexed=total_tools,
             tokens_saved=tokens_saved,
             search_time_ms=round(search_time, 2),
             hint=hint
         )
+        self._cache.set(cache_key, response)
+        return response
 
     # Name fragments that indicate a tool can search/browse the web
     _WEB_TOOL_NAMES = {"search", "browse", "browser", "tavily", "web", "lookup", "crawl", "scrape", "fetch"}

@@ -14,12 +14,15 @@ API documentation is auto-generated at /docs (Swagger UI).
 """
 
 import asyncio
+import base64
 import ipaddress
 import os
+import time
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse, Response
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -36,7 +39,16 @@ from tooldns.mcp_server import mcp as _mcp_server, _request_api_key as _mcp_requ
 
 # Build the MCP ASGI app once at module level so its lifespan can be composed
 # with the FastAPI lifespan below (required by fastmcp's task group init).
-_mcp_http_app = _mcp_server.http_app(path="/", transport="streamable-http")
+_mcp_http_app = _mcp_server.http_app(
+    path="/",
+    transport="streamable-http",
+    # stateless_http=True: every request is independent — no session ID is
+    # issued or required.  Clients like copaw/agentscope that cache session IDs
+    # from a previous connection would otherwise get 404 "Invalid or expired
+    # session ID" after a server restart.  Stateless mode eliminates all
+    # session-state tracking while keeping full tool functionality.
+    stateless_http=True,
+)
 
 # ---------------------------------------------------------------------------
 # Network access control middleware
@@ -72,9 +84,10 @@ def _is_private(ip: str) -> bool:
 class NetworkACLMiddleware(BaseHTTPMiddleware):
     """
     Enforce network-based access control:
-      - /v1/*  paths: localhost, Tailscale, or private networks (Caddy proxy)
-      - /health, /docs, /: localhost OR Tailscale (monitoring)
-      - Everything else: block from non-localhost non-Tailscale IPs
+      - /v1/* and /mcp: localhost, Tailscale, or private networks (Caddy proxy)
+      - /dl/{token} (GET): public — anyone can download a file by token
+      - /dl/upload (POST): private networks only (Caddy / internal callers)
+      - Everything else (/health, /docs, /): localhost + Tailscale + private
     """
 
     async def dispatch(self, request: Request, call_next):
@@ -84,8 +97,11 @@ class NetworkACLMiddleware(BaseHTTPMiddleware):
         is_ts = _is_tailscale(client_ip)
         is_private = _is_private(client_ip)  # Docker/Caddy proxy
 
-        # /v1/* (API) and /mcp (MCP server) — allow from localhost, Tailscale, and
-        # private networks (Caddy proxy). Both are protected by API key auth.
+        # /dl/{token} GET — public download links, no IP restriction
+        if path.startswith("/dl/") and request.method == "GET":
+            return await call_next(request)
+
+        # /v1/* (API) and /mcp — protected by API key, allow proxy + local + TS
         if path.startswith("/v1/") or path.startswith("/mcp"):
             if not (is_local or is_ts or is_private):
                 return JSONResponse(
@@ -93,7 +109,7 @@ class NetworkACLMiddleware(BaseHTTPMiddleware):
                     status_code=403
                 )
 
-        # Everything else (/, /health, /docs) — allow local + Tailscale + private
+        # Everything else (/dl/upload POST, /, /health, /docs) — private only
         else:
             if not (is_local or is_ts or is_private):
                 return JSONResponse({"detail": "Access denied"}, status_code=403)
@@ -103,8 +119,12 @@ class NetworkACLMiddleware(BaseHTTPMiddleware):
 
 class MCPKeyMiddleware(BaseHTTPMiddleware):
     """
-    For /mcp requests: extract the caller's Bearer token and store it in
-    _request_api_key ContextVar so MCP tools forward it to internal API calls.
+    For /mcp requests:
+      1. Inject required Accept headers so MCP clients that don't send
+         'Accept: application/json, text/event-stream' (e.g. copaw/agentscope)
+         are not rejected with 406 Not Acceptable by fastmcp's transport layer.
+      2. Extract the caller's Bearer token and store it in _request_api_key
+         ContextVar so MCP tools forward it to internal API calls.
 
     This ensures search_tools() credits usage + tokens to the caller's sub-key
     rather than always using the admin key.
@@ -112,6 +132,39 @@ class MCPKeyMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         if request.url.path.startswith("/mcp"):
+            # --- Path normalisation ---
+            # Starlette's Mount redirects /mcp → /mcp/ with a 307.
+            # Many MCP clients (copaw) don't follow 307 on POST requests.
+            # Rewrite the scope path in-place so Mount matches directly.
+            if request.scope.get("path") == "/mcp":
+                request.scope["path"] = "/mcp/"
+                request.scope["raw_path"] = b"/mcp/"
+
+            # --- Accept header injection ---
+            # fastmcp's streamable-http transport enforces:
+            #   Accept: application/json, text/event-stream
+            # Many MCP clients (copaw, older agentscope) don't send this header.
+            # We inject it into the ASGI scope before the request reaches fastmcp
+            # so these clients work without modification.
+            accept = request.headers.get("accept", "")
+            needs_json = "application/json" not in accept
+            needs_sse = "text/event-stream" not in accept
+            if needs_json or needs_sse:
+                parts = [a.strip() for a in accept.split(",") if a.strip()]
+                if needs_json:
+                    parts.append("application/json")
+                if needs_sse:
+                    parts.append("text/event-stream")
+                new_accept = ", ".join(parts).encode()
+                # Replace the accept entry in the raw ASGI scope headers
+                new_headers = [
+                    (k, v) for k, v in request.scope["headers"]
+                    if k.lower() != b"accept"
+                ]
+                new_headers.append((b"accept", new_accept))
+                request.scope["headers"] = new_headers
+
+            # --- Bearer token extraction ---
             auth = request.headers.get("Authorization", "")
             if auth.startswith("Bearer "):
                 token = auth[7:].strip()
@@ -377,6 +430,82 @@ app.include_router(admin_router)
 # Mount the MCP server at /mcp (streamable-HTTP transport)
 # Users connect with: https://your-domain.com/mcp  +  Authorization: Bearer <api-key>
 app.mount("/mcp", _mcp_http_app)
+
+
+# ---------------------------------------------------------------------------
+# Public file download store — no API key required, UUID token-based, 15-min TTL
+# Used by skill tools to hand off generated files without putting base64 in LLM context
+# ---------------------------------------------------------------------------
+
+_DOWNLOAD_DIR = Path("/tmp/tooldns-downloads")
+_DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+_DOWNLOAD_TTL = 900  # 15 minutes
+
+
+def register_download(filename: str, data: bytes) -> str:
+    """Save bytes to the download store and return an opaque token."""
+    token = uuid.uuid4().hex
+    dest = _DOWNLOAD_DIR / token
+    dest.write_bytes(data)
+    # Store original filename alongside
+    (dest.with_suffix(".name")).write_text(filename)
+    return token
+
+
+def _purge_expired_downloads():
+    """Remove download files older than TTL."""
+    cutoff = time.time() - _DOWNLOAD_TTL
+    for f in _DOWNLOAD_DIR.iterdir():
+        if f.stat().st_mtime < cutoff:
+            f.unlink(missing_ok=True)
+
+
+@app.post("/dl/upload")
+async def upload_file(request: Request):
+    """
+    Upload a file to the download store and get a download URL back.
+    No API key required (protected by network ACL — private/Tailscale only).
+    Accepts multipart/form-data with a 'file' field OR raw bytes with
+    X-Filename header. Returns {"download_url": "...", "token": "..."}.
+    """
+    _purge_expired_downloads()
+    content_type = request.headers.get("content-type", "")
+    if "multipart/form-data" in content_type:
+        from fastapi import UploadFile
+        form = await request.form()
+        upload = form.get("file")
+        filename = getattr(upload, "filename", None) or "file"
+        data = await upload.read()
+    else:
+        filename = request.headers.get("X-Filename", "file")
+        data = await request.body()
+    if not data:
+        return JSONResponse({"error": "No file data received"}, status_code=400)
+    token = register_download(filename, data)
+    base_url = os.environ.get("TOOLDNS_PUBLIC_URL", f"http://127.0.0.1:{settings.port}").rstrip("/")
+    download_url = f"{base_url}/dl/{token}"
+    return {"download_url": download_url, "token": token, "filename": filename}
+
+
+@app.get("/dl/{token}")
+async def download_file(token: str):
+    """
+    Public file download endpoint — no API key required.
+    Token is a UUID hex issued by register_download().
+    Files expire after 15 minutes.
+    """
+    _purge_expired_downloads()
+    dest = _DOWNLOAD_DIR / token
+    if not dest.exists():
+        return JSONResponse({"error": "File not found or expired"}, status_code=404)
+    name_file = dest.with_suffix(".name")
+    filename = name_file.read_text() if name_file.exists() else "file.xlsx"
+    mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    if filename.endswith(".pdf"):
+        mime = "application/pdf"
+    elif filename.endswith(".csv"):
+        mime = "text/csv"
+    return FileResponse(dest, media_type=mime, filename=filename)
 
 
 @app.get("/")
