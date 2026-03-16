@@ -1,0 +1,26 @@
+# Auto-label PRs based on files changed
+# https://github.com/actions/labeler
+
+documentation:
+  - changed-files:
+    - any-glob-to-any-file: ['**/*.md', 'docs/**']
+
+core:
+  - changed-files:
+    - any-glob-to-any-file: ['tooldns/**/*.py', 'main.py']
+
+deploy:
+  - changed-files:
+    - any-glob-to-any-file: ['deploy.sh', 'tooldns.sh', '*.service']
+
+ci:
+  - changed-files:
+    - any-glob-to-any-file: ['.github/workflows/**']
+
+skill:
+  - changed-files:
+    - any-glob-to-any-file: ['**/SKILL.md', '**/skills/**']
+
+dependencies:
+  - changed-files:
+    - any-glob-to-any-file: ['requirements.txt', 'pyproject.toml', 'setup.py']

@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [master, main]
+    branches: [master, main, develop]
   pull_request:
-    branches: [master, main]
+    branches: [master, main, develop]
 
 jobs:
   test:
@@ -43,11 +43,20 @@ jobs:
           print('All discover tests passed')
           "
 
-      - name: Check no hardcoded secrets or old branding
+      - name: Check for old branding (ToolDNS without the s)
         run: |
-          # Fail if old "ToolDNS" (missing s) appears in user-visible code
-          if grep -r "ToolDNS" --include="*.py" --include="*.html" --include="*.md" . | grep -v ".git"; then
+          # Match "ToolDNS" NOT followed by "s" (i.e., the old incorrect name)
+          if grep -rn --include="*.py" --include="*.html" --include="*.md" \
+               -P "ToolDNS(?!s)" . | grep -v ".git"; then
             echo "ERROR: Found old 'ToolDNS' branding — use 'ToolsDNS'"
             exit 1
           fi
           echo "Branding check passed"
+
+      - name: Check no .env committed
+        run: |
+          if git ls-files | grep -E "^\.env$|^\.env\.local$|^\.env\.production$"; then
+            echo "ERROR: .env file committed — remove it!"
+            exit 1
+          fi
+          echo ".env check passed"

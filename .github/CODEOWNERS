@@ -1,0 +1,10 @@
+# Default owner for everything — gets review requests on all PRs
+* @syedfahimdev
+
+# Core source code
+/tooldns/ @syedfahimdev
+/main.py  @syedfahimdev
+
+# Deploy / infra
+deploy.sh   @syedfahimdev
+tooldns.sh  @syedfahimdev
