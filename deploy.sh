@@ -143,9 +143,6 @@ TOOLDNS_MCP_PORT=$MCP_PORT
 # Used in system-prompt output and download URLs returned by skills.
 # TOOLDNS_PUBLIC_URL=https://api.yourdomain.com
 
-# ── Auto-discover ─────────────────────────────────────────────
-# Automatically index tools from nanobot, openclaw, cursor, claude desktop etc.
-# TOOLDNS_AUTO_DISCOVER=true
 
 # ── Composio (2,000+ managed tools) ──────────────────────────
 # COMPOSIO_API_KEY=your_key_here

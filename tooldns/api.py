@@ -395,7 +395,7 @@ def call_tool(req: dict):
 
     Request body:
         {
-            "tool_id": "nanobot__GMAIL_SEND_EMAIL",
+            "tool_id": "tooldns__GMAIL_SEND_EMAIL",
             "arguments": {"to": "john@example.com", "body": "Hello"}
         }
 
@@ -838,10 +838,10 @@ async def create_skill(req: CreateSkillRequest):
     # Determine target directory
     if req.skill_path:
         # Validate skill_path stays within allowed base directories
-        allowed_bases = [str(TOOLDNS_HOME), os.path.expanduser("~/.nanobot"), os.path.expanduser("~/.openclaw")]
+        allowed_bases = [str(TOOLDNS_HOME)]
         expanded = os.path.realpath(os.path.expanduser(req.skill_path))
         if not any(expanded.startswith(b) for b in allowed_bases):
-            raise HTTPException(status_code=400, detail="skill_path must be within ~/.tooldns, ~/.nanobot, or ~/.openclaw")
+            raise HTTPException(status_code=400, detail="skill_path must be within ~/.tooldns")
         skill_dir = Path(expanded)
     else:
         skill_dir = TOOLDNS_HOME / "skills"
@@ -1233,7 +1233,7 @@ async def connect_info(auth: dict = Depends(require_api_key)):
     Return MCP connection config snippets for the authenticated API key.
 
     The frontend uses this to show users how to connect their MCP clients
-    (Claude Desktop, Cursor, nanobot, etc.) to this ToolsDNS instance.
+    (Claude Desktop, Cursor, Cline, etc.) to this ToolsDNS instance.
     """
     api_key = auth.get("key", settings.api_key)
 
@@ -1264,18 +1264,6 @@ async def connect_info(auth: dict = Depends(require_api_key)):
             "cursor": {
                 "label": "Cursor / Windsurf / Zed",
                 "note": "Add to your MCP settings (Settings → MCP)",
-                "config": {
-                    "mcpServers": {
-                        "tooldns": {
-                            "url": mcp_url,
-                            "headers": {"Authorization": f"Bearer {api_key}"}
-                        }
-                    }
-                }
-            },
-            "nanobot": {
-                "label": "Nanobot",
-                "file": "~/.nanobot/config.json",
                 "config": {
                     "mcpServers": {
                         "tooldns": {

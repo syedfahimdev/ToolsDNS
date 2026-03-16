@@ -1,8 +1,8 @@
 """
-integrate.py — Wire ToolsDNS into nanobot / openclaw agents.
+integrate.py — Wire ToolsDNS into AI agent frameworks.
 
 Interactive wizard that:
-    1. Detects nanobot/openclaw and shows their MCP servers
+    1. Detects supported agent frameworks and shows their MCP servers
     2. Adds 'tooldns' MCP server to their config (with confirmation)
     3. Migrates heavy HTTP MCP servers to ~/.tooldns/config.json
     4. Appends ToolsDNS usage instructions to AGENTS.md
@@ -47,18 +47,25 @@ Use these 3 MCP tools to find and execute any external tool on demand:
 
 KNOWN_FRAMEWORKS = [
     {
-        "name": "nanobot",
-        "config_path": Path.home() / ".nanobot" / "config.json",
-        "agents_path": Path.home() / ".nanobot" / "workspace" / "AGENTS.md",
-        "mcp_key": "tools.mcpServers",
-        "desc": "Nanobot AI agent framework",
+        "name": "cursor",
+        "config_path": Path.home() / ".cursor" / "mcp.json",
+        "agents_path": Path.home() / ".cursor" / "AGENTS.md",
+        "mcp_key": "mcpServers",
+        "desc": "Cursor IDE",
     },
     {
-        "name": "openclaw",
-        "config_path": Path.home() / ".openclaw" / "workspace" / "config" / "mcporter.json",
-        "agents_path": Path.home() / ".openclaw" / "workspace" / "AGENTS.md",
+        "name": "claude-desktop",
+        "config_path": Path.home() / ".config" / "claude" / "claude_desktop_config.json",
+        "agents_path": Path.home() / ".config" / "claude" / "AGENTS.md",
         "mcp_key": "mcpServers",
-        "desc": "OpenClaw agent framework",
+        "desc": "Claude Desktop",
+    },
+    {
+        "name": "cline",
+        "config_path": Path.home() / ".cline" / "mcp_settings.json",
+        "agents_path": Path.home() / ".cline" / "AGENTS.md",
+        "mcp_key": "mcpServers",
+        "desc": "Cline (VS Code extension)",
     },
 ]
 
@@ -72,7 +79,7 @@ KEEP_SERVERS = {"tooldns"}
 
 def run_integrate():
     """
-    Interactive wizard to wire ToolsDNS into nanobot/openclaw.
+    Interactive wizard to wire ToolsDNS into supported agent frameworks.
 
     Steps:
         1. Detect frameworks and show current MCP servers
@@ -88,8 +95,9 @@ def run_integrate():
 
     if not detected:
         print("   ❌ No supported frameworks found.")
-        print("   Looked for: nanobot (~/.nanobot/config.json)")
-        print("               openclaw (~/.openclaw/workspace/config/mcporter.json)")
+        print("   Looked for: cursor (~/.cursor/mcp.json)")
+        print("               claude-desktop (~/.config/claude/claude_desktop_config.json)")
+        print("               cline (~/.cline/mcp_settings.json)")
         return
 
     for fw in detected:
@@ -105,7 +113,7 @@ def run_integrate():
     print("\n🎉 Integration complete!\n")
     print("   Next steps:")
     print("   1. Start ToolsDNS:  python3 -m tooldns.cli serve")
-    print("   2. Start your agent (nanobot/openclaw)")
+    print("   2. Start your agent")
     print("   3. The agent now uses 'search_tools' to find any tool!\n")
 
 

@@ -27,7 +27,7 @@ class SourceType(str, Enum):
     Supported source types for tool ingestion.
 
     Each source type has a different ingestion strategy:
-    - mcp_config: Reads an MCP config file (like nanobot's config.json)
+    - mcp_config: Reads an MCP config file (like claude_desktop_config.json)
                   and discovers all MCP servers listed in it.
     - mcp_stdio: Connects to a single stdio-based MCP server by spawning
                  a subprocess and communicating via stdin/stdout.
@@ -60,7 +60,7 @@ class SourceInfo(BaseModel):
 
     Attributes:
         source_type: The type of source this tool came from.
-        source_name: Human-readable name of the source (e.g., "composio", "nanobot-skills").
+        source_name: Human-readable name of the source (e.g., "composio", "my-tools").
         original_name: The tool's original name in the source system.
         server_command: For stdio MCP servers, the command used to start them.
         server_args: For stdio MCP servers, the command arguments.

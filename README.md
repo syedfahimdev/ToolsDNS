@@ -70,7 +70,7 @@ Loading 500 tool schemas into every LLM message is like making someone memorize 
 | 📊 **Token Savings Tracker** | Real token counting with per-model cost savings (not estimates) |
 | 🏥 **Health Monitoring** | Auto-checks if MCP servers are online/degraded/down — webhooks on status change |
 | 🛒 **Marketplace** | One-click install for GitHub, Slack, Gmail, Notion, and 30+ popular MCP servers |
-| 🔌 **MCP Protocol** | Exposes itself as an MCP server — plug into nanobot, Claude Desktop, any agent |
+| 🔌 **MCP Protocol** | Exposes itself as an MCP server — plug into Claude Desktop, Cursor, Cline, any agent |
 | 📦 **Skill Management** | Create, read, update skill files via API. Drop `.xlsx`/`.pdf` files alongside `SKILL.md` |
 | 🔧 **Auto-Discovery** | Point at any Smithery URL, npm package, GitHub repo, or HTTP MCP endpoint |
 | 🔑 **API Key Manager** | Multi-tenant sub-keys with per-key usage tracking and monthly limits |
@@ -149,29 +149,7 @@ You have access to 5,056 tools indexed in ToolsDNS...
 
 ToolsDNS runs a dedicated MCP HTTP server on port **8788** as a background service. Connecting via URL eliminates the ~1.3s cold-start of spawning a new Python process per session.
 
-**nanobot / OpenClaw / mcporter:**
-
-```json
-{
-  "mcpServers": {
-    "tooldns": {
-      "url": "http://127.0.0.1:8788/mcp",
-      "transport": "http"
-    }
-  }
-}
-```
-
-**ZeroClaw (`~/.zeroclaw/config.toml`):**
-
-```toml
-[[mcp.servers]]
-name = "tooldns"
-transport = "http"
-url = "http://127.0.0.1:8788/mcp"
-```
-
-**Claude Desktop / Cursor / any remote client:**
+**Claude Desktop / Cursor / Cline / any MCP client:**
 
 ```json
 {
