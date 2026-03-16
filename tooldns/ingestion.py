@@ -6,7 +6,7 @@ them into the UniversalTool format, embeds their descriptions,
 and stores them in the database for semantic search.
 
 Supported source types:
-    1. MCP Config: Reads a config file (like nanobot's config.json) that
+    1. MCP Config: Reads a config file (like claude_desktop_config.json) that
        lists MCP servers, then connects to each server to discover tools.
     2. MCP stdio: Connects to a single stdio-based MCP server.
     3. MCP HTTP: Connects to a single HTTP-based MCP server.
@@ -82,8 +82,7 @@ class IngestionPipeline:
         Resolve ${VAR} and $VAR environment variable placeholders.
 
         Works recursively on strings, dicts, and lists. Used to expand
-        env var references in config files (e.g., openclaw's mcporter.json
-        uses ${COMPOSIO_API_KEY} in headers).
+        env var references in config files (e.g., uses ${COMPOSIO_API_KEY} in headers).
 
         Args:
             value: A string, dict, list, or other value. Strings get
@@ -277,69 +276,31 @@ class IngestionPipeline:
         logger.info(f"Full re-ingestion complete: {total} tools from {len(sources)} sources + local")
         return total
 
-    # Known agent framework config locations for auto-discovery.
-    # Each entry: (config_path, config_key, skills_path_or_None, source_label)
-    _AGENT_CONFIGS = [
-        ("~/.nanobot/config.json",                      "tools.mcpServers",  "~/.nanobot/workspace/skills",       "nanobot"),
-        ("~/.openclaw/workspace/config/mcporter.json",  "mcpServers",        "~/.openclaw/workspace/skills",      "openclaw"),
-        ("~/.cursor/mcp.json",                          "mcpServers",        None,                                "cursor"),
-        ("~/.config/claude/claude_desktop_config.json", "mcpServers",        None,                                "claude-desktop"),
-        ("~/.cline/mcp_settings.json",                  "mcpServers",        None,                                "cline"),
-        ("~/.continue/config.json",                     "mcpServers",        None,                                "continue"),
-        ("~/.agents/skills",                            None,                "~/.agents/skills",                  "agents"),
-    ]
-
     def ingest_local(self) -> int:
         """
-        Ingest tools from ~/.tooldns/ local directories and any configured extra paths.
+        Ingest tools from ~/.tooldns/ local directories only.
 
-        Always scans:
+        Scans:
             1. ~/.tooldns/config.json — custom MCP servers
-            2. ~/.tooldns/config.json skillPaths — external skill directories
-            3. ~/.tooldns/skills/ — local skill files
-            4. ~/.tooldns/tools/ — custom Python tool definitions
-
-        When TOOLDNS_AUTO_DISCOVER=true, also scans known agent framework configs:
-            - ~/.nanobot/config.json (tools.mcpServers)
-            - ~/.openclaw/workspace/config/mcporter.json (mcpServers)
-            - ~/.cursor/mcp.json (mcpServers)
-            - ~/.config/claude/claude_desktop_config.json (mcpServers)
-            - ~/.cline/mcp_settings.json, ~/.continue/config.json, etc.
-
-        When TOOLDNS_EXTRA_PATHS is set, also ingests those paths.
-        Format: path[:key],path[:key],...  (key = dot-path to mcpServers)
+            2. ~/.tooldns/skills/ — local skill files
+            3. ~/.tooldns/tools/ — custom Python tool definitions
 
         Returns:
             int: Total tools ingested from local directories.
         """
-        from tooldns.config import TOOLDNS_HOME, settings
+        from tooldns.config import TOOLDNS_HOME
         home = TOOLDNS_HOME
         total = 0
 
-        # 1. Custom MCP config + skill paths from config.json
+        # 1. Custom MCP config from config.json
         config_file = home / "config.json"
         if config_file.exists():
             try:
                 config_data = json.loads(config_file.read_text(encoding="utf-8"))
-
                 if config_data.get("mcpServers"):
                     count = self._ingest_local_config(config_file)
                     total += count
                     logger.info(f"Local config.json: {count} MCP tools")
-
-                for skill_path_str in config_data.get("skillPaths", []):
-                    skill_path = Path(os.path.expanduser(skill_path_str))
-                    if skill_path.exists():
-                        try:
-                            app = skill_path.parent.name.lstrip(".")
-                            sname = f"tooldns-skills-{app}" if app else f"tooldns-skills-{skill_path.name}"
-                            count = self._ingest_local_skills(skill_path, source_name=sname)
-                            total += count
-                            logger.info(f"External skills ({skill_path}): {count} tools")
-                        except Exception as e:
-                            logger.error(f"External skills error ({skill_path}): {e}")
-                    else:
-                        logger.warning(f"Skill path not found: {skill_path}")
             except Exception as e:
                 logger.error(f"Local config.json error: {e}")
 
@@ -362,110 +323,6 @@ class IngestionPipeline:
                 logger.info(f"Local tools/: {count} tools")
             except Exception as e:
                 logger.error(f"Local tools/ error: {e}")
-
-        # 4. Auto-discover known agent framework configs
-        if settings.auto_discover:
-            total += self._ingest_agent_frameworks()
-
-        # 5. Extra paths from TOOLDNS_EXTRA_PATHS env var
-        if settings.extra_paths.strip():
-            total += self._ingest_extra_paths(settings.extra_paths)
-
-        return total
-
-    def _ingest_agent_frameworks(self) -> int:
-        """Scan known agent framework config locations and ingest any found."""
-        total = 0
-        for cfg_path_str, cfg_key, skills_path_str, label in self._AGENT_CONFIGS:
-            cfg_path = Path(os.path.expanduser(cfg_path_str))
-
-            # Ingest MCP config if it exists
-            if cfg_key and cfg_path.exists():
-                source_name = f"auto-{label}"
-                if self._is_source_disabled(source_name):
-                    continue
-                try:
-                    config = {
-                        "type": "mcp_config",
-                        "name": source_name,
-                        "path": str(cfg_path),
-                        "config_key": cfg_key,
-                    }
-                    count = self.ingest_source(config)
-                    total += count
-                    if count:
-                        logger.info(f"Auto-discovered {label} ({cfg_path}): {count} tools")
-                except Exception as e:
-                    logger.warning(f"Auto-discover {label} error: {e}")
-
-            # Ingest skills directory if specified
-            if skills_path_str:
-                skills_path = Path(os.path.expanduser(skills_path_str))
-                if skills_path.exists():
-                    source_name = f"auto-{label}-skills"
-                    if self._is_source_disabled(source_name):
-                        continue
-                    try:
-                        count = self._ingest_local_skills(skills_path, source_name=source_name)
-                        total += count
-                        if count:
-                            logger.info(f"Auto-discovered {label} skills ({skills_path}): {count} tools")
-                    except Exception as e:
-                        logger.warning(f"Auto-discover {label} skills error: {e}")
-
-        return total
-
-    def _ingest_extra_paths(self, extra_paths_str: str) -> int:
-        """Ingest extra paths from TOOLDNS_EXTRA_PATHS setting.
-
-        Format: path[:key],path[:key],...
-        Examples:
-            ~/.cursor/mcp.json
-            ~/.nanobot/config.json:tools.mcpServers
-            ~/my-skills/
-        """
-        total = 0
-        for entry in extra_paths_str.split(","):
-            entry = entry.strip()
-            if not entry:
-                continue
-
-            # Split on colon to get optional config_key
-            if ":" in entry and not entry.startswith("~:") and not entry.startswith("/:"):
-                path_str, cfg_key = entry.rsplit(":", 1)
-            else:
-                path_str, cfg_key = entry, "mcpServers"
-
-            path = Path(os.path.expanduser(path_str.strip()))
-            cfg_key = cfg_key.strip() or "mcpServers"
-            label = path.stem
-
-            if not path.exists():
-                logger.warning(f"Extra path not found: {path}")
-                continue
-
-            source_name = f"extra-{label}"
-            if self._is_source_disabled(source_name):
-                continue
-
-            try:
-                if path.is_dir():
-                    # Treat as skills directory
-                    count = self._ingest_local_skills(path, source_name=source_name)
-                else:
-                    # Treat as MCP config file
-                    config = {
-                        "type": "mcp_config",
-                        "name": source_name,
-                        "path": str(path),
-                        "config_key": cfg_key,
-                    }
-                    count = self.ingest_source(config)
-                total += count
-                if count:
-                    logger.info(f"Extra path ({path}): {count} tools")
-            except Exception as e:
-                logger.warning(f"Extra path error ({path}): {e}")
 
         return total
 
@@ -752,7 +609,7 @@ class IngestionPipeline:
         """
         Read an MCP config file and discover tools from all listed servers.
 
-        Parses a JSON config file (like nanobot's config.json), finds the
+        Parses a JSON config file (like claude_desktop_config.json), finds the
         MCP servers section, and fetches tools from each server.
 
         Config fields:
@@ -895,7 +752,7 @@ class IngestionPipeline:
         Parses each .md file in the directory, extracting the YAML header
         (name, description) and any TEMPLATE sections as individual tools.
 
-        This is compatible with the nanobot-skills-engine skill format.
+        Reads ToolsDNS skill markdown format.
 
         Config fields:
             path (str): Path to the directory containing .md skill files.

@@ -207,7 +207,7 @@ class SearchEngine:
         """
         Detect which LLM model is being used.
 
-        Checks TOOLDNS_MODEL env var first, then openclaw config.
+        Checks TOOLDNS_MODEL env var first, then falls back to empty string.
         Skips aliases like 'auto-fastest' that don't map to real model IDs or pricing.
 
         Returns:
@@ -220,23 +220,6 @@ class SearchEngine:
         model = os.environ.get("TOOLDNS_MODEL", "").strip() or settings.model.strip()
         if _valid(model):
             return model
-
-        # 2. OpenClaw config — first real model from any provider
-        for cfg_path in [
-            "~/.openclaw/openclaw.json",
-            "~/.openclaw/workspace/openclaw.json",
-        ]:
-            try:
-                with open(os.path.expanduser(cfg_path)) as f:
-                    cfg = json.load(f)
-                providers = cfg.get("models", {}).get("providers", {})
-                for provider in providers.values():
-                    for entry in provider.get("models", []):
-                        mid = entry.get("id", "")
-                        if _valid(mid):
-                            return mid
-            except Exception:
-                pass
 
         return ""
 

@@ -12,7 +12,7 @@ Plus two live MCP resources:
     tooldns://tools   — browse all indexed tools
     tooldns://sources — list all registered MCP server sources
 
-Usage in nanobot / openclaw / mcporter config:
+Usage in Claude Desktop / Cursor / Cline config:
     "tooldns": {
         "command": "python3",
         "args": ["-m", "tooldns.mcp_server"]

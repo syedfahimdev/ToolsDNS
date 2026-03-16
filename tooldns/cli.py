@@ -5,7 +5,7 @@ and using ToolsDNS without running the HTTP server.
 
 Features:
     - Install/update mechanism with ~/.tooldns home directory
-    - Auto-detects known AI framework configs (nanobot, openclaw)
+    - Auto-detects known AI framework configs (cursor, claude-desktop, cline)
     - Interactive source management (add, list, remove)
     - Semantic tool search from the command line
     - Server management
@@ -46,16 +46,22 @@ from tooldns.models import SourceType
 # config_key is the dot-separated JSON path to the mcpServers object.
 KNOWN_CONFIGS = [
     {
-        "name": "nanobot",
-        "path": "~/.nanobot/config.json",
-        "config_key": "tools.mcpServers",
-        "description": "Nanobot AI agent framework",
+        "name": "cursor",
+        "path": "~/.cursor/mcp.json",
+        "config_key": "mcpServers",
+        "description": "Cursor IDE",
     },
     {
-        "name": "openclaw",
-        "path": "~/.openclaw/workspace/config/mcporter.json",
+        "name": "claude-desktop",
+        "path": "~/.config/claude/claude_desktop_config.json",
         "config_key": "mcpServers",
-        "description": "OpenClaw agent framework (mcporter)",
+        "description": "Claude Desktop",
+    },
+    {
+        "name": "cline",
+        "path": "~/.cline/mcp_settings.json",
+        "config_key": "mcpServers",
+        "description": "Cline (VS Code extension)",
     },
 ]
 
@@ -177,7 +183,7 @@ def cmd_install():
     skill_dirs = []
     known_skill_paths = [
         Path.home() / ".agents" / "skills",
-        Path.home() / ".nanobot" / "skills",
+        Path.home() / ".tooldns" / "skills",
     ]
     for sp in known_skill_paths:
         if sp.exists() and any(sp.iterdir()):
@@ -407,7 +413,7 @@ def _run_auto_detect():
     """
     Auto-detect AI framework configs and offer selective ingestion.
 
-    Scans for known configs (nanobot, openclaw), shows what was
+    Scans for known configs (cursor, claude-desktop, cline), shows what was
     found, and lets the user pick which configs AND which servers
     within each config to ingest.
     """
@@ -543,7 +549,7 @@ def cmd_add():
 
     if choice == "1":
         config["type"] = SourceType.MCP_CONFIG
-        config["name"] = input("   Source name (e.g., 'nanobot'): ").strip()
+        config["name"] = input("   Source name (e.g., 'my-tools'): ").strip()
         config["path"] = input("   Config file path: ").strip()
         if not config["path"]:
             print("   ❌ Path is required.")
@@ -1081,7 +1087,7 @@ def main():
         install    Create ~/.tooldns, install deps, run setup
         update     Pull latest code and sync dependencies
         setup      Interactive config + auto-detect sources
-        integrate  Wire ToolsDNS into nanobot/openclaw agents
+        integrate  Wire ToolsDNS into supported agent frameworks
         add        Add a tool source interactively
         sources    List registered sources
         tools      List indexed tools
@@ -1097,7 +1103,7 @@ def main():
         print("  install      Create ~/.tooldns, install deps, run setup")
         print("  update       Pull latest code and sync dependencies")
         print("  setup        Interactive config + auto-detect sources")
-        print("  integrate    Wire ToolsDNS into nanobot/openclaw agents")
+        print("  integrate    Wire ToolsDNS into supported agent frameworks")
         print("  install-mcp  Install a new MCP server + set env vars")
         print("  new-skill    Create a new skill file template")
         print("  add          Add a tool source interactively")

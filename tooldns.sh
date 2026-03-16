@@ -400,7 +400,7 @@ do_test_api() {
 }
 
 do_integrate() {
-    print_step "Wiring ToolsDNS into your AI agent (nanobot/openclaw)..."
+    print_step "Wiring ToolsDNS into your AI agent..."
     echo ""
     cd "$REPO_DIR"
     $PYTHON -m tooldns.cli integrate
@@ -459,7 +459,7 @@ do_key_create() {
     api_key=$(_get_api_key)
     print_step "Create a new API key"
     echo ""
-    echo -n "  Name (e.g. nanobot, acme-corp): "
+    echo -n "  Name (e.g. my-agent, acme-corp): "
     read -r name
     [ -z "$name" ] && { print_warn "Name required."; return; }
 
@@ -639,7 +639,7 @@ show_menu() {
     echo ""
     echo -e "  ${CYAN}Getting Started:${NC}"
     echo "    1)  install        First-time setup"
-    echo "    2)  integrate      Wire ToolsDNS into nanobot/openclaw"
+    echo "    2)  integrate      Wire ToolsDNS into supported agent frameworks"
     echo "    3)  start          Start the API server (foreground)"
     echo "    4)  status         Show service status & health"
     echo ""
@@ -709,7 +709,7 @@ if [ $# -gt 0 ]; then
             echo ""
             echo "  Getting Started:"
             echo "    install        First-time setup"
-            echo "    integrate      Wire ToolsDNS into nanobot/openclaw"
+            echo "    integrate      Wire ToolsDNS into supported agent frameworks"
             echo "    start          Start the API server (foreground)"
             echo "    status         Show service status and health"
             echo ""
