@@ -280,17 +280,19 @@ def cmd_install():
 
 def cmd_update():
     """
-    Update ToolsDNS: pull latest code from git and reinstall dependencies.
+    Update ToolsDNS: pull latest code, reinstall, and restart services.
 
     Reads the saved repo path from ~/.tooldns/repo_path, runs git pull,
-    and reinstalls dependencies to pick up any changes.
+    reinstalls the package, and restarts tooldns + tooldns-mcp services.
     """
+    import time
+    import urllib.request
     print_banner()
     home = TOOLDNS_HOME
     repo_file = home / "repo_path"
 
     if not repo_file.exists():
-        print("❌ ToolsDNS not installed. Run 'python3 -m tooldns.cli install' first.")
+        print("❌ ToolsDNS not installed. Run 'toolsdns install' first.")
         return
 
     repo_dir = Path(repo_file.read_text().strip())
@@ -299,41 +301,62 @@ def cmd_update():
         print(f"   Update the path in {repo_file}")
         return
 
-    print(f"🔄 Updating ToolsDNS...")
-    print(f"   Repo: {repo_dir}\n")
+    print(f"🔄 Updating ToolsDNS from {repo_dir}\n")
 
-    # Git pull
+    # 1. Git pull
     print("⏳ Pulling latest code...")
-    result = subprocess.run(
-        ["git", "pull"],
-        cwd=str(repo_dir),
-        capture_output=True, text=True
-    )
+    result = subprocess.run(["git", "pull"], cwd=str(repo_dir), capture_output=True, text=True)
     if result.returncode == 0:
-        print(f"   ✅ {result.stdout.strip()}")
+        msg = result.stdout.strip()
+        print(f"   ✅ {msg}")
+        if "Already up to date" in msg:
+            print("   (no code changes — reinstalling anyway to apply any local edits)")
     else:
-        print(f"   ❌ Git pull failed: {result.stderr[:200]}")
+        print(f"   ❌ Git pull failed:\n{result.stderr[:300]}")
         return
 
-    # Reinstall dependencies
-    print("\n⏳ Updating dependencies...")
+    # 2. Reinstall package
+    print("\n⏳ Reinstalling package...")
     result = subprocess.run(
-        [sys.executable, "-m", "pip", "install",
-         "--break-system-packages", "-q", "-r",
-         str(repo_dir / "requirements.txt")],
+        [sys.executable, "-m", "pip", "install", "-e", str(repo_dir),
+         "--break-system-packages", "-q"],
         capture_output=True, text=True
     )
-    if result.returncode == 0:
-        print("   ✅ Dependencies up to date")
-    else:
+    if result.returncode != 0:
+        # Fallback without --break-system-packages (venv)
         subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-q", "-r",
-             str(repo_dir / "requirements.txt")],
+            [sys.executable, "-m", "pip", "install", "-e", str(repo_dir), "-q"],
             capture_output=True, text=True
         )
-        print("   ✅ Dependencies up to date")
+    print("   ✅ Package installed")
 
-    print("\n🎉 ToolsDNS updated! Restart the server to apply changes.")
+    # 3. Restart services
+    print("\n⏳ Restarting services...")
+    for svc in ["tooldns", "tooldns-mcp"]:
+        r = subprocess.run(["systemctl", "restart", svc], capture_output=True, text=True)
+        if r.returncode == 0:
+            print(f"   ✅ {svc} restarted")
+        else:
+            print(f"   ⚠  {svc}: {r.stderr.strip()[:80] or 'not found (systemd)'}")
+
+    # 4. Wait for health
+    print("\n⏳ Waiting for server to come up...")
+    api_port = settings.port
+    for i in range(20):
+        time.sleep(2)
+        try:
+            with urllib.request.urlopen(f"http://localhost:{api_port}/health", timeout=2) as resp:
+                import json as _json
+                data = _json.loads(resp.read())
+                tools = data.get("tools_indexed", "?")
+                sources = data.get("sources", "?")
+                print(f"\n✅ ToolsDNS is up — {tools} tools from {sources} sources")
+                print(f"   Health: http://localhost:{api_port}/health")
+                return
+        except Exception:
+            print(f"   waiting... ({(i+1)*2}s)", end="\r")
+
+    print("\n⚠  Server didn't respond in 40s — check: journalctl -u tooldns -n 20")
 
 
 def cmd_setup():
