@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 Discussion / Question
+    url: https://github.com/syedfahimdev/ToolsDNS/discussions
+    about: Ask questions and discuss ideas here instead of opening an issue.
+  - name: 📖 Documentation
+    url: https://github.com/syedfahimdev/ToolsDNS#readme
+    about: Check the README first — your question may already be answered.
