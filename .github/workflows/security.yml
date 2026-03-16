@@ -78,23 +78,17 @@ jobs:
           fi
           echo ".env check passed — no secrets in repo"
 
-      - name: Check API key masking (never expose keys in HTML)
+      - name: Check API key masking (never expose keys in responses)
         run: |
           python3 -c "
-          import re, sys
+          import re, glob, sys
           issues = []
-          files = [
-              'tooldns/ui.py',
-              'tooldns/templates/keys.html',
-          ]
-          for f in files:
-              try:
-                  content = open(f).read()
-                  # Check for unmasked key patterns in template rendering
-                  if re.search(r'\"{{ k\.key }}\"', content):
-                      issues.append(f'{f}: raw key in template attribute')
-              except FileNotFoundError:
-                  pass
+          # Scan Python source for patterns that might return raw API keys in responses
+          for f in glob.glob('tooldns/**/*.py', recursive=True):
+              content = open(f).read()
+              # Flag if full key is returned in a JSON response dict (not just logged)
+              if re.search(r'['\''\"]\s*key\s*[''\"].*credentials\.credentials', content):
+                  issues.append(f'{f}: possible raw key exposure in response')
           if issues:
               print('API KEY EXPOSURE ISSUES:')
               for i in issues: print(' ', i)

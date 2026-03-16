@@ -10,7 +10,7 @@ git clone https://github.com/YOUR_USERNAME/ToolsDNS.git
 cd ToolsDNS
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
-toolsdns serve   # → http://localhost:8787/ui
+toolsdns serve   # API at http://localhost:8787, MCP at http://127.0.0.1:8788/mcp/
 ```
 
 ## What to Work On
@@ -24,13 +24,27 @@ Check the [open issues](https://github.com/syedfahimdev/ToolsDNS/issues) — any
 | `marketplace` | Adding a new MCP server to the catalog |
 | `skill` | Adding or improving a SKILL.md file |
 | `bug` | Something broken that needs fixing |
+| `performance` | Speed or memory improvement |
+
+## Branch Workflow
+
+All PRs target the **`develop`** branch. `master` is for stable releases only.
+
+```bash
+git checkout develop
+git checkout -b feat/my-feature   # branch off develop
+# ... make changes ...
+git push origin feat/my-feature
+# Open PR → base: develop
+```
 
 ## PR Guidelines
 
 1. **One thing per PR** — focused PRs get reviewed faster
-2. **Test it manually** — run the server and verify your change works end-to-end
+2. **Test it manually** — run `toolsdns serve` and verify your change works end-to-end
 3. **Don't include unrelated changes** — no reformatting unrelated files
 4. **Describe what and why** — a short PR description helps reviewers
+5. **No secrets in code** — the security workflow scans for API keys and tokens
 
 ## Common Tasks
 
@@ -68,7 +82,7 @@ _PREFIX_MAP = {
 
 1. Reproduce the bug locally
 2. Fix it
-3. Verify the fix in the UI or via `curl`
+3. Verify the fix via `curl http://localhost:8787/...` or the relevant API endpoint
 4. Submit PR with "fix: description of what was broken"
 
 ## Commit Messages
@@ -79,6 +93,7 @@ Use conventional commits:
 - `perf:` — performance improvement
 - `docs:` — documentation only
 - `refactor:` — code change that neither fixes a bug nor adds a feature
+- `chore:` — maintenance (deps, CI, config)
 
 ## Questions?
 

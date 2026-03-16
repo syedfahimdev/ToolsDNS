@@ -70,12 +70,10 @@ Loading 500 tool schemas into every LLM message is like making someone memorize 
 | 📊 **Token Savings Tracker** | Real token counting with per-model cost savings (not estimates) |
 | 🏥 **Health Monitoring** | Auto-checks if MCP servers are online/degraded/down — webhooks on status change |
 | 🛒 **Marketplace** | One-click install for GitHub, Slack, Gmail, Notion, and 30+ popular MCP servers |
-| 🎨 **Web Dashboard** | Full browser UI — manage sources, search tools, view savings, generate API keys |
 | 🔌 **MCP Protocol** | Exposes itself as an MCP server — plug into nanobot, Claude Desktop, any agent |
-| 📦 **Skill Management** | Create, read, update skill files from UI or API. Drop `.xlsx`/`.pdf` files alongside `SKILL.md` |
+| 📦 **Skill Management** | Create, read, update skill files via API. Drop `.xlsx`/`.pdf` files alongside `SKILL.md` |
 | 🔧 **Auto-Discovery** | Point at any Smithery URL, npm package, GitHub repo, or HTTP MCP endpoint |
 | 🔑 **API Key Manager** | Multi-tenant sub-keys with per-key usage tracking and monthly limits |
-| 🏷️ **White-Label Ready** | Rebrand via env vars — your name, your domain, no code changes |
 | 🚀 **One-Command Deploy** | `curl \| bash` installer for any Ubuntu/Debian VPS |
 | 🔄 **Hot Reload** | Edit `config.json` → tools re-index in ~1 second, no restart needed |
 | 🏷️ **Tool Categories** | 15 categories auto-assigned (Dev & Code, Communication, AI & Agents, etc.) |
@@ -102,7 +100,7 @@ pip install -e .
 toolsdns serve
 ```
 
-Open **http://localhost:8787/ui**
+API is now running at **http://localhost:8787** and the MCP server at **http://127.0.0.1:8788/mcp/**.
 
 ### Option 3 — Docker
 
@@ -142,24 +140,6 @@ You have access to 5,056 tools indexed in ToolsDNS...
 - **everi-work-order**: Create Excel work orders for parts and returns...
 ...
 ```
-
----
-
-## Web Dashboard
-
-Everything manageable through the browser — no config editing required:
-
-| Page | What you can do |
-|---|---|
-| **Dashboard** | Tool count, recent searches, savings summary, onboarding wizard |
-| **Add Tools** | Marketplace — one-click install 30+ popular MCP servers |
-| **Browse Tools** | Search and filter 5,000+ indexed tools by category, source, keyword |
-| **Sources** | Add/remove/edit MCP server sources, auto-discover from any URL |
-| **Savings** | Token savings tracker with shareable savings card image |
-| **API Keys** | Create sub-keys, set monthly limits, track per-key usage |
-| **Settings** | API key, branding (app name, tagline, email), env var editor |
-| **Deploy** | Step-by-step guides for Railway, Render, Fly.io, Docker + HTTPS |
-| **Client Portal** | Self-service page for your API key customers |
 
 ---
 
@@ -207,11 +187,7 @@ url = "http://127.0.0.1:8788/mcp"
 
 **copaw / agentscope / older MCP clients:**
 
-ToolsDNS automatically handles clients that don't send `Accept: application/json, text/event-stream` — the server injects the required headers server-side. Both `/mcp` and `/mcp/` are accepted (no 307 redirect). Connect using the standard streamable-HTTP URL:
-
-```
-https://api.yourdomain.com/mcp
-```
+ToolsDNS automatically handles clients that don't send `Accept: application/json, text/event-stream` — the server injects the required headers server-side. Both `/mcp` and `/mcp/` are accepted (no 307 redirect).
 
 ### Tools your agent gets
 
@@ -388,10 +364,8 @@ All settings via environment variables or `~/.tooldns/.env`:
 | `TOOLDNS_LOG_LEVEL` | `INFO` | Log verbosity |
 | `TOOLDNS_WEBHOOK_URL` | *(empty)* | URL to POST health alerts to |
 | `TOOLDNS_WEBHOOK_SECRET` | *(empty)* | HMAC secret for webhook verification |
-| `TOOLDNS_APP_NAME` | `ToolsDNS` | Brand name shown in UI (white-label) |
-| `TOOLDNS_APP_TAGLINE` | `DNS for AI Tools` | Tagline shown in UI |
-| `TOOLDNS_CONTACT_EMAIL` | `hello@toolsdns.com` | Support email in UI footer |
-| `TOOLDNS_GITHUB_URL` | GitHub repo URL | Linked in UI footer |
+| `TOOLDNS_APP_NAME` | `ToolsDNS` | Brand name (white-label) |
+| `TOOLDNS_APP_TAGLINE` | `DNS for AI Tools` | Tagline (white-label) |
 
 ---
 
@@ -404,7 +378,7 @@ curl -sSL https://raw.githubusercontent.com/syedfahimdev/ToolsDNS/master/deploy.
 ```
 
 Installs and enables **two** systemd services:
-- `tooldns.service` — REST API + Web UI on port 8787
+- `tooldns.service` — REST API on port 8787
 - `tooldns-mcp.service` — Persistent MCP HTTP server on port 8788
 
 Then add a reverse proxy (Caddy handles HTTPS automatically):
@@ -416,26 +390,15 @@ api.yourdomain.com {
 }
 ```
 
-### Separate Frontend
-
-The web dashboard (`toolsdns-web`) can be deployed to Vercel independently:
-
-```
-Backend: api.toolsdns.com  →  your VPS running ToolsDNS
-Frontend: toolsdns.com     →  Vercel (toolsdns-web repo)
-```
-
-Frontend repo: [github.com/syedfahimdev/toolsdns-web](https://github.com/syedfahimdev/toolsdns-web)
-
-Set two env vars in Vercel:
-```
-TOOLDNS_API_URL = https://api.yourdomain.com
-TOOLDNS_API_KEY = td_your_key_here
-```
-
 ### Railway / Render / Fly.io
 
-See the **🚀 Deploy** page in the web UI at `/ui/deploy` for platform-specific guides with all env vars pre-filled.
+Set these env vars in your platform:
+```
+TOOLDNS_API_KEY=td_your_strong_key
+TOOLDNS_PUBLIC_URL=https://your-app.railway.app
+```
+
+Then deploy from this repo. The `toolsdns serve` command starts the API server.
 
 ---
 
@@ -449,7 +412,7 @@ ToolsDNS/
 ├── docker-compose.yml     # Bind-mounts ~/.tooldns, exposes ports 8787 + 8788
 ├── pyproject.toml         # Package config — CLI: toolsdns / tooldns
 ├── tooldns/               # Main Python package
-│   ├── api.py             # REST API routes (/v1/*) incl. /v1/system-prompt
+│   ├── api.py             # REST API routes (/v1/*)
 │   ├── auth.py            # API key auth — admin key + named sub-keys
 │   ├── categories.py      # Auto-categorization (15 categories)
 │   ├── cli.py             # CLI: toolsdns setup / serve / system-prompt / ...
@@ -462,12 +425,9 @@ ToolsDNS/
 │   ├── ingestion.py       # Parallel tool indexing pipeline
 │   ├── marketplace.py     # Pre-built MCP server catalog
 │   ├── mcp_server.py      # FastMCP server — persistent HTTP on port 8788
-│   ├── models.py          # Pydantic models (SearchResult.match_reason field)
+│   ├── models.py          # Pydantic models
 │   ├── search.py          # Hybrid semantic + BM25 + LRU query cache
-│   ├── tokens.py          # Real token counting + per-model cost calc
-│   ├── ui.py              # Web UI routes (/ui/*) — Jinja2 + HTMX
-│   ├── templates/         # HTML templates (base, tools, sources, etc.)
-│   └── static/            # CSS + JS
+│   └── tokens.py          # Real token counting + per-model cost calc
 └── .github/
     ├── workflows/ci.yml           # Tests, import checks, branding lint
     └── workflows/security.yml     # Bandit, Safety CVE scan, secret detection
@@ -486,11 +446,10 @@ ToolsDNS/
 | 🛠 **New MCP connectors** | Add a server to `marketplace.py` — Notion, Linear, Jira, etc. |
 | 🎯 **Better categorization** | Improve `categories.py` rules for more accurate tool tagging |
 | 🔍 **Search improvements** | Tune BM25/semantic weights, add re-ranking, test edge cases |
-| 🎨 **UI/UX** | Improve templates, add dark/light polish, mobile responsiveness |
 | 📖 **Skills library** | Share useful `SKILL.md` files for common workflows |
 | 🐛 **Bug fixes** | Check [open issues](https://github.com/syedfahimdev/ToolsDNS/issues) |
 | 📝 **Documentation** | Improve this README, add examples, write guides |
-| 🌐 **Translations** | Localize the web UI for other languages |
+| ⚡ **Performance** | Faster embeddings, better caching, lower memory usage |
 
 ### Getting Started
 
@@ -503,24 +462,27 @@ cd ToolsDNS
 python3 -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 
-# 3. Install in editable mode with dev dependencies
+# 3. Install in editable mode
 pip install -e .
 
-# 4. Create a branch for your feature
+# 4. Create a branch off develop for your feature
+git checkout develop
 git checkout -b feat/my-new-feature
 
 # 5. Make changes, then test
 toolsdns serve
-# Open http://localhost:8787/ui and verify your changes
+curl http://localhost:8787/health  # verify it's running
 
-# 6. Push and open a PR
+# 6. Push and open a PR against develop
 git push origin feat/my-new-feature
 ```
+
+> **PRs should target the `develop` branch**, not `master`.
 
 ### Pull Request Guidelines
 
 - **Keep PRs focused** — one feature or fix per PR
-- **Test your changes** — run the server and verify the affected UI/API works
+- **Test your changes** — run the server and verify the affected API/behavior works
 - **Don't break existing behavior** — the CI pipeline checks imports and branding
 - **Add to `marketplace.py`** if adding a new MCP server — name, description, install command
 - **No secrets in code** — the security workflow scans for API keys and tokens
@@ -565,22 +527,19 @@ Share useful skills by submitting them to the [skills library discussion](https:
 ### Code Style
 
 - Python: follow existing patterns (no formatter enforced, just be consistent)
-- Templates: Jinja2 + HTMX (see `templates/` for examples)
 - No unnecessary dependencies — the core should stay lightweight
 
 ### Reporting Issues
 
 - **Bug?** → [Open an issue](https://github.com/syedfahimdev/ToolsDNS/issues/new?template=bug_report.md) with steps to reproduce
 - **Feature idea?** → [Start a discussion](https://github.com/syedfahimdev/ToolsDNS/discussions/new)
-- **Security vulnerability?** → Email [syed@toolsdns.com](mailto:syed@toolsdns.com) privately
+- **Security vulnerability?** → See [SECURITY.md](SECURITY.md)
 
 ---
 
 ## License
 
 MIT License. See [LICENSE](LICENSE).
-
-For commercial/proprietary use (closed-source products, SaaS resale, white-label), contact [syed@toolsdns.com](mailto:syed@toolsdns.com) for a commercial license.
 
 ---
 
@@ -590,6 +549,6 @@ Built with ❤️ by [Syed Fahim](https://github.com/syedfahimdev) and contribut
 
 [⭐ Star this repo](https://github.com/syedfahimdev/ToolsDNS) if ToolsDNS saves you tokens!
 
-**[toolsdns.com](https://toolsdns.com)** · [hello@toolsdns.com](mailto:hello@toolsdns.com) · [Issues](https://github.com/syedfahimdev/ToolsDNS/issues)
+**[toolsdns.com](https://toolsdns.com)** · [Issues](https://github.com/syedfahimdev/ToolsDNS/issues) · [Discussions](https://github.com/syedfahimdev/ToolsDNS/discussions)
 
 </div>

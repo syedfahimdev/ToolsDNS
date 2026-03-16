@@ -34,7 +34,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Initial open-source release
 - Semantic search over 5,000+ MCP tools (returns 1–3 results)
 - Persistent MCP HTTP server (11ms vs 1.3s cold-start)
-- Web dashboard for managing sources, keys, and token savings
+- CLI management tools for sources, keys, and token savings (`tooldns` interactive menu)
 - One-command deploy: `curl ... | bash`
 - API key management with per-key usage tracking
 - Skills system — markdown-based agent workflows
