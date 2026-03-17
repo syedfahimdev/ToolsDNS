@@ -15,6 +15,9 @@ dependencies = [
     "pydantic-settings",
     "python-dotenv",
     "sentence-transformers",
+    "slowapi",
+    "fastmcp",
+    "mcp",
 ]
 
 [project.scripts]

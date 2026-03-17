@@ -116,6 +116,22 @@ section "Data directory & config"
 mkdir -p "$DATA_DIR/skills" "$DATA_DIR/tools"
 info "Directories: $DATA_DIR/skills  $DATA_DIR/tools"
 
+CONFIG_FILE="$DATA_DIR/config.json"
+if [[ ! -f "$CONFIG_FILE" ]]; then
+  cat > "$CONFIG_FILE" << EOF
+{
+  "mcpServers": {},
+  "skillPaths": [
+    "$DATA_DIR/skills"
+  ]
+}
+EOF
+  CREATED_FILES+=("$CONFIG_FILE")
+  info "Created $CONFIG_FILE (add MCP servers here)"
+else
+  info "Existing $CONFIG_FILE kept (not overwritten)"
+fi
+
 ENV_FILE="$DATA_DIR/.env"
 if [[ ! -f "$ENV_FILE" ]]; then
   API_KEY="td_$(openssl rand -hex 24)"
