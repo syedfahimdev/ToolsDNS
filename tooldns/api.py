@@ -512,8 +512,8 @@ def _lookup_stdio_config(source_info: dict, database) -> tuple:
 
     for src in sources:
         config = src.get("config", {})
-        if "path" in config:
-            config_path = Path(os.path.expanduser(config.get("path", "")))
+        if config.get("path"):
+            config_path = Path(os.path.expanduser(config["path"]))
             if not config_path.exists():
                 continue
             try:
@@ -543,8 +543,8 @@ def _lookup_http_config(source_info: dict, database) -> tuple:
 
     for src in sources:
         config = src.get("config", {})
-        if "path" in config:
-            config_path = Path(os.path.expanduser(config.get("path", "")))
+        if config.get("path"):
+            config_path = Path(os.path.expanduser(config["path"]))
             if not config_path.exists():
                 continue
             try:
