@@ -78,6 +78,10 @@ Loading 500 tool schemas into every LLM message is like making someone memorize 
 | 🔄 **Hot Reload** | Edit `config.json` → tools re-index in ~1 second, no restart needed |
 | 🏷️ **Tool Categories** | 15 categories auto-assigned (Dev & Code, Communication, AI & Agents, etc.) |
 | 🔒 **Security First** | Bandit static analysis + CVE scanning in CI, API key auth on all endpoints |
+| 🎯 **Tool Profiles** | Scope agents to relevant tool subsets — "email-agent" only sees 20 tools, not 5,000 |
+| 🧠 **Agent Sessions** | Schema dedup per session — never send the same tool schema twice to the same agent |
+| 📦 **Batch Search** | Multiple queries in one HTTP call — 16 agents → 1 request with cross-query dedup |
+| ✂️ **Minimal Mode** | Strip schemas to required fields only — ~70% token reduction per result |
 
 ---
 
@@ -334,6 +338,160 @@ No hardcoded tool names. No 500-tool schemas in context. Just works.
 
 ---
 
+## Multi-Agent Token Savings
+
+Running 16 agents? ToolsDNS has 4 features designed specifically to minimize token costs at scale:
+
+### 1. Minimal Schema Mode (~70% token reduction)
+
+Strip optional fields from tool schemas — only required fields are returned:
+
+```bash
+curl -X POST http://localhost:8787/v1/search \
+  -H "Authorization: Bearer td_your_key" \
+  -d '{"query": "send email", "top_k": 2, "minimal": true}'
+```
+
+| Mode | Typical Schema Size | Tokens |
+|------|-------------------|--------|
+| Full | 6 fields (required + optional) | ~180 |
+| **Minimal** | 2 fields (required only) | **~50** |
+
+The response includes `"_minimal": true` so agents know the schema is trimmed.
+
+---
+
+### 2. Agent Sessions (Schema Dedup)
+
+Create a session for each agent. ToolsDNS tracks which schemas have been sent and never resends them:
+
+```bash
+# Create a session
+curl -X POST http://localhost:8787/v1/sessions \
+  -H "Authorization: Bearer td_your_key" \
+  -d '{"agent_id": "email-agent-1", "ttl_seconds": 3600}'
+# → {"session_id": "sess_abc123", ...}
+
+# Use session in searches
+curl -X POST http://localhost:8787/v1/search \
+  -H "Authorization: Bearer td_your_key" \
+  -d '{
+    "query": "send email",
+    "session_id": "sess_abc123"
+  }'
+```
+
+**Second search for the same tool:**
+```json
+{
+  "results": [{
+    "id": "composio__GMAIL_SEND_EMAIL",
+    "name": "GMAIL_SEND_EMAIL",
+    "description": "[already seen — use cached schema] Sends an email...",
+    "input_schema": {},
+    "already_seen": true
+  }],
+  "tokens_saved_by_dedup": 150
+}
+```
+
+Sessions can be **shared across agents** — set `shared: true` and distribute the `session_id` to agents working on the same task.
+
+---
+
+### 3. Batch Search (16 Agents → 1 HTTP Call)
+
+Instead of 16 separate HTTP requests, batch all queries into one:
+
+```bash
+curl -X POST http://localhost:8787/v1/search/batch \
+  -H "Authorization: Bearer td_your_key" \
+  -d '{
+    "queries": [
+      {"query": "send gmail email", "top_k": 1},
+      {"query": "create github issue", "top_k": 1},
+      {"query": "upload to google drive", "top_k": 1}
+    ],
+    "minimal": true,
+    "session_id": "shared_session_abc"
+  }'
+```
+
+**Benefits:**
+- Single HTTP round-trip regardless of query count
+- Shared `session_id` enables **cross-query dedup** — if query 1 and query 4 both match `GMAIL_SEND_EMAIL`, it's only returned once with full schema
+- Combined token savings reported for the entire batch
+
+---
+
+### 4. Tool Profiles (Scoped Tool Subsets)
+
+Agents shouldn't search 5,000 tools when they only need 20. Create profiles that scope searches to relevant tools:
+
+```bash
+# Create a profile for email agents
+curl -X POST http://localhost:8787/v1/profiles \
+  -H "Authorization: Bearer td_your_key" \
+  -d '{
+    "name": "email-agent",
+    "description": "Agent for email and calendar tasks",
+    "tool_patterns": ["GMAIL_*", "OUTLOOK_*", "GOOGLECALENDAR_*"],
+    "pinned_tool_ids": ["composio__SLACK_SEND_MESSAGE"]
+  }'
+```
+
+**Use the profile in searches:**
+```bash
+curl -X POST http://localhost:8787/v1/search \
+  -H "Authorization: Bearer td_your_key" \
+  -d '{
+    "query": "send message",
+    "profile": "email-agent"
+  }'
+```
+
+**Three wins simultaneously:**
+1. **Faster search** — smaller embedding matrix
+2. **Better accuracy** — no noise from irrelevant tools
+3. **Lower tokens** — fewer tools to return
+
+**Example profiles:**
+| Profile | Patterns | ~Tool Count |
+|---------|----------|-------------|
+| `email-agent` | `GMAIL_*`, `OUTLOOK_*` | ~20 |
+| `code-agent` | `GITHUB_*`, `GITLAB_*`, `LINEAR_*` | ~150 |
+| `data-agent` | `AIRTABLE_*`, `NOTION_*`, `GOOGLEDRIVE_*` | ~80 |
+| `social-agent` | `TWITTER_*`, `LINKEDIN_*`, `DISCORDBOT_*` | ~40 |
+
+---
+
+### Cost Report
+
+Track your actual savings across all agents:
+
+```bash
+curl http://localhost:8787/v1/cost-report \
+  -H "Authorization: Bearer td_your_key"
+```
+
+```json
+{
+  "lifetime": {
+    "total_searches": 15234,
+    "tokens_saved_by_search": 4321092,
+    "tokens_saved_by_dedup": 892341,
+    "total_tokens_saved": 5213433,
+    "cost_saved_usd": 15.64,
+    "model": "claude-sonnet-4-6"
+  },
+  "cache": {"hit_rate": 0.73},
+  "active_sessions": 16,
+  "active_profiles": ["email-agent", "code-agent", "data-agent"]
+}
+```
+
+---
+
 ## Skills
 
 Skills are custom workflows defined as a `SKILL.md` file (+ optional `tools.py`) in `~/.tooldns/skills/your-skill-name/`.
@@ -457,6 +615,49 @@ Tokens are issued by skill tools (e.g. `work_order_get_file`, `cea_report_get_fi
 ```bash
 curl https://api.toolsdns.com/health
 # {"status":"healthy","tools_indexed":5056,"sources":4}
+```
+
+### Batch search (multi-agent)
+
+```bash
+curl -X POST https://api.toolsdns.com/v1/search/batch \
+  -H "Authorization: Bearer td_your_key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "queries": [
+      {"query": "send email", "top_k": 1},
+      {"query": "create github issue", "top_k": 1}
+    ],
+    "minimal": true,
+    "session_id": "sess_abc123"
+  }'
+```
+
+### Create agent session
+
+```bash
+curl -X POST https://api.toolsdns.com/v1/sessions \
+  -H "Authorization: Bearer td_your_key" \
+  -d '{"agent_id": "email-agent-1", "ttl_seconds": 3600}'
+# → {"session_id": "sess_abc123", "expires_at": "..."}
+```
+
+### Create tool profile
+
+```bash
+curl -X POST https://api.toolsdns.com/v1/profiles \
+  -H "Authorization: Bearer td_your_key" \
+  -d '{
+    "name": "email-agent",
+    "tool_patterns": ["GMAIL_*", "OUTLOOK_*"]
+  }'
+```
+
+### Cost report
+
+```bash
+curl https://api.toolsdns.com/v1/cost-report \
+  -H "Authorization: Bearer td_your_key"
 ```
 
 ---
