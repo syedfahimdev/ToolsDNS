@@ -105,10 +105,22 @@ API is now running at **http://localhost:8787** and the MCP server at **http://1
 ### Option 3 — Docker
 
 ```bash
+git clone https://github.com/syedfahimdev/ToolsDNS.git
+cd ToolsDNS
+cp .env.example .env          # set TOOLDNS_API_KEY
 docker compose up -d
 ```
 
-Your `~/.tooldns/` folder is bind-mounted — config, skills, database all persist on the host.
+- REST API: **http://localhost:8787**
+- MCP Server: **http://localhost:8788/mcp**
+- Your `~/.tooldns/` folder is bind-mounted — config, skills, and database all persist on the host.
+
+Check it's running:
+
+```bash
+curl http://localhost:8787/health
+# {"status":"healthy","tools_indexed":0,"sources":0}
+```
 
 ---
 
@@ -193,6 +205,132 @@ Agent → list_skills()                    # What skills exist?
       → work_order_get_file()            # Returns download URL, not base64
       → sends file to user ✓
 ```
+
+---
+
+## Execute Any Tool — End-to-End Walkthrough
+
+> This is the core use case: an AI agent executes **any** of your 5,000+ tools using nothing but natural language.
+
+### Step 1 — Register a tool source
+
+Point ToolsDNS at a Composio MCP server (or any MCP server):
+
+```bash
+curl -X POST http://localhost:8787/v1/sources \
+  -H "Authorization: Bearer td_your_key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "mcp_http",
+    "name": "composio",
+    "url": "https://mcp.composio.dev/composio/mcp?apiKey=YOUR_COMPOSIO_KEY"
+  }'
+# {"name":"composio","tools_count":2516,"status":"active"}
+```
+
+Tools are indexed and searchable immediately — no restart needed.
+
+---
+
+### Step 2 — Search for the right tool
+
+```bash
+curl -X POST http://localhost:8787/v1/search \
+  -H "Authorization: Bearer td_your_key" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "send an email via gmail", "top_k": 1}'
+```
+
+```json
+{
+  "results": [{
+    "id": "composio__GMAIL_SEND_EMAIL",
+    "name": "GMAIL_SEND_EMAIL",
+    "description": "Sends an email via Gmail API using the authenticated user's Google profile",
+    "confidence": 0.94,
+    "match_reason": "strong semantic match (0.94); keyword match (BM25 0.87)",
+    "input_schema": { "to": "string", "subject": "string", "body": "string" }
+  }],
+  "total_tools_indexed": 5056,
+  "tokens_saved": 284710,
+  "search_time_ms": 17.4
+}
+```
+
+~284,000 tokens saved vs loading all 5,000 schemas into context.
+
+---
+
+### Step 3 — Execute the tool
+
+Pass the `id` from Step 2 directly to `/v1/call`:
+
+```bash
+curl -X POST http://localhost:8787/v1/call \
+  -H "Authorization: Bearer td_your_key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tool_id": "composio__GMAIL_SEND_EMAIL",
+    "arguments": {
+      "to": ["alice@example.com"],
+      "subject": "Hello from ToolsDNS",
+      "body": "This email was sent by an AI agent via ToolsDNS."
+    }
+  }'
+# {"type":"mcp_result","result":{"status":"sent","messageId":"..."}}
+```
+
+ToolsDNS proxies the call to the original MCP server and returns the result. The agent never needs to know which server the tool lives on.
+
+---
+
+### Full agent loop (Python example)
+
+```python
+import httpx
+
+BASE = "http://localhost:8787"
+HEADERS = {"Authorization": "Bearer td_your_key"}
+
+client = httpx.Client(base_url=BASE, headers=HEADERS)
+
+# 1. Search
+results = client.post("/v1/search", json={"query": "create a GitHub issue", "top_k": 1}).json()
+tool = results["results"][0]
+print(f"Found: {tool['name']} (confidence: {tool['confidence']:.0%})")
+
+# 2. Execute
+result = client.post("/v1/call", json={
+    "tool_id": tool["id"],
+    "arguments": {
+        "owner": "myorg",
+        "repo": "myrepo",
+        "title": "Bug: login fails on Safari",
+        "body": "Steps to reproduce..."
+    }
+}).json()
+print(result)
+```
+
+---
+
+### Via MCP (agent-native — no HTTP calls needed)
+
+When your agent is connected to the MCP server at port 8788, it does this automatically:
+
+```
+User: "Send a Slack message to #alerts that the deploy succeeded"
+
+Agent → search_tools("send slack message")
+      → gets: SLACK_SEND_MESSAGE (confidence 91%)
+      → call_tool("composio__SLACK_SEND_MESSAGE", {
+            "channel": "#alerts",
+            "text": "✅ Deploy succeeded"
+        })
+      → "Message sent."
+```
+
+No hardcoded tool names. No 500-tool schemas in context. Just works.
 
 ---
 
@@ -387,7 +525,9 @@ ToolsDNS/
 ├── deploy.sh              # One-command VPS installer (creates both systemd services)
 ├── tooldns.sh             # Management CLI (status, ingest, mcp-status, update)
 ├── main.py                # FastAPI app + network ACL + /dl/{token} download endpoint
-├── docker-compose.yml     # Bind-mounts ~/.tooldns, exposes ports 8787 + 8788
+├── Dockerfile             # Container image — pre-bakes embedding model
+├── docker-compose.yml     # Two services: REST API (8787) + MCP server (8788)
+├── .env.example           # All supported env vars with descriptions
 ├── pyproject.toml         # Package config — CLI: toolsdns / tooldns
 ├── tooldns/               # Main Python package
 │   ├── api.py             # REST API routes (/v1/*)
