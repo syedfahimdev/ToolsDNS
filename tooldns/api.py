@@ -4,6 +4,7 @@ api.py — FastAPI routes for the ToolsDNS API.
 Endpoints:
     POST /v1/search           — Search for tools by natural language query
     POST /v1/search/batch     — Batch search: multiple queries, one HTTP call
+    POST /v1/call             — Execute a tool or macro (with analytics tracking)
     POST /v1/sources          — Add a new tool source
     GET  /v1/sources          — List all registered sources
     GET  /v1/tools            — List all indexed tools
@@ -19,6 +20,20 @@ Endpoints:
     GET    /v1/profiles/{name}      — Get a profile + its matched tool count
     DELETE /v1/profiles/{name}      — Delete a profile
     GET    /v1/cost-report          — Token savings & cost report across all agents
+
+    # Workflows & Macros
+    POST /v1/workflows              — Create a workflow pattern
+    POST /v1/suggest-workflow       — Suggest workflows by query
+    POST /v1/execute-workflow       — Execute a workflow (real tool calls)
+    POST /v1/macros                 — Create a macro (reusable multi-tool)
+    GET  /v1/macros                 — List all macros
+    DELETE /v1/macros/{id}          — Delete a macro
+
+    # Analytics
+    GET /v1/analytics/popular       — Most-called tools
+    GET /v1/analytics/unused        — Tools never called (cleanup candidates)
+    GET /v1/analytics/agents        — Per-agent tool usage stats
+    GET /v1/analytics/conversion    — Search-to-call conversion rates
 
 Each endpoint validates input via Pydantic models (see models.py)
 and requires a valid API key (see auth.py).
@@ -37,14 +52,22 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from tooldns.config import settings, TOOLDNS_HOME
 from tooldns.auth import require_api_key
+from tooldns.workflows import WorkflowEngine
 from tooldns.models import (
     SearchRequest, SearchResponse,
     BatchSearchRequest, BatchSearchResponse,
     CreateSessionRequest, SessionInfo,
     CreateProfileRequest, ProfileInfo,
+    SuggestWorkflowRequest, SuggestWorkflowResponse,
+    ExecuteWorkflowRequest, ExecuteWorkflowResponse,
+    CreateWorkflowRequest, WorkflowPattern,
+    LearnFromUsageRequest, LearnFromUsageResponse,
     SourceRequest, SourceResponse, SourceType,
-    RegisterMCPRequest, CreateSkillRequest
+    RegisterMCPRequest, CreateSkillRequest,
+    CallToolRequest, CreateMacroRequest, MacroStep, MacroInfo,
+    PreflightRequest, PreflightResponse, PreflightToolMatch,
 )
+from tooldns.caller import call_tool as caller_call_tool, load_skill_content, resolve_args
 
 router = APIRouter(prefix="/v1", dependencies=[Depends(require_api_key)])
 admin_router = APIRouter(prefix="/v1")
@@ -145,6 +168,7 @@ _search_engine = None
 _ingestion_pipeline = None
 _database = None
 _health_monitor = None
+_workflow_engine = None
 
 
 def init_api(search_engine, ingestion_pipeline, database, health_monitor=None):
@@ -160,11 +184,15 @@ def init_api(search_engine, ingestion_pipeline, database, health_monitor=None):
         database: The ToolDatabase instance.
         health_monitor: Optional HealthMonitor instance.
     """
-    global _search_engine, _ingestion_pipeline, _database, _health_monitor
+    global _search_engine, _ingestion_pipeline, _database, _health_monitor, _workflow_engine
     _search_engine = search_engine
     _ingestion_pipeline = ingestion_pipeline
     _database = database
     _health_monitor = health_monitor
+    _workflow_engine = WorkflowEngine(
+        database,
+        tool_caller=lambda tid, args: caller_call_tool(database, tid, args)
+    )
     # Load persisted profiles from disk
     _load_profiles()
 
@@ -210,6 +238,14 @@ def search_tools(req: SearchRequest, auth: dict = Depends(require_api_key)):
         else:
             raise HTTPException(status_code=404, detail=f"Session not found: {req.session_id}")
 
+    # Get agent preference boosts if agent_id provided
+    preference_boosts = {}
+    if req.agent_id and _workflow_engine:
+        try:
+            preference_boosts = _workflow_engine.get_agent_boosts(req.agent_id)
+        except Exception as e:
+            logger.warning(f"Failed to get agent preferences: {e}")
+    
     response = _search_engine.search(
         query=req.query,
         top_k=req.top_k,
@@ -218,7 +254,9 @@ def search_tools(req: SearchRequest, auth: dict = Depends(require_api_key)):
         minimal=req.minimal,
         allowed_tool_ids=allowed_tool_ids,
         seen_tool_ids=seen_tool_ids,
+        preference_boosts=preference_boosts if preference_boosts else None,
     )
+    response.agent_preferences_applied = len(preference_boosts) > 0
 
     # Update session with newly seen tools
     if session and req.session_id:
@@ -232,6 +270,317 @@ def search_tools(req: SearchRequest, auth: dict = Depends(require_api_key)):
         response.profile_active = profile_name
 
     return response
+
+
+# -----------------------------------------------------------------------
+# Preflight — server-side intent extraction + multi-strategy search
+# -----------------------------------------------------------------------
+
+import re as _re
+import concurrent.futures
+
+# Intent patterns: (regex, [search queries])
+# Each pattern maps natural language to tool-name-style AND descriptive queries.
+_PREFLIGHT_INTENT_MAP: list[tuple[_re.Pattern, list[str]]] = [
+    # Email
+    (_re.compile(r"\b(send|write|draft|compose|shoot|fire off)\b.*\b(email|mail|message|note)\b", _re.I),
+     ["GMAIL_SEND_EMAIL", "gmail send email", "send an email message"]),
+    (_re.compile(r"\b(check|read|fetch|get|see|look at)\b.*\b(email|mail|inbox)\b", _re.I),
+     ["GMAIL_FETCH_EMAILS", "gmail get inbox emails"]),
+    (_re.compile(r"\b(reply|respond)\b.*\b(email|mail|thread)\b", _re.I),
+     ["GMAIL_REPLY_TO_THREAD", "gmail reply email"]),
+    # Slack
+    (_re.compile(r"\b(send|post|write|notify|tell|message)\b.*\b(slack|channel|team)\b", _re.I),
+     ["SLACK_SEND_MESSAGE", "slack send message channel"]),
+    (_re.compile(r"\b(slack)\b", _re.I),
+     ["SLACK_SEND_MESSAGE", "slack channel message"]),
+    # Calendar
+    (_re.compile(r"\b(schedule|create|book|set up|add)\b.*\b(meeting|event|appointment|call|calendar)\b", _re.I),
+     ["GOOGLECALENDAR_CREATE_EVENT", "google calendar create event"]),
+    (_re.compile(r"\b(check|show|list|what's on|see)\b.*\b(calendar|schedule|agenda|meetings)\b", _re.I),
+     ["GOOGLECALENDAR_FIND_EVENT", "google calendar list events"]),
+    # GitHub
+    (_re.compile(r"\b(create|open|file|submit)\b.*\b(issue|bug|ticket)\b", _re.I),
+     ["GITHUB_CREATE_AN_ISSUE", "github create issue"]),
+    (_re.compile(r"\b(create|open|submit)\b.*\b(pr|pull request)\b", _re.I),
+     ["GITHUB_CREATE_A_PULL_REQUEST", "github create pull request"]),
+    (_re.compile(r"\b(merge|review)\b.*\b(pr|pull request)\b", _re.I),
+     ["GITHUB_MERGE_A_PULL_REQUEST", "github merge pull request"]),
+    (_re.compile(r"\b(github|repo)\b", _re.I),
+     ["GITHUB_LIST_REPOS", "github repository"]),
+    # Browser
+    (_re.compile(r"\b(open|go to|navigate|visit|browse|check)\b.*\b(website|page|site|url|link)\b", _re.I),
+     ["browser_navigate", "playwright navigate open webpage"]),
+    (_re.compile(r"\b(click|press|tap)\b.*\b(button|link|element)\b", _re.I),
+     ["browser_click", "playwright click button element"]),
+    (_re.compile(r"\b(fill|type|enter|input)\b.*\b(form|field|text|box)\b", _re.I),
+     ["browser_fill", "playwright fill form input"]),
+    (_re.compile(r"\b(screenshot|capture|snap)\b", _re.I),
+     ["browser_screenshot", "playwright screenshot capture"]),
+    (_re.compile(r"\b(browse|search the web|look up|google)\b", _re.I),
+     ["browser_navigate", "web browser search"]),
+    # Salesforce
+    (_re.compile(r"\b(salesforce|sfdc|sf)\b.*\b(task|create|check)\b", _re.I),
+     ["SALESFORCE_CREATE_TASK", "salesforce create task"]),
+    (_re.compile(r"\b(salesforce|sfdc|sf)\b", _re.I),
+     ["SALESFORCE", "salesforce CRM"]),
+    # Google Docs/Sheets/Drive
+    (_re.compile(r"\b(create|generate|make)\b.*\b(spreadsheet|excel|csv|sheet)\b", _re.I),
+     ["GOOGLESHEETS_CREATE_GOOGLE_SHEET", "google sheets create spreadsheet"]),
+    (_re.compile(r"\b(create|write|generate|make)\b.*\b(doc|document|report)\b", _re.I),
+     ["GOOGLEDOCS_CREATE_DOCUMENT", "google docs create document"]),
+    (_re.compile(r"\b(upload|download|share)\b.*\b(file|document|pdf)\b", _re.I),
+     ["GOOGLEDRIVE_UPLOAD_FILE", "google drive file upload"]),
+    # Tasks
+    (_re.compile(r"\b(create|add|make)\b.*\b(task|todo|reminder)\b", _re.I),
+     ["create task todo", "TODOIST_CREATE_TASK"]),
+    (_re.compile(r"\b(list|show|check)\b.*\b(tasks?|todos?)\b", _re.I),
+     ["list tasks", "TODOIST_GET_TASKS"]),
+    # Twitter
+    (_re.compile(r"\b(tweet|post|publish)\b.*\b(twitter|x\.com|social)\b", _re.I),
+     ["TWITTER_CREATION_OF_A_TWEET", "twitter post tweet"]),
+    # Notion
+    (_re.compile(r"\b(notion)\b", _re.I),
+     ["NOTION_CREATE_A_PAGE", "notion page workspace"]),
+    # Linear
+    (_re.compile(r"\b(linear)\b.*\b(issue|ticket|bug)\b", _re.I),
+     ["LINEAR_CREATE_LINEAR_ISSUE", "linear create issue"]),
+    (_re.compile(r"\b(linear)\b", _re.I),
+     ["LINEAR", "linear project issue"]),
+    # Jira
+    (_re.compile(r"\b(jira)\b", _re.I),
+     ["JIRA_CREATE_ISSUE", "jira project issue"]),
+    # Discord
+    (_re.compile(r"\b(discord)\b.*\b(send|message|post)\b", _re.I),
+     ["DISCORD_SEND_MESSAGE", "discord send message"]),
+    (_re.compile(r"\b(discord)\b", _re.I),
+     ["DISCORD", "discord server channel"]),
+    # Telegram
+    (_re.compile(r"\b(telegram)\b", _re.I),
+     ["TELEGRAM_SEND_MESSAGE", "telegram bot message"]),
+    # WhatsApp
+    (_re.compile(r"\b(whatsapp|whats app)\b", _re.I),
+     ["WHATSAPP_SEND_MESSAGE", "whatsapp send message"]),
+    # Generic notify
+    (_re.compile(r"\b(notify|alert|inform|tell)\b.*\b(someone|team|user|them)\b", _re.I),
+     ["send notification", "SLACK_SEND_MESSAGE", "GMAIL_SEND_EMAIL"]),
+]
+
+# Regex to clean user data from queries
+_QUERY_CLEAN_RE = _re.compile(
+    r"[\w.+-]+@[\w-]+\.[\w.-]+"     # emails
+    r"|https?://\S+"                 # URLs
+    r"|\+?\d[\d\s\-()]{7,}\d"       # phone numbers
+    r"|\d{1,2}[/-]\d{1,2}[/-]\d{2,4}"  # dates
+    r"|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}",  # more emails
+    _re.I,
+)
+
+
+def _preflight_clean_query(text: str) -> str:
+    """Strip user data (emails, URLs, numbers) for cleaner tool search."""
+    cleaned = _QUERY_CLEAN_RE.sub("", text)
+    cleaned = _re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned if len(cleaned) >= 8 else text
+
+
+def _preflight_extract_intents(text: str) -> list[str]:
+    """Extract tool-friendly search queries using intent patterns."""
+    queries: list[str] = []
+    seen: set[str] = set()
+    matched = 0
+    for pattern, query_list in _PREFLIGHT_INTENT_MAP:
+        if pattern.search(text):
+            for q in query_list:
+                ql = q.lower()
+                if ql not in seen:
+                    seen.add(ql)
+                    queries.append(q)
+            matched += 1
+            if matched >= 2 or len(queries) >= 4:
+                break
+    return queries
+
+
+def _compact_schema_text(schema: dict) -> str:
+    """Build compact parameter summary."""
+    props = schema.get("properties", {})
+    required = set(schema.get("required", []))
+    if not props:
+        return "    (no parameters)"
+    lines = []
+    for pname, pinfo in list(props.items())[:10]:
+        ptype = pinfo.get("type", "any")
+        req = " [REQUIRED]" if pname in required else ""
+        desc = pinfo.get("description", "").split(".")[0].split("\n")[0][:60]
+        lines.append(f"    {pname}: {ptype}{req} — {desc}")
+    if len(props) > 10:
+        lines.append(f"    ...and {len(props) - 10} more")
+    return "\n".join(lines)
+
+
+@router.post("/preflight", response_model=PreflightResponse)
+def preflight_search(req: PreflightRequest, auth: dict = Depends(require_api_key)):
+    """
+    Server-side preflight tool discovery.
+
+    Send a raw user message and get back an LLM-ready context block with
+    the most relevant tools, their schemas, and call templates. Designed
+    to be called BEFORE the LLM loop in any agent framework.
+
+    How it works:
+    1. Cleans the user message (strips emails, URLs, dates)
+    2. Extracts intent keywords using built-in patterns
+    3. Runs multiple parallel searches (cleaned query + intent queries)
+    4. Merges, deduplicates, ranks by best confidence
+    5. Returns results as an injectable context block or structured JSON
+
+    Usage (any framework):
+        # Before your LLM call:
+        resp = requests.post("/v1/preflight", json={"message": user_msg})
+        if resp.json()["found"]:
+            enriched_msg = user_msg + "\\n\\n" + resp.json()["context_block"]
+            # Pass enriched_msg to your LLM
+    """
+    import time as _time
+    start = _time.perf_counter()
+
+    text = req.message.strip()
+    if len(text) < 10:
+        return PreflightResponse(found=False)
+
+    # Build search queries
+    cleaned = _preflight_clean_query(text)
+    intent_queries = _preflight_extract_intents(text)
+
+    search_queries = [cleaned]
+    for iq in intent_queries:
+        if iq.lower() != cleaned.lower():
+            search_queries.append(iq)
+
+    # Get preference boosts
+    preference_boosts = {}
+    if req.agent_id and _workflow_engine:
+        try:
+            preference_boosts = _workflow_engine.get_agent_boosts(req.agent_id)
+        except Exception:
+            pass
+
+    # Run all searches and merge results
+    all_results: dict[str, dict] = {}  # tool_id -> best result + matched_by
+
+    for q in search_queries[:5]:
+        try:
+            response = _search_engine.search(
+                query=q,
+                top_k=req.top_k,
+                threshold=req.threshold,
+                api_key=auth.get("key", ""),
+                minimal=False,
+                preference_boosts=preference_boosts if preference_boosts else None,
+            )
+            for r in response.results:
+                existing = all_results.get(r.id)
+                if not existing or r.confidence > existing["confidence"]:
+                    all_results[r.id] = {
+                        "tool_id": r.id,
+                        "name": r.name,
+                        "description": r.description,
+                        "confidence": r.confidence,
+                        "input_schema": r.input_schema,
+                        "source_type": r.source,
+                        "matched_by": q,
+                    }
+        except Exception:
+            continue
+
+    if not all_results:
+        elapsed = (_time.perf_counter() - start) * 1000
+        return PreflightResponse(found=False, queries_used=search_queries[:5], search_time_ms=elapsed)
+
+    # Sort and limit
+    sorted_results = sorted(all_results.values(), key=lambda r: r["confidence"], reverse=True)[:req.max_results]
+
+    # Build tool matches
+    tools = []
+    for i, r in enumerate(sorted_results):
+        schema = r["input_schema"] if req.include_schemas and i < 3 else {}
+        call_template = None
+        if req.include_call_templates and i < 2 and schema.get("properties"):
+            props = schema.get("properties", {})
+            required = set(schema.get("required", []))
+            tmpl_args = {}
+            for pname in props:
+                if pname in required:
+                    tmpl_args[pname] = f"<{pname}>"
+            if tmpl_args:
+                call_template = f'toolsdns(action="call", tool_id="{r["tool_id"]}", arguments={_json.dumps(tmpl_args)})'
+        tools.append(PreflightToolMatch(
+            tool_id=r["tool_id"],
+            name=r["name"],
+            description=r["description"][:200],
+            confidence=r["confidence"],
+            input_schema=schema,
+            call_template=call_template,
+            source_type=r["source_type"],
+            matched_by=r["matched_by"],
+        ))
+
+    # Check for macros
+    macros_list: list[str] = []
+    if req.include_macros:
+        try:
+            macros_file = TOOLDNS_HOME / "macros.json"
+            if macros_file.exists():
+                macros_data = _json.loads(macros_file.read_text())
+                if isinstance(macros_data, list):
+                    macros_list = [f"macro__{m.get('name', '?')}" for m in macros_data]
+                elif isinstance(macros_data, dict):
+                    macros_list = [f"macro__{m.get('name', '?')}" for m in macros_data.get("macros", [])]
+        except Exception:
+            pass
+
+    # Build context block
+    context_block = None
+    if req.format == "context_block":
+        lines = [
+            "[ToolsDNS Auto-Discovery]",
+            "IMPORTANT: Use the `toolsdns` tool for all calls below. Do NOT use mcp_tooldns_* tools.",
+            "",
+        ]
+        for i, t in enumerate(tools):
+            lines.append(f"{'>>> BEST MATCH' if i == 0 else f'--- Match {i+1}'}  [{t.confidence:.0%} confidence]")
+            lines.append(f"  TOOL_ID: {t.tool_id}")
+            lines.append(f"  name: {t.name}")
+            lines.append(f"  description: {t.description[:120]}")
+            if t.input_schema and t.input_schema.get("properties"):
+                lines.append("  parameters:")
+                lines.append(_compact_schema_text(t.input_schema))
+            if t.call_template:
+                lines.append(f"  CALL: {t.call_template}")
+            elif "skill" in str(t.source_type).lower():
+                lines.append(f'  TYPE: skill — use toolsdns(action="get", tool_id="{t.tool_id}") for instructions')
+            lines.append("")
+
+        if macros_list:
+            lines.append(f"MACROS (call directly via toolsdns action=call): {', '.join(macros_list)}")
+            lines.append("")
+
+        lines.append("INSTRUCTIONS:")
+        lines.append("- For the best match: fill in the <placeholders> and call directly")
+        lines.append("- For skills: use action=\"get\" first to read the skill instructions")
+        lines.append("- If arguments are unclear: use action=\"get\" to see the full schema")
+        context_block = "\n".join(lines)
+
+    elapsed = (_time.perf_counter() - start) * 1000
+    return PreflightResponse(
+        found=True,
+        tools=tools,
+        macros=macros_list,
+        context_block=context_block,
+        queries_used=search_queries[:5],
+        search_time_ms=elapsed,
+    )
 
 
 # -----------------------------------------------------------------------
@@ -834,351 +1183,87 @@ def get_tool(tool_id: str):
 
     # For skills, include the actual skill file content
     if source_info.get("source_type") in ("skill", "skill_directory"):
-        skill_content = _load_skill_content(tool["name"], source_info)
+        skill_content = load_skill_content(tool["name"], source_info)
         if skill_content:
             result["skill_content"] = skill_content
 
     return result
 
 
-def _load_skill_content(tool_name: str, source_info: dict) -> str:
-    """
-    Load the full skill file content for a skill-type tool.
-
-    Searches through known skill directories for the matching
-    SKILL.md or .md file.
-
-    Args:
-        tool_name: The skill/tool name.
-        source_info: The tool's source metadata.
-
-    Returns:
-        str: The skill file content, or empty string if not found.
-    """
-    from pathlib import Path
-    from tooldns.config import TOOLDNS_HOME
-    import json as json_mod
-
-    # Build list of skill directories to search
-    skill_dirs = []
-
-    # Check config.json for skillPaths
-    config_file = TOOLDNS_HOME / "config.json"
-    if config_file.exists():
-        try:
-            config = json_mod.loads(config_file.read_text())
-            for sp in config.get("skillPaths", []):
-                p = Path(sp).expanduser()
-                if p.exists():
-                    skill_dirs.append(p)
-        except Exception:
-            pass
-
-    # Also check ~/.tooldns/skills/
-    local_skills = TOOLDNS_HOME / "skills"
-    if local_skills.exists():
-        skill_dirs.append(local_skills)
-
-    # Search for the skill file
-    for skill_dir in skill_dirs:
-        # Pattern 1: folder/SKILL.md
-        for item in skill_dir.iterdir():
-            if item.is_dir():
-                skill_file = item / "SKILL.md"
-                if skill_file.exists():
-                    # Check if this matches by name
-                    content = skill_file.read_text(encoding="utf-8")
-                    if _skill_name_matches(content, item.name, tool_name):
-                        return content
-
-            # Pattern 2: flat .md file
-            elif item.is_file() and item.suffix == ".md" and item.name != "_index.md":
-                content = item.read_text(encoding="utf-8")
-                if _skill_name_matches(content, item.stem, tool_name):
-                    return content
-
-    return ""
-
-
-def _skill_name_matches(content: str, filename: str, target_name: str) -> bool:
-    """Check if a skill file matches by name in frontmatter or filename."""
-    target_lower = target_name.lower().replace("_", "-").replace(" ", "-")
-    file_lower = filename.lower()
-
-    if file_lower == target_lower:
-        return True
-
-    # Check YAML frontmatter name field
-    if content.startswith("---"):
-        parts = content.split("---", 2)
-        if len(parts) >= 3:
-            for line in parts[1].strip().split("\n"):
-                if line.startswith("name:"):
-                    name = line.split(":", 1)[1].strip().strip("'\"")
-                    if name.lower() == target_lower:
-                        return True
-    return False
-
-
 # -----------------------------------------------------------------------
-# Tool Execution Proxy
+# Tool Execution
 # -----------------------------------------------------------------------
 
 @router.post("/call")
-def call_tool(req: dict):
+def call_tool_endpoint(req: CallToolRequest):
     """
-    Proxy a tool call to the original MCP server.
+    Execute a tool by ID, or run a macro (prefix: macro__).
 
     This is the execution bridge — the LLM sends the tool name
     and arguments here, and ToolsDNS forwards the call to the
-    correct MCP server.
+    correct MCP server. Also records the call for analytics and
+    agent preference learning.
 
-    Request body:
-        {
-            "tool_id": "tooldns__GMAIL_SEND_EMAIL",
-            "arguments": {"to": "john@example.com", "body": "Hello"}
-        }
+    Examples:
+        # Single tool call
+        POST /v1/call
+        {"tool_id": "composio__GMAIL_SEND_EMAIL", "arguments": {"to": "john@example.com"}}
 
-    Returns:
-        dict: The tool's execution result from the MCP server.
+        # Macro call (executes all steps)
+        POST /v1/call
+        {"tool_id": "macro__deploy-and-notify", "arguments": {"version": "1.2.0"}}
     """
-    tool_id = req.get("tool_id", "")
-    arguments = req.get("arguments", {})
+    tool_id = req.tool_id
+    arguments = req.arguments
 
-    if not tool_id:
-        raise HTTPException(status_code=400, detail="tool_id is required")
+    # --- Macro execution ---
+    if tool_id.startswith("macro__"):
+        macro = _database.get_workflow(tool_id) if _database else None
+        if not macro or macro.get("source") != "macro":
+            raise HTTPException(status_code=404, detail=f"Macro not found: {tool_id}")
 
-    # Find the tool
-    tool = _database.get_tool_by_id(tool_id)
+        results = []
+        for step in macro.get("steps", []):
+            step_tool_id = step.get("tool_id", "")
+            resolved = resolve_args(step.get("arg_mapping", {}), arguments)
+            try:
+                result = caller_call_tool(_database, step_tool_id, resolved)
+                results.append({"tool_id": step_tool_id, "status": "completed", "result": result})
+            except Exception as e:
+                results.append({"tool_id": step_tool_id, "status": "failed", "error": str(e)})
+                if step.get("on_error", "stop") == "stop":
+                    break
 
-    if not tool:
-        raise HTTPException(status_code=404, detail=f"Tool not found: {tool_id}")
+        _database.increment_workflow_usage(tool_id)
+        return {"type": "macro_result", "macro_id": tool_id, "steps": results}
 
-    source_info = tool.get("source_info", {})
-    source_type = source_info.get("source_type", "")
+    # --- Single tool call ---
+    try:
+        result = caller_call_tool(_database, tool_id, arguments)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
 
-    # For skills, return the skill content — the LLM executes it
-    # Use exact match so skill_tool_stdio/skill_tool_script fall through to MCP execution
-    _SKILL_CONTENT_TYPES = {"skill", "skill_directory", "skill_file"}
-    if source_type in _SKILL_CONTENT_TYPES:
-        content = _load_skill_content(tool["name"], source_info)
-        return {
-            "type": "skill",
-            "name": tool["name"],
-            "content": content,
-            "instruction": "Follow the skill instructions above to complete the task."
-        }
-
-    # For MCP tools and skill tool scripts, proxy the call to the server/script
-    if "mcp" in source_type or source_type in ("streamableHttp", "sse", "skill_tool_stdio", "skill_tool_script"):
+    # Record for analytics + agent preference learning
+    agent_id = req.agent_id or "anonymous"
+    if _workflow_engine:
         try:
-            result = _proxy_mcp_call(tool, arguments)
-            return {"type": "mcp_result", "result": result}
+            _workflow_engine.record_tool_selection(
+                agent_id=agent_id,
+                tool_id=tool_id,
+                query=req.query,
+                confidence=0.0
+            )
         except Exception as e:
-            raise HTTPException(
-                status_code=502,
-                detail=f"MCP call failed: {e}"
-            )
+            logger.warning(f"Failed to record tool selection: {e}")
+    elif _database:
+        try:
+            _database.log_tool_call(agent_id, tool_id, req.query)
+        except Exception as e:
+            logger.warning(f"Failed to log tool call: {e}")
 
-    raise HTTPException(
-        status_code=400,
-        detail=f"Execution not supported for source type: {source_type}"
-    )
-
-
-def _proxy_mcp_call(tool: dict, arguments: dict) -> dict:
-    """
-    Forward a tool call to the original MCP server.
-
-    Supports both stdio and HTTP transports. Uses transport info
-    stored in source_info during ingestion to route the call correctly.
-
-    Args:
-        tool: The full tool record from the database.
-        arguments: The arguments to pass to the tool.
-
-    Returns:
-        dict: The MCP server's response.
-    """
-    from tooldns.fetcher import MCPFetcher
-
-    source_info = tool.get("source_info", {})
-    original_name = source_info.get("original_name", tool["name"])
-    source_type = source_info.get("source_type", "")
-
-    fetcher = MCPFetcher()
-
-    # --- stdio execution (spawn process on demand) ---
-    if source_type == "stdio" or source_info.get("command"):
-        command = source_info.get("command")
-        args = source_info.get("args", [])
-
-        if not command:
-            # Fall back: look it up from the registered source config
-            command, args = _lookup_stdio_config(source_info, _database)
-
-        if not command:
-            raise RuntimeError(
-                f"Cannot execute stdio tool '{original_name}': "
-                f"command not found in source_info. Re-ingest the source to fix this."
-            )
-
-        return fetcher.call_stdio(command, args, original_name, arguments)
-
-    # --- HTTP execution ---
-    server_url = source_info.get("url", "")
-    server_headers = source_info.get("headers", {})
-
-    if not server_url:
-        # Fall back: look it up from the registered source config
-        server_url, server_headers = _lookup_http_config(source_info, _database)
-
-    if not server_url:
-        raise RuntimeError(
-            f"Cannot execute tool '{original_name}': no URL or command found. "
-            f"Source type '{source_type}' — re-ingest the source to fix this."
-        )
-
-    return _http_tool_call(server_url, server_headers, original_name, arguments)
-
-
-def _lookup_stdio_config(source_info: dict, database) -> tuple:
-    """Look up command+args from registered source configs for a stdio tool."""
-    import os
-    from pathlib import Path
-
-    server = source_info.get("server", "")
-    sources = database.get_all_sources()
-
-    for src in sources:
-        config = src.get("config", {})
-        if config.get("path"):
-            config_path = Path(os.path.expanduser(config["path"]))
-            if not config_path.exists():
-                continue
-            try:
-                import json as json_mod
-                raw = json_mod.loads(config_path.read_text())
-                config_key = config.get("config_key", "tools.mcpServers")
-                section = raw
-                for key in config_key.split("."):
-                    section = section.get(key, {})
-                if server in section:
-                    srv = section[server]
-                    if srv.get("command"):
-                        return srv["command"], srv.get("args", [])
-            except Exception:
-                continue
-
-    return None, []
-
-
-def _lookup_http_config(source_info: dict, database) -> tuple:
-    """Look up URL+headers from registered source configs for an HTTP tool."""
-    import os
-    from pathlib import Path
-
-    server = source_info.get("server", "")
-    sources = database.get_all_sources()
-
-    for src in sources:
-        config = src.get("config", {})
-        if config.get("path"):
-            config_path = Path(os.path.expanduser(config["path"]))
-            if not config_path.exists():
-                continue
-            try:
-                import json as json_mod
-                raw = json_mod.loads(config_path.read_text())
-                config_key = config.get("config_key", "tools.mcpServers")
-                section = raw
-                for key in config_key.split("."):
-                    section = section.get(key, {})
-                if server in section:
-                    srv = section[server]
-                    url = _resolve_env(srv.get("url", ""))
-                    headers = {k: _resolve_env(v) for k, v in srv.get("headers", {}).items()}
-                    if url:
-                        return url, headers
-            except Exception:
-                continue
-
-    return None, {}
-
-
-def _http_tool_call(server_url: str, server_headers: dict,
-                    tool_name: str, arguments: dict) -> dict:
-    """Send a tools/call request to an HTTP MCP server."""
-    import httpx
-
-    h = {
-        "Content-Type": "application/json",
-        "Accept": "application/json, text/event-stream",
-        **server_headers
-    }
-
-    init_resp = httpx.post(
-        server_url, headers=h,
-        json={
-            "jsonrpc": "2.0", "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "tooldns-proxy", "version": "1.0.0"}
-            }
-        },
-        timeout=30
-    )
-    session_id = init_resp.headers.get("mcp-session-id")
-    if session_id:
-        h["mcp-session-id"] = session_id
-
-    httpx.post(
-        server_url, headers=h,
-        json={"jsonrpc": "2.0", "method": "notifications/initialized"},
-        timeout=10
-    )
-
-    resp = httpx.post(
-        server_url, headers=h,
-        json={
-            "jsonrpc": "2.0", "id": 2,
-            "method": "tools/call",
-            "params": {"name": tool_name, "arguments": arguments}
-        },
-        timeout=60
-    )
-    resp.raise_for_status()
-
-    content_type = resp.headers.get("content-type", "")
-    if "text/event-stream" in content_type:
-        import json as json_mod
-        for line in resp.text.split("\n"):
-            line = line.strip()
-            if line.startswith("data:"):
-                data = line[5:].strip()
-                if data:
-                    try:
-                        parsed = json_mod.loads(data)
-                        return parsed.get("result", parsed)
-                    except Exception:
-                        continue
-        return {"raw": resp.text}
-    else:
-        data = resp.json()
-        return data.get("result", data)
-
-
-def _resolve_env(val):
-    """Resolve ${ENV_VAR} references in strings."""
-    import os
-    import re
-    if isinstance(val, str):
-        def replacer(m):
-            return os.environ.get(m.group(1), "")
-        return re.sub(r'\$\{(\w+)\}', replacer, val)
-    return val
+    return result
 
 
 # -----------------------------------------------------------------------
@@ -1537,7 +1622,7 @@ async def update_skill(skill_name: str, req: dict):
     try:
         source_config = {
             "type": SourceType.SKILL_DIRECTORY,
-            "name": f"skills-{skill_name}",
+            "name": "tooldns-skills",
             "path": str(TOOLDNS_HOME / "skills"),
         }
         tools_count = _ingestion_pipeline.ingest_source(source_config)
@@ -1884,3 +1969,418 @@ read_skill("name")   # get full instructions before running a skill
         return {"system_prompt": prompt, "tools_indexed": total, "public_url": public_url}
     from fastapi.responses import PlainTextResponse
     return PlainTextResponse(prompt)
+
+
+# ---------------------------------------------------------------------------
+# Workflow / Smart Tool Chaining
+# ---------------------------------------------------------------------------
+
+@router.post("/suggest-workflow")
+def suggest_workflow(req: SuggestWorkflowRequest):
+    """
+    Suggest workflows based on a natural language query.
+    
+    ToolsDNS matches the query against learned workflow trigger phrases
+    and returns the best matching workflows with confidence scores.
+    
+    Example:
+        POST /v1/suggest-workflow
+        {"query": "onboard a new employee", "agent_id": "hr-bot"}
+    
+    Returns:
+        List of suggested workflows with steps and confidence.
+    """
+    if not _workflow_engine:
+        raise HTTPException(status_code=503, detail="Workflow engine not initialized")
+    
+    workflows = _workflow_engine.suggest_workflows(
+        query=req.query,
+        agent_id=req.agent_id,
+        top_k=3
+    )
+    
+    return {
+        "suggested_workflows": workflows[:1] if workflows else [],
+        "alternative_workflows": workflows[1:] if len(workflows) > 1 else [],
+        "query": req.query
+    }
+
+
+@router.post("/workflows")
+def create_workflow(req: CreateWorkflowRequest):
+    """
+    Manually create a workflow pattern.
+    
+    Example:
+        POST /v1/workflows
+        {
+            "name": "Deploy and Announce",
+            "trigger_phrases": ["deploy", "ship it"],
+            "steps": [
+                {"tool_id": "composio__GITHUB_CREATE_RELEASE", "purpose": "Create release"},
+                {"tool_id": "composio__SLACK_SEND_MESSAGE", "purpose": "Notify team"}
+            ]
+        }
+    """
+    if not _workflow_engine:
+        raise HTTPException(status_code=503, detail="Workflow engine not initialized")
+    
+    import hashlib
+    workflow_id = f"wp_manual_{hashlib.md5(req.name.encode()).hexdigest()[:8]}"
+    
+    # Check if exists
+    existing = _database.get_workflow(workflow_id) if _database else None
+    if existing:
+        raise HTTPException(status_code=409, detail=f"Workflow already exists: {workflow_id}")
+    
+    workflow = {
+        "id": workflow_id,
+        "name": req.name,
+        "description": req.description,
+        "trigger_phrases": req.trigger_phrases,
+        "steps": [s.model_dump() for s in req.steps],
+        "parallel_groups": req.parallel_groups,
+        "usage_count": 0,
+        "success_rate": 0.0,
+        "avg_completion_time_ms": 0.0,
+        "source": "manual",
+        "created_by": "api",
+        "created_at": datetime.utcnow().isoformat(),
+        "last_used_at": datetime.utcnow().isoformat()
+    }
+    
+    _database.upsert_workflow(workflow)
+    
+    return workflow
+
+
+@router.get("/workflows")
+def list_workflows(source: str = None):
+    """List all workflow patterns."""
+    if not _database:
+        raise HTTPException(status_code=503, detail="Database not initialized")
+    
+    workflows = _database.get_all_workflows(source=source)
+    return {"workflows": workflows, "total": len(workflows)}
+
+
+@router.get("/workflows/{workflow_id}")
+def get_workflow(workflow_id: str):
+    """Get a specific workflow by ID."""
+    if not _database:
+        raise HTTPException(status_code=503, detail="Database not initialized")
+    
+    workflow = _database.get_workflow(workflow_id)
+    if not workflow:
+        raise HTTPException(status_code=404, detail=f"Workflow not found: {workflow_id}")
+    
+    return workflow
+
+
+@router.delete("/workflows/{workflow_id}")
+def delete_workflow(workflow_id: str):
+    """Delete a workflow pattern."""
+    if not _database:
+        raise HTTPException(status_code=503, detail="Database not initialized")
+    
+    _database.delete_workflow(workflow_id)
+    return {"status": "deleted", "workflow_id": workflow_id}
+
+
+@router.post("/execute-workflow")
+async def execute_workflow(req: ExecuteWorkflowRequest):
+    """
+    Execute a workflow with the given arguments.
+    
+    Example:
+        POST /v1/execute-workflow
+        {
+            "workflow_id": "wp_abc123",
+            "args": {"employee_name": "Sarah"},
+            "execution_mode": "parallel"
+        }
+    """
+    if not _workflow_engine:
+        raise HTTPException(status_code=503, detail="Workflow engine not initialized")
+    
+    try:
+        result = await _workflow_engine.execute_workflow(
+            workflow_id=req.workflow_id,
+            args=req.args,
+            execution_mode=req.execution_mode,
+            session_id=req.session_id
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Execution failed: {str(e)}")
+
+
+@router.post("/learn")
+def trigger_learning(req: LearnFromUsageRequest = None):
+    """
+    Trigger workflow learning from recent tool usage.
+    
+    Analyzes tool call sequences and creates/updates workflow patterns
+    for frequently occurring sequences.
+    
+    This runs automatically in the background, but can be triggered
+    manually for immediate feedback.
+    
+    Example:
+        POST /v1/learn
+        {"time_window_hours": 1, "min_occurrences": 3}
+    """
+    if not _workflow_engine:
+        raise HTTPException(status_code=503, detail="Workflow engine not initialized")
+    
+    if req is None:
+        req = LearnFromUsageRequest()
+    
+    result = _workflow_engine.learn_from_usage(
+        time_window_minutes=req.time_window_hours * 60,
+        min_occurrences=req.min_occurrences,
+    )
+    
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Agent Preferences (Agent Memory)
+# ---------------------------------------------------------------------------
+
+@router.get("/agents/{agent_id}/preferences")
+def get_agent_preferences(agent_id: str):
+    """
+    Get learned preferences for an agent.
+    
+    Shows which tools the agent prefers and how often they're selected.
+    """
+    if not _database:
+        raise HTTPException(status_code=503, detail="Database not initialized")
+    
+    prefs = _database.get_agent_preferences(agent_id)
+    if not prefs:
+        return {
+            "agent_id": agent_id,
+            "preferred_tools": [],
+            "tool_selection_counts": {},
+            "message": "No preferences learned yet. Agent needs to select tools from search results."
+        }
+    
+    return prefs
+
+
+@router.get("/agents")
+def list_agents():
+    """List all agents with learned preferences."""
+    if not _database:
+        raise HTTPException(status_code=503, detail="Database not initialized")
+
+    prefs = _database.get_all_agent_preferences()
+    return {
+        "agents": [{"agent_id": p["agent_id"], "tools_preferred": len(p["preferred_tools"])} for p in prefs],
+        "total": len(prefs)
+    }
+
+
+# ---------------------------------------------------------------------------
+# Tool Performance Analytics
+# ---------------------------------------------------------------------------
+
+@router.get("/analytics/popular")
+def analytics_popular(limit: int = 20):
+    """
+    Get most-called tools ranked by call count.
+
+    Returns tools sorted by how often agents actually execute them —
+    not just search for them. Use this to identify which tools deliver
+    real value and which are noise.
+
+    Args:
+        limit: Max results (default 20).
+    """
+    if not _database:
+        raise HTTPException(status_code=503, detail="Database not initialized")
+
+    tools = _database.get_popular_tools(limit=limit)
+    return {"popular_tools": tools, "total": len(tools)}
+
+
+@router.get("/analytics/unused")
+def analytics_unused():
+    """
+    Get tools that have never been called.
+
+    These are candidates for removal — they bloat the search index
+    without delivering value. Removing dead tools makes search
+    faster and more accurate.
+    """
+    if not _database:
+        raise HTTPException(status_code=503, detail="Database not initialized")
+
+    tools = _database.get_unused_tools()
+    return {
+        "unused_tools": tools,
+        "total": len(tools),
+        "suggestion": "Consider removing tools not called in 30+ days to improve search speed."
+    }
+
+
+@router.get("/analytics/agents")
+def analytics_agents():
+    """
+    Get per-agent tool usage statistics.
+
+    Shows which agents are most active, how many unique tools they use,
+    and their favorite tools. Feeds into agent preference learning.
+    """
+    if not _database:
+        raise HTTPException(status_code=503, detail="Database not initialized")
+
+    agents = _database.get_agent_tool_stats()
+    return {"agents": agents, "total": len(agents)}
+
+
+@router.get("/analytics/conversion")
+def analytics_conversion(limit: int = 20):
+    """
+    Get search-to-call conversion rates.
+
+    Tools with high search but low call rates may need better
+    descriptions or may be duplicates of preferred alternatives.
+    """
+    if not _database:
+        raise HTTPException(status_code=503, detail="Database not initialized")
+
+    tools = _database.get_search_to_call_conversion(limit=limit)
+    return {"tools": tools, "total": len(tools)}
+
+
+# ---------------------------------------------------------------------------
+# Macros (Reusable Multi-Tool Workflows)
+# ---------------------------------------------------------------------------
+
+@router.post("/macros", response_model=MacroInfo)
+def create_macro(req: CreateMacroRequest):
+    """
+    Create a reusable macro — a multi-tool workflow callable as one tool.
+
+    Once created, call it via POST /v1/call with tool_id="macro__<name>".
+    Arguments are resolved using {placeholder} syntax in step arg_templates.
+
+    Example:
+        POST /v1/macros
+        {
+            "name": "deploy-and-notify",
+            "description": "Create release, notify Slack, post tweet",
+            "steps": [
+                {"tool_id": "GITHUB_CREATE_RELEASE", "arg_template": {"tag": "{version}"}},
+                {"tool_id": "SLACK_SEND_MESSAGE", "arg_template": {"text": "Deployed {version}"}},
+                {"tool_id": "TWITTER_POST", "arg_template": {"text": "v{version} is live!"}}
+            ]
+        }
+
+        # Then call:
+        POST /v1/call
+        {"tool_id": "macro__deploy-and-notify", "arguments": {"version": "1.2.0"}}
+    """
+    if not _database:
+        raise HTTPException(status_code=503, detail="Database not initialized")
+
+    import hashlib
+    macro_id = f"macro__{req.name}"
+
+    existing = _database.get_workflow(macro_id)
+    if existing:
+        raise HTTPException(status_code=409, detail=f"Macro already exists: {macro_id}")
+
+    steps = []
+    for i, s in enumerate(req.steps, 1):
+        steps.append({
+            "step_number": i,
+            "tool_id": s.tool_id,
+            "tool_name": s.tool_id.split("__")[-1] if "__" in s.tool_id else s.tool_id,
+            "purpose": "",
+            "arg_mapping": s.arg_template,
+            "arg_defaults": {},
+            "depends_on": [],
+            "condition": "",
+            "on_error": "stop",
+            "retry_count": 0
+        })
+
+    workflow = {
+        "id": macro_id,
+        "name": req.name,
+        "description": req.description,
+        "trigger_phrases": [],
+        "steps": steps,
+        "parallel_groups": [],
+        "usage_count": 0,
+        "success_rate": 0.0,
+        "avg_completion_time_ms": 0.0,
+        "source": "macro",
+        "created_by": "api",
+        "created_at": datetime.utcnow().isoformat(),
+        "last_used_at": datetime.utcnow().isoformat()
+    }
+
+    _database.upsert_workflow(workflow)
+
+    return MacroInfo(
+        id=macro_id,
+        name=req.name,
+        description=req.description,
+        steps=req.steps,
+        usage_count=0,
+        created_at=datetime.utcnow(),
+    )
+
+
+@router.get("/macros")
+def list_macros():
+    """
+    List all macros.
+
+    Macros are reusable multi-tool workflows stored as workflow patterns
+    with source="macro". Call them via POST /v1/call with the macro ID.
+    """
+    if not _database:
+        raise HTTPException(status_code=503, detail="Database not initialized")
+
+    workflows = _database.get_all_workflows(source="macro")
+    macros = []
+    for wf in workflows:
+        steps = []
+        for s in wf.get("steps", []):
+            steps.append({
+                "tool_id": s.get("tool_id", ""),
+                "arg_template": s.get("arg_mapping", {})
+            })
+        macros.append({
+            "id": wf["id"],
+            "name": wf["name"],
+            "description": wf.get("description", ""),
+            "steps": steps,
+            "usage_count": wf.get("usage_count", 0),
+            "created_at": wf.get("created_at"),
+        })
+    return {"macros": macros, "total": len(macros)}
+
+
+@router.delete("/macros/{macro_id}")
+def delete_macro(macro_id: str):
+    """Delete a macro."""
+    if not _database:
+        raise HTTPException(status_code=503, detail="Database not initialized")
+
+    # Ensure the ID has the prefix
+    full_id = macro_id if macro_id.startswith("macro__") else f"macro__{macro_id}"
+    macro = _database.get_workflow(full_id)
+    if not macro or macro.get("source") != "macro":
+        raise HTTPException(status_code=404, detail=f"Macro not found: {macro_id}")
+
+    _database.delete_workflow(full_id)
+    return {"status": "deleted", "macro_id": full_id}

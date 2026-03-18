@@ -282,7 +282,8 @@ class SearchEngine:
                threshold: float = 0.1, api_key: str = "",
                minimal: bool = False,
                allowed_tool_ids: Optional[set] = None,
-               seen_tool_ids: Optional[set] = None) -> SearchResponse:
+               seen_tool_ids: Optional[set] = None,
+               preference_boosts: Optional[dict[str, float]] = None) -> SearchResponse:
         """
         Search for tools matching a natural language query.
 
@@ -333,6 +334,7 @@ class SearchEngine:
         top_results, results = self._run_search(
             expanded_query, emb_matrix, all_tools, tool_ids, top_k, threshold,
             web_boost=web_boost, allowed_tool_ids=allowed_tool_ids,
+            preference_boosts=preference_boosts,
         )
 
         # Fallback: if nothing found or best result is weak, try reformulated queries
@@ -342,6 +344,7 @@ class SearchEngine:
                 fb_top, fb_results = self._run_search(
                     fallback_q, emb_matrix, all_tools, tool_ids, top_k, threshold * 0.7,
                     web_boost=web_boost, allowed_tool_ids=allowed_tool_ids,
+                    preference_boosts=preference_boosts,
                 )
                 if fb_results and fb_results[0].confidence >= 0.15:
                     top_results, results = fb_top, fb_results
@@ -451,11 +454,13 @@ class SearchEngine:
     _WEB_TOOL_NAMES = {"search", "browse", "browser", "tavily", "web", "lookup", "crawl", "scrape", "fetch"}
 
     def _run_search(self, query: str, emb_matrix, all_tools, tool_ids, top_k: int, threshold: float,
-                    web_boost: float = 0.0, allowed_tool_ids: Optional[set] = None):
+                    web_boost: float = 0.0, allowed_tool_ids: Optional[set] = None,
+                    preference_boosts: Optional[dict[str, float]] = None):
         """Run hybrid search for a given query string. Returns (top_results, SearchResult list).
 
         web_boost: extra score added to tools whose names contain web/search keywords.
         allowed_tool_ids: if set, only tools with IDs in this set are considered (profile filter).
+        preference_boosts: dict of tool_id -> boost amount from agent preferences.
         """
         query_vec = np.array(self.embedder.embed(query), dtype=np.float32)
         semantic_scores = emb_matrix @ query_vec
@@ -471,6 +476,8 @@ class SearchEngine:
             bm25 = bm25_scores.get(tid, 0.0)
             hybrid = self.SEMANTIC_WEIGHT * sem + self.BM25_WEIGHT * bm25
             boosted = False
+            boost_reason = ""
+            
             # Boost web/search tools when caller signals real-time intent
             if web_boost:
                 name_lower = all_tools[i].get("name", "").lower()
@@ -478,8 +485,16 @@ class SearchEngine:
                 if any(frag in name_lower for frag in self._WEB_TOOL_NAMES) or category_lower in {"web search", "browser", "search"}:
                     hybrid += web_boost
                     boosted = True
+                    boost_reason = "web tool boost"
+            
+            # Apply agent preference boosts
+            if preference_boosts and tid in preference_boosts:
+                hybrid += preference_boosts[tid]
+                boosted = True
+                boost_reason = f"agent preference (+{preference_boosts[tid]:.2f})"
+            
             if hybrid >= threshold:
-                scored_tools.append((tool, hybrid, sem, bm25, boosted))
+                scored_tools.append((tool, hybrid, sem, bm25, boosted, boost_reason))
 
         scored_tools.sort(key=lambda x: x[1], reverse=True)
         top_results_raw = scored_tools[:top_k]
@@ -488,7 +503,7 @@ class SearchEngine:
 
         results = []
         seen_names: set[str] = set()
-        for tool, confidence, sem, bm25, boosted in top_results_raw:
+        for tool, confidence, sem, bm25, boosted, boost_reason in top_results_raw:
             name = tool["name"]
             if name in seen_names:
                 continue
@@ -506,7 +521,10 @@ class SearchEngine:
             if bm25 > 0:
                 reasons.append(f"keyword match (BM25 {bm25:.2f})")
             if boosted:
-                reasons.append("web/search boost applied (real-time query)")
+                if boost_reason:
+                    reasons.append(boost_reason)
+                else:
+                    reasons.append("web/search boost applied (real-time query)")
             match_reason = "; ".join(reasons)
 
             results.append(SearchResult(

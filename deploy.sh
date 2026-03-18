@@ -27,7 +27,7 @@ section() { echo -e "\n${BOLD}${CYAN}──── $* ────${NC}"; }
 detail()  { echo -e "  ${DIM}$*${NC}"; }
 
 # ── Config ────────────────────────────────────────────────────────────────────
-INSTALL_DIR="${TOOLDNS_INSTALL_DIR:-/opt/tooldns}"
+INSTALL_DIR="${TOOLDNS_INSTALL_DIR:-/root/ToolsDNS}"
 DATA_DIR="${TOOLDNS_DATA_DIR:-/root/.tooldns}"
 PORT="${TOOLDNS_PORT:-8787}"
 MCP_PORT="${TOOLDNS_MCP_PORT:-8788}"

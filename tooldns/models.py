@@ -12,6 +12,8 @@ Key Models:
     BatchSearchRequest/BatchSearchResponse: Batch multi-query search.
     AgentSession: Per-agent schema dedup session for token savings.
     ToolProfile: Named tool subset for scoping agents to relevant tools.
+    WorkflowPattern: Learned or manual multi-tool sequences.
+    AgentPreference: Per-agent tool preferences for personalized search.
     SourceRequest: API model for adding a new source via /v1/sources.
 """
 
@@ -125,6 +127,7 @@ class SearchRequest(BaseModel):
         minimal: If True, return trimmed schemas (required fields only) — saves ~70% tokens.
         session_id: Agent session ID for schema dedup — skips tools already seen this session.
         profile: Tool profile name to scope search to a relevant subset (e.g. "email-agent").
+        agent_id: Agent identifier for personalized search (learned preferences).
     """
     query: str
     top_k: int = Field(default=3, ge=1, le=20)
@@ -141,6 +144,10 @@ class SearchRequest(BaseModel):
     profile: Optional[str] = Field(
         default=None,
         description="Tool profile name. Scopes search to a named subset of tools."
+    )
+    agent_id: Optional[str] = Field(
+        default=None,
+        description="Agent identifier for personalized search based on learned preferences."
     )
 
 
@@ -162,6 +169,7 @@ class SearchResult(BaseModel):
         match_reason: Human-readable explanation of why this tool was returned.
         already_seen: True if this tool was already returned in the current session.
                       When True, input_schema is omitted to save tokens.
+        preference_boost: Amount of confidence boost from agent preferences.
     """
     id: str
     name: str
@@ -173,6 +181,7 @@ class SearchResult(BaseModel):
     how_to_call: dict = Field(default_factory=dict)
     match_reason: str = ""
     already_seen: bool = False  # True = schema omitted, agent already has it
+    preference_boost: float = 0.0  # Boost from agent preferences
 
 
 class SearchResponse(BaseModel):
@@ -192,6 +201,7 @@ class SearchResponse(BaseModel):
         hint: LLM-readable suggestion when confidence is low.
         profile_active: Name of the profile used to scope this search, if any.
         session_tool_count: How many unique tools this session has seen so far.
+        agent_preferences_applied: Whether agent preference boosting was used.
     """
     results: list[SearchResult]
     total_tools_indexed: int = 0
@@ -201,6 +211,7 @@ class SearchResponse(BaseModel):
     hint: str | None = None
     profile_active: str | None = None    # Profile used for this search
     session_tool_count: int = 0          # Total unique tools seen in this session
+    agent_preferences_applied: bool = False  # Whether agent prefs were used
 
 
 # ---------------------------------------------------------------------------
@@ -231,11 +242,13 @@ class BatchSearchRequest(BaseModel):
         minimal: Strip schemas to required fields only (~70% token reduction).
         session_id: Shared session for cross-query schema dedup.
         profile: Tool profile to scope all queries to a relevant subset.
+        agent_id: Agent identifier for personalized search.
     """
     queries: list[BatchSearchItem] = Field(..., min_length=1, max_length=50)
     minimal: bool = False
     session_id: Optional[str] = None
     profile: Optional[str] = None
+    agent_id: Optional[str] = None
 
 
 class BatchSearchResponse(BaseModel):
@@ -271,8 +284,8 @@ class CreateSessionRequest(BaseModel):
     schemas for tools already seen in this session.
 
     In multi-agent setups, each agent gets its own session. Or, agents
-    working on the same task can share a session to avoid redundant schemas
-    between them (set shared=True and distribute the session_id).
+    working on the same task can share a session (set shared=True and 
+    distribute the session_id).
 
     Attributes:
         agent_id: Optional human-readable label (e.g. "email-agent-1").
@@ -367,6 +380,278 @@ class ProfileInfo(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Workflow / Smart Chaining Models
+# ---------------------------------------------------------------------------
+
+class WorkflowStep(BaseModel):
+    """
+    A single step in a workflow pattern.
+
+    Attributes:
+        step_number: Order in the workflow (1-indexed).
+        tool_id: The tool to call (e.g. "composio__SLACK_CREATE_CHANNEL").
+        tool_name: Human-readable name.
+        purpose: Why this step exists in the workflow.
+        arg_mapping: Template mapping for arguments (e.g. {"name": "{employee_name}"}).
+        arg_defaults: Default values for arguments.
+        depends_on: Step numbers that must complete before this one.
+        condition: Optional condition for execution (e.g. "if {send_email} == true").
+        on_error: Error handling strategy: "stop", "skip", or "retry".
+        retry_count: Number of retries on failure.
+    """
+    step_number: int
+    tool_id: str
+    tool_name: str = ""
+    purpose: str = ""
+    arg_mapping: dict = Field(default_factory=dict)
+    arg_defaults: dict = Field(default_factory=dict)
+    depends_on: list[int] = Field(default_factory=list)
+    condition: str = ""
+    on_error: str = "stop"  # "stop" | "skip" | "retry"
+    retry_count: int = 0
+
+
+class WorkflowPattern(BaseModel):
+    """
+    A learned or manually-defined workflow pattern.
+    
+    ToolsDNS learns these by observing agent behavior, or they can be
+    manually created. Workflows enable smart tool chaining — one query
+    triggers a complete multi-tool sequence.
+
+    Attributes:
+        id: Unique workflow ID (e.g. "wp_employee_onboarding").
+        name: Human-readable name.
+        description: What this workflow does.
+        trigger_phrases: Phrases that activate this workflow.
+        steps: Ordered list of workflow steps.
+        parallel_groups: Groups of steps that can run in parallel.
+        usage_count: How many times this workflow was used.
+        success_rate: Percentage of successful completions.
+        avg_completion_time_ms: Average time to complete.
+        source: "learned" | "manual" | "community".
+        created_by: Agent or user who created it.
+        created_at: Creation timestamp.
+        last_used_at: Last usage timestamp.
+    """
+    id: str
+    name: str
+    description: str = ""
+    trigger_phrases: list[str] = Field(default_factory=list)
+    steps: list[WorkflowStep] = Field(default_factory=list)
+    parallel_groups: list[list[int]] = Field(default_factory=list)
+    usage_count: int = 0
+    success_rate: float = 0.0
+    avg_completion_time_ms: float = 0.0
+    source: str = "learned"  # "learned" | "manual" | "community"
+    created_by: str = ""
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    last_used_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class SuggestWorkflowRequest(BaseModel):
+    """
+    Request body for POST /v1/suggest-workflow.
+
+    Attributes:
+        query: Natural language description of the task.
+        context: Key-value pairs for argument mapping (e.g. {"employee_name": "Sarah"}).
+        profile: Optional tool profile to scope suggestions.
+        agent_id: Optional agent ID for personalized suggestions.
+    """
+    query: str
+    context: dict = Field(default_factory=dict)
+    profile: Optional[str] = None
+    agent_id: Optional[str] = None
+
+
+class SuggestWorkflowResponse(BaseModel):
+    """
+    Response body for POST /v1/suggest-workflow.
+
+    Attributes:
+        suggested_workflows: List of matching workflows with confidence.
+        alternative_workflows: Lower-confidence alternatives.
+    """
+    suggested_workflows: list[WorkflowPattern]
+    alternative_workflows: list[WorkflowPattern]
+
+
+class ExecuteWorkflowRequest(BaseModel):
+    """
+    Request body for POST /v1/execute-workflow.
+
+    Attributes:
+        workflow_id: ID of the workflow to execute.
+        args: Arguments to pass to workflow steps.
+        execution_mode: "parallel" | "sequential" | "dry_run".
+        session_id: For schema dedup across steps.
+    """
+    workflow_id: str
+    args: dict = Field(default_factory=dict)
+    execution_mode: str = "parallel"  # "parallel" | "sequential" | "dry_run"
+    session_id: Optional[str] = None
+
+
+class WorkflowExecutionStep(BaseModel):
+    """Status of a single step in workflow execution."""
+    step: int
+    tool: str
+    status: str  # "pending" | "running" | "completed" | "failed" | "skipped"
+    result: dict = Field(default_factory=dict)
+    error: str = ""
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    tokens_used: int = 0
+
+
+class ExecuteWorkflowResponse(BaseModel):
+    """
+    Response body for POST /v1/execute-workflow.
+
+    Attributes:
+        execution_id: Unique execution ID.
+        status: Overall status: "running" | "completed" | "failed".
+        steps: Status of each step.
+        progress: Completion counts.
+        started_at: When execution started.
+        completed_at: When execution finished (if done).
+        total_tokens_used: Tokens consumed by all steps.
+    """
+    execution_id: str
+    status: str  # "running" | "completed" | "failed"
+    steps: list[WorkflowExecutionStep]
+    progress: dict = Field(default_factory=dict)
+    started_at: datetime
+    completed_at: Optional[datetime] = None
+    total_tokens_used: int = 0
+
+
+class CreateWorkflowRequest(BaseModel):
+    """Request body for POST /v1/workflows (manual creation)."""
+    name: str
+    description: str = ""
+    trigger_phrases: list[str] = Field(default_factory=list)
+    steps: list[WorkflowStep]
+    parallel_groups: list[list[int]] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Agent Preference Models (Agent Memory)
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Tool Call Models
+# ---------------------------------------------------------------------------
+
+class CallToolRequest(BaseModel):
+    """
+    Request body for POST /v1/call.
+
+    Attributes:
+        tool_id: The tool's unique identifier (or macro__name for macros).
+        arguments: Arguments to pass to the tool.
+        agent_id: Agent identifier for preference tracking.
+        query: Original search query (for analytics).
+        session_id: Optional session for dedup tracking.
+    """
+    tool_id: str
+    arguments: dict = Field(default_factory=dict)
+    agent_id: str = ""
+    query: str = ""
+    session_id: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Macro Models
+# ---------------------------------------------------------------------------
+
+class MacroStep(BaseModel):
+    """A single step in a macro."""
+    tool_id: str
+    arg_template: dict = Field(
+        default_factory=dict,
+        description="Argument template with {placeholder} variables. E.g. {'to': '{email}'}"
+    )
+
+
+class CreateMacroRequest(BaseModel):
+    """
+    Request body for POST /v1/macros.
+
+    Macros are reusable multi-tool workflows executed as a single call.
+
+    Example:
+        {
+            "name": "deploy-and-notify",
+            "description": "Create release then notify team",
+            "steps": [
+                {"tool_id": "GITHUB_CREATE_RELEASE", "arg_template": {"tag": "{version}"}},
+                {"tool_id": "SLACK_SEND_MESSAGE", "arg_template": {"text": "Deployed {version}"}}
+            ]
+        }
+    """
+    name: str
+    description: str = ""
+    steps: list[MacroStep] = Field(..., min_length=1, max_length=20)
+
+
+class MacroInfo(BaseModel):
+    """Response model for macro endpoints."""
+    id: str
+    name: str
+    description: str = ""
+    steps: list[MacroStep] = Field(default_factory=list)
+    usage_count: int = 0
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class AgentPreference(BaseModel):
+    """
+    Learned preferences for a specific agent.
+    
+    ToolsDNS tracks which tools an agent prefers and boosts their
+    scores in search results. This improves accuracy and reduces
+    the need for multiple searches.
+
+    Attributes:
+        agent_id: Unique agent identifier.
+        preferred_tools: Tool IDs the agent uses most often.
+        tool_selection_counts: How many times each tool was selected.
+        avg_confidence_when_selected: Average confidence of selected tools.
+        last_updated: When preferences were last updated.
+    """
+    agent_id: str
+    preferred_tools: list[str] = Field(default_factory=list)
+    tool_selection_counts: dict[str, int] = Field(default_factory=dict)
+    avg_confidence_when_selected: float = 0.0
+    last_updated: datetime = Field(default_factory=datetime.utcnow)
+
+
+class AgentPreferenceBoost(BaseModel):
+    """Boost applied to a tool based on agent preferences."""
+    tool_id: str
+    boost_amount: float  # Added to confidence score
+    reason: str  # Why this boost was applied
+
+
+class LearnFromUsageRequest(BaseModel):
+    """Request body for POST /v1/learn (trigger learning)."""
+    time_window_hours: int = Field(default=1, ge=1, le=24)
+    min_occurrences: int = Field(default=3, ge=2)
+    agent_id: Optional[str] = None  # Learn for specific agent or all
+
+
+class LearnFromUsageResponse(BaseModel):
+    """Response body for POST /v1/learn."""
+    patterns_analyzed: int
+    new_workflows_created: int
+    existing_workflows_boosted: int
+    agent_preferences_updated: int
+    workflows: list[str]
+
+
+# ---------------------------------------------------------------------------
 # Source Models
 # ---------------------------------------------------------------------------
 
@@ -453,6 +738,78 @@ class CreateSkillRequest(BaseModel):
     content: str
     skill_path: Optional[str] = None
     ingest: bool = True
+
+
+# ---------------------------------------------------------------------------
+# Preflight — server-side intent extraction + multi-strategy search
+# ---------------------------------------------------------------------------
+
+class PreflightRequest(BaseModel):
+    """
+    Request body for POST /v1/preflight.
+
+    Send a raw user message, and ToolsDNS will:
+    1. Clean the query (strip emails, URLs, dates)
+    2. Extract intent keywords using built-in patterns
+    3. Run multiple parallel searches (cleaned + intent queries)
+    4. Merge, deduplicate, and rank results
+    5. Return an LLM-ready context block with tool IDs, schemas, and call templates
+
+    This is designed to be called BEFORE the LLM loop in any agent framework,
+    so the LLM sees the right tools immediately without needing to search itself.
+
+    Attributes:
+        message: The raw user message (natural language).
+        top_k: Max results per search query (default 5).
+        threshold: Minimum confidence (default 0.1).
+        max_results: Max total results after merge (default 5).
+        include_schemas: Include input_schema for top matches (default True).
+        include_call_templates: Include ready-to-use call templates (default True).
+        include_macros: Check for relevant macros (default True).
+        agent_id: Agent identifier for personalized results.
+        format: Output format — "context_block" (injectable text) or "structured" (JSON).
+    """
+    message: str
+    top_k: int = Field(default=5, ge=1, le=20)
+    threshold: float = Field(default=0.1, ge=0.0, le=1.0)
+    max_results: int = Field(default=5, ge=1, le=20)
+    include_schemas: bool = True
+    include_call_templates: bool = True
+    include_macros: bool = True
+    agent_id: Optional[str] = None
+    format: str = Field(default="context_block", pattern="^(context_block|structured)$")
+
+
+class PreflightToolMatch(BaseModel):
+    """A single tool match in the preflight response."""
+    tool_id: str
+    name: str
+    description: str
+    confidence: float
+    input_schema: dict = Field(default_factory=dict)
+    call_template: Optional[str] = None
+    source_type: str = ""
+    matched_by: str = ""  # which query found this tool
+
+
+class PreflightResponse(BaseModel):
+    """
+    Response body for POST /v1/preflight.
+
+    Attributes:
+        found: Whether any tools were found.
+        tools: List of matched tools (merged, deduplicated, ranked).
+        macros: List of relevant macros (if include_macros=True).
+        context_block: LLM-injectable text block (if format="context_block").
+        queries_used: The search queries that were generated and executed.
+        search_time_ms: Total time for all searches.
+    """
+    found: bool = False
+    tools: list[PreflightToolMatch] = Field(default_factory=list)
+    macros: list[str] = Field(default_factory=list)
+    context_block: Optional[str] = None
+    queries_used: list[str] = Field(default_factory=list)
+    search_time_ms: float = 0.0
 
 
 class SourceResponse(BaseModel):

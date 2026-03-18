@@ -1,16 +1,69 @@
+# Python
 __pycache__/
 *.py[cod]
+*.pyo
 *.egg-info/
 dist/
 build/
 .eggs/
 *.egg
-.env
-*.db
-*.sqlite
+*.whl
+
+# Virtual environments
 .venv/
 venv/
+env/
+
+# Secrets & credentials — NEVER commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.jks
+credentials.json
+service-account*.json
+**/secrets/
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+
+# Model / cache
 .cache/
 model_cache/
+*.bin
+*.onnx
+sentence-transformers/
+
+# OS
 .DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Logs
 *.log
+logs/
+
+# Node (if any frontend added later)
+node_modules/
+package-lock.json
+
+# Misc
+*.bak
+*.tmp
+.pytest_cache/
+htmlcov/
+.coverage

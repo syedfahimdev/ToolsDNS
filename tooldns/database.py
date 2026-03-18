@@ -48,6 +48,7 @@ class ToolDatabase:
         """
         self.db_path = db_path
         self._init_db()
+        self._init_workflow_tables()
 
     def _get_conn(self) -> sqlite3.Connection:
         """
@@ -1035,3 +1036,428 @@ class ToolDatabase:
         conn.execute("UPDATE api_keys SET search_count = 0 WHERE key = ?", [key])
         conn.commit()
         conn.close()
+
+    # -----------------------------------------------------------------------
+    # Workflow Patterns (Smart Tool Chaining)
+    # -----------------------------------------------------------------------
+
+    def _init_workflow_tables(self):
+        """Create workflow and agent preference tables."""
+        conn = self._get_conn()
+        # Workflow patterns
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS workflow_patterns (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                trigger_phrases TEXT DEFAULT '[]',
+                steps TEXT DEFAULT '[]',
+                parallel_groups TEXT DEFAULT '[]',
+                usage_count INTEGER DEFAULT 0,
+                success_rate REAL DEFAULT 0.0,
+                avg_completion_time_ms REAL DEFAULT 0.0,
+                source TEXT DEFAULT 'learned',
+                created_by TEXT DEFAULT '',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                last_used_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        # Workflow executions
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS workflow_executions (
+                id TEXT PRIMARY KEY,
+                workflow_id TEXT NOT NULL,
+                status TEXT DEFAULT 'running',
+                steps TEXT DEFAULT '[]',
+                total_tokens_used INTEGER DEFAULT 0,
+                started_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                completed_at TEXT,
+                error TEXT DEFAULT ''
+            )
+        """)
+        # Agent preferences
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS agent_preferences (
+                agent_id TEXT PRIMARY KEY,
+                preferred_tools TEXT DEFAULT '[]',
+                tool_selection_counts TEXT DEFAULT '{}',
+                avg_confidence_when_selected REAL DEFAULT 0.0,
+                last_updated TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        # Tool call sequences (for learning)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS tool_call_sequences (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_id TEXT NOT NULL,
+                session_id TEXT,
+                tool_id TEXT NOT NULL,
+                query TEXT DEFAULT '',
+                timestamp TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+    def upsert_workflow(self, workflow: dict) -> None:
+        """Insert or update a workflow pattern."""
+        conn = self._get_conn()
+        conn.execute("""
+            INSERT OR REPLACE INTO workflow_patterns (
+                id, name, description, trigger_phrases, steps, parallel_groups,
+                usage_count, success_rate, avg_completion_time_ms, source,
+                created_by, created_at, last_used_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, [
+            workflow["id"],
+            workflow["name"],
+            workflow.get("description", ""),
+            json.dumps(workflow.get("trigger_phrases", [])),
+            json.dumps(workflow.get("steps", [])),
+            json.dumps(workflow.get("parallel_groups", [])),
+            workflow.get("usage_count", 0),
+            workflow.get("success_rate", 0.0),
+            workflow.get("avg_completion_time_ms", 0.0),
+            workflow.get("source", "learned"),
+            workflow.get("created_by", ""),
+            workflow.get("created_at", datetime.utcnow().isoformat()),
+            workflow.get("last_used_at", datetime.utcnow().isoformat())
+        ])
+        conn.commit()
+        conn.close()
+
+    def get_workflow(self, workflow_id: str) -> Optional[dict]:
+        """Get a workflow by ID."""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM workflow_patterns WHERE id = ?", [workflow_id]
+        ).fetchone()
+        conn.close()
+        if row:
+            return self._parse_workflow_row(row)
+        return None
+
+    def get_all_workflows(self, source: Optional[str] = None) -> list[dict]:
+        """Get all workflows, optionally filtered by source."""
+        conn = self._get_conn()
+        if source:
+            rows = conn.execute(
+                "SELECT * FROM workflow_patterns WHERE source = ? ORDER BY usage_count DESC",
+                [source]
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM workflow_patterns ORDER BY usage_count DESC"
+            ).fetchall()
+        conn.close()
+        return [self._parse_workflow_row(r) for r in rows]
+
+    def _parse_workflow_row(self, row: sqlite3.Row) -> dict:
+        """Parse a workflow database row into a dict."""
+        return {
+            "id": row["id"],
+            "name": row["name"],
+            "description": row["description"],
+            "trigger_phrases": json.loads(row["trigger_phrases"]),
+            "steps": json.loads(row["steps"]),
+            "parallel_groups": json.loads(row["parallel_groups"]),
+            "usage_count": row["usage_count"],
+            "success_rate": row["success_rate"],
+            "avg_completion_time_ms": row["avg_completion_time_ms"],
+            "source": row["source"],
+            "created_by": row["created_by"],
+            "created_at": row["created_at"],
+            "last_used_at": row["last_used_at"]
+        }
+
+    def increment_workflow_usage(self, workflow_id: str, success: bool = True, completion_time_ms: float = 0) -> None:
+        """Increment usage count and update success rate for a workflow."""
+        conn = self._get_conn()
+        # Get current stats
+        row = conn.execute(
+            "SELECT usage_count, success_rate FROM workflow_patterns WHERE id = ?",
+            [workflow_id]
+        ).fetchone()
+        if row:
+            old_count = row["usage_count"]
+            old_rate = row["success_rate"]
+            new_count = old_count + 1
+            # Update success rate with exponential moving average
+            success_val = 1.0 if success else 0.0
+            new_rate = (old_rate * old_count + success_val) / new_count
+            conn.execute("""
+                UPDATE workflow_patterns 
+                SET usage_count = ?, success_rate = ?, 
+                    avg_completion_time_ms = (avg_completion_time_ms * ? + ?) / ?,
+                    last_used_at = ?
+                WHERE id = ?
+            """, [new_count, new_rate, old_count, completion_time_ms, new_count,
+                  datetime.utcnow().isoformat(), workflow_id])
+            conn.commit()
+        conn.close()
+
+    def delete_workflow(self, workflow_id: str) -> None:
+        """Delete a workflow pattern."""
+        conn = self._get_conn()
+        conn.execute("DELETE FROM workflow_patterns WHERE id = ?", [workflow_id])
+        conn.commit()
+        conn.close()
+
+    def log_tool_call(self, agent_id: str, tool_id: str, query: str = "", session_id: Optional[str] = None) -> None:
+        """Log a tool call for workflow learning."""
+        conn = self._get_conn()
+        conn.execute("""
+            INSERT INTO tool_call_sequences (agent_id, session_id, tool_id, query, timestamp)
+            VALUES (?, ?, ?, ?, ?)
+        """, [agent_id, session_id, tool_id, query, datetime.utcnow().isoformat()])
+        conn.commit()
+        conn.close()
+
+    def get_recent_tool_sequences(self, agent_id: Optional[str] = None, 
+                                   time_window_minutes: int = 5) -> list[list[dict]]:
+        """Get sequences of tools called within time windows."""
+        conn = self._get_conn()
+        since = datetime.utcnow().isoformat()
+        # This is a simplified version - in production, use proper time math
+        if agent_id:
+            rows = conn.execute("""
+                SELECT agent_id, tool_id, query, timestamp 
+                FROM tool_call_sequences 
+                WHERE agent_id = ?
+                ORDER BY agent_id, timestamp
+            """, [agent_id]).fetchall()
+        else:
+            rows = conn.execute("""
+                SELECT agent_id, tool_id, query, timestamp 
+                FROM tool_call_sequences 
+                ORDER BY agent_id, timestamp
+            """).fetchall()
+        conn.close()
+        
+        # Group by agent and find sequences
+        sequences = []
+        current_agent = None
+        current_sequence = []
+        
+        for row in rows:
+            if row["agent_id"] != current_agent:
+                if len(current_sequence) >= 2:
+                    sequences.append(current_sequence)
+                current_agent = row["agent_id"]
+                current_sequence = []
+            current_sequence.append({
+                "tool_id": row["tool_id"],
+                "query": row["query"],
+                "timestamp": row["timestamp"]
+            })
+        
+        if len(current_sequence) >= 2:
+            sequences.append(current_sequence)
+        
+        return sequences
+
+    # -----------------------------------------------------------------------
+    # Agent Preferences (Agent Memory)
+    # -----------------------------------------------------------------------
+
+    def upsert_agent_preference(self, agent_id: str, tool_id: str, 
+                                 confidence: float = 0.0) -> None:
+        """Update agent preferences when they select a tool."""
+        conn = self._get_conn()
+        
+        # Get current preferences
+        row = conn.execute(
+            "SELECT * FROM agent_preferences WHERE agent_id = ?", [agent_id]
+        ).fetchone()
+        
+        if row:
+            prefs = json.loads(row["preferred_tools"])
+            counts = json.loads(row["tool_selection_counts"])
+            
+            # Update counts
+            counts[tool_id] = counts.get(tool_id, 0) + 1
+            
+            # Update preferred tools list (top 20 by count)
+            sorted_tools = sorted(counts.items(), key=lambda x: x[1], reverse=True)
+            prefs = [t[0] for t in sorted_tools[:20]]
+            
+            # Update average confidence
+            old_avg = row["avg_confidence_when_selected"]
+            total_selections = sum(counts.values())
+            new_avg = (old_avg * (total_selections - 1) + confidence) / total_selections
+            
+            conn.execute("""
+                UPDATE agent_preferences 
+                SET preferred_tools = ?, tool_selection_counts = ?, 
+                    avg_confidence_when_selected = ?, last_updated = ?
+                WHERE agent_id = ?
+            """, [json.dumps(prefs), json.dumps(counts), new_avg,
+                  datetime.utcnow().isoformat(), agent_id])
+        else:
+            # Create new preference record
+            conn.execute("""
+                INSERT INTO agent_preferences (agent_id, preferred_tools, 
+                    tool_selection_counts, avg_confidence_when_selected, last_updated)
+                VALUES (?, ?, ?, ?, ?)
+            """, [agent_id, json.dumps([tool_id]), json.dumps({tool_id: 1}),
+                  confidence, datetime.utcnow().isoformat()])
+        
+        conn.commit()
+        conn.close()
+
+    def get_agent_preferences(self, agent_id: str) -> Optional[dict]:
+        """Get preferences for an agent."""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM agent_preferences WHERE agent_id = ?", [agent_id]
+        ).fetchone()
+        conn.close()
+        
+        if row:
+            return {
+                "agent_id": row["agent_id"],
+                "preferred_tools": json.loads(row["preferred_tools"]),
+                "tool_selection_counts": json.loads(row["tool_selection_counts"]),
+                "avg_confidence_when_selected": row["avg_confidence_when_selected"],
+                "last_updated": row["last_updated"]
+            }
+        return None
+
+    def get_all_agent_preferences(self) -> list[dict]:
+        """Get all agent preferences."""
+        conn = self._get_conn()
+        rows = conn.execute("SELECT * FROM agent_preferences").fetchall()
+        conn.close()
+        return [{
+            "agent_id": r["agent_id"],
+            "preferred_tools": json.loads(r["preferred_tools"]),
+            "tool_selection_counts": json.loads(r["tool_selection_counts"]),
+            "avg_confidence_when_selected": r["avg_confidence_when_selected"],
+            "last_updated": r["last_updated"]
+        } for r in rows]
+
+    # -----------------------------------------------------------------------
+    # Tool Call Analytics
+    # -----------------------------------------------------------------------
+
+    def get_popular_tools(self, limit: int = 20) -> list[dict]:
+        """
+        Get most-called tools ranked by call count.
+
+        Returns:
+            List of dicts with tool_id, tool_name, call_count, last_called.
+        """
+        conn = self._get_conn()
+        rows = conn.execute("""
+            SELECT s.tool_id,
+                   COALESCE(t.name, s.tool_id) as tool_name,
+                   COUNT(*) as call_count,
+                   MAX(s.timestamp) as last_called
+            FROM tool_call_sequences s
+            LEFT JOIN tools t ON s.tool_id = t.id
+            GROUP BY s.tool_id
+            ORDER BY call_count DESC
+            LIMIT ?
+        """, [limit]).fetchall()
+        conn.close()
+        return [{
+            "tool_id": r["tool_id"],
+            "tool_name": r["tool_name"],
+            "call_count": r["call_count"],
+            "last_called": r["last_called"]
+        } for r in rows]
+
+    def get_unused_tools(self) -> list[dict]:
+        """
+        Get tools that have been indexed but never called.
+
+        Returns:
+            List of dicts with tool_id, tool_name, description.
+        """
+        conn = self._get_conn()
+        rows = conn.execute("""
+            SELECT t.id as tool_id, t.name as tool_name, t.description
+            FROM tools t
+            LEFT JOIN tool_call_sequences s ON t.id = s.tool_id
+            WHERE s.tool_id IS NULL
+            ORDER BY t.name
+        """).fetchall()
+        conn.close()
+        return [{
+            "tool_id": r["tool_id"],
+            "tool_name": r["tool_name"],
+            "description": r["description"]
+        } for r in rows]
+
+    def get_agent_tool_stats(self) -> list[dict]:
+        """
+        Get per-agent tool usage statistics.
+
+        Returns:
+            List of dicts with agent_id, total_calls, unique_tools, top_tools.
+        """
+        conn = self._get_conn()
+        rows = conn.execute("""
+            SELECT agent_id,
+                   COUNT(*) as total_calls,
+                   COUNT(DISTINCT tool_id) as unique_tools,
+                   MAX(timestamp) as last_active
+            FROM tool_call_sequences
+            GROUP BY agent_id
+            ORDER BY total_calls DESC
+        """).fetchall()
+
+        agents = []
+        for r in rows:
+            # Get top tools for this agent
+            top = conn.execute("""
+                SELECT tool_id, COUNT(*) as cnt
+                FROM tool_call_sequences
+                WHERE agent_id = ?
+                GROUP BY tool_id
+                ORDER BY cnt DESC
+                LIMIT 5
+            """, [r["agent_id"]]).fetchall()
+
+            agents.append({
+                "agent_id": r["agent_id"],
+                "total_calls": r["total_calls"],
+                "unique_tools": r["unique_tools"],
+                "last_active": r["last_active"],
+                "top_tools": [{"tool_id": t["tool_id"], "calls": t["cnt"]} for t in top]
+            })
+
+        conn.close()
+        return agents
+
+    def get_search_to_call_conversion(self, limit: int = 20) -> list[dict]:
+        """
+        Get search-to-call conversion rates per tool.
+
+        Tools that are searched for but never called may be candidates
+        for removal or improved descriptions.
+        """
+        conn = self._get_conn()
+        # Count how many times each tool appeared in search results
+        # vs how many times it was actually called
+        rows = conn.execute("""
+            SELECT t.id as tool_id,
+                   t.name as tool_name,
+                   COALESCE(calls.cnt, 0) as call_count,
+                   t.indexed_at
+            FROM tools t
+            LEFT JOIN (
+                SELECT tool_id, COUNT(*) as cnt
+                FROM tool_call_sequences
+                GROUP BY tool_id
+            ) calls ON t.id = calls.tool_id
+            ORDER BY calls.cnt DESC NULLS LAST
+            LIMIT ?
+        """, [limit]).fetchall()
+        conn.close()
+        return [{
+            "tool_id": r["tool_id"],
+            "tool_name": r["tool_name"],
+            "call_count": r["call_count"],
+            "indexed_at": r["indexed_at"]
+        } for r in rows]

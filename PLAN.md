@@ -1,7 +1,7 @@
 # ToolsDNS Roadmap — Top-Notch Features
 
-> Last updated: 2026-03-18  
-> Status: Planning phase — features ranked by impact vs effort
+> Last updated: 2026-03-18
+> Status: Phase 2 shipped — execution layer, macros, analytics, agent memory live
 
 ---
 
@@ -21,87 +21,82 @@
 
 ---
 
-## Phase 2: Agent Experience (Next 2-4 Weeks)
+## Phase 2: Agent Experience (Complete ✓)
 
-### 2.1 Smart Tool Chaining ⭐ PRIORITY
-**What:** One query → suggested multi-tool workflow  
-**Why:** Agents often need 3-4 tools in sequence. Saves 3-4 searches.  
-**Example:**
-```
-User: "Onboard a new employee"
-→ ToolsDNS suggests:
-  1. SLACK_CREATE_CHANNEL
-  2. GOOGLE_CREATE_USER
-  3. NOTION_CREATE_PAGE
-  4. GMAIL_SEND_EMAIL
-```
+### 2.1 Smart Tool Chaining ⭐ SHIPPED
+**What:** One query → suggested multi-tool workflow with real execution
+**Why:** Agents often need 3-4 tools in sequence. Saves 3-4 searches.
 **Implementation:**
-- [ ] Add `workflow_patterns` to database (common tool sequences)
-- [ ] New endpoint: `POST /v1/suggest-workflow`
-- [ ] Pattern learning from actual agent usage
-- [ ] Return ordered list with suggested args for each step
+- [x] `workflow_patterns` table with trigger phrases, steps, parallel groups
+- [x] `POST /v1/suggest-workflow` — fuzzy match + agent preference boost
+- [x] `POST /v1/execute-workflow` — **real tool calls** via caller.py
+- [x] `POST /v1/learn` — pattern learning from tool call sequences
+- [x] Argument chaining between steps (`{step.1.field}` syntax)
+- [x] Parallel execution via `asyncio.gather` for independent steps
+- [x] Retry logic with configurable `retry_count` per step
+- [x] Error handling: `on_error` = "stop" | "skip" | "retry"
+- [x] Conditional steps (`if {variable} == value`)
+- [x] Dry-run mode for previewing workflows
 
-**Tokens saved:** 3-4x per multi-step task  
-**Effort:** Medium  
-**Depends on:** Usage analytics (2.3)
+**Tokens saved:** 3-4x per multi-step task
+**Effort:** Medium
 
 ---
 
-### 2.2 Tool Composition (Macros)
-**What:** Define reusable multi-tool workflows as single virtual tools  
-**Why:** Your "vibe coding" style — ship fast, no repetitive chains  
+### 2.2 Tool Composition (Macros) ✅ SHIPPED
+**What:** Define reusable multi-tool workflows as single virtual tools
 **Example:**
 ```python
 POST /v1/macros
 {
   "name": "deploy-and-notify",
   "steps": [
-    {"tool": "GITHUB_CREATE_RELEASE", "args": {...}},
-    {"tool": "SLACK_SEND_MESSAGE", "args": {...}},
-    {"tool": "TWITTER_POST", "args": {...}}
+    {"tool_id": "GITHUB_CREATE_RELEASE", "arg_template": {"tag": "{version}"}},
+    {"tool_id": "SLACK_SEND_MESSAGE", "arg_template": {"text": "Deployed {version}"}},
+    {"tool_id": "TWITTER_POST", "arg_template": {"text": "v{version} is live!"}}
   ]
 }
 
 # Call with one request:
 POST /v1/call
-{"tool_id": "macro__deploy-and-notify", "args": {"version": "1.2.0"}}
+{"tool_id": "macro__deploy-and-notify", "arguments": {"version": "1.2.0"}}
 ```
 **Implementation:**
-- [ ] `Macro` model with ordered steps
-- [ ] `POST /v1/macros` — create macro
-- [ ] `GET /v1/macros` — list user macros
-- [ ] `POST /v1/call` — detect macro prefix, execute sequence
-- [ ] Rollback on failure (compensating transactions)
+- [x] `MacroStep` + `CreateMacroRequest` models
+- [x] `POST /v1/macros` — create macro
+- [x] `GET /v1/macros` — list user macros
+- [x] `DELETE /v1/macros/{id}` — delete macro
+- [x] `POST /v1/call` — detect `macro__` prefix, execute all steps
+- [x] Argument resolution with `{placeholder}` templates
+- [x] Stop on failure (respects `on_error` per step)
 
-**Tokens saved:** 3-4x per repeated workflow  
-**Effort:** Medium  
-**Depends on:** Nothing
+**Tokens saved:** 3-4x per repeated workflow
+**Effort:** Medium
 
 ---
 
-### 2.3 Tool Performance Analytics
-**What:** Track which tools agents actually use vs just search for  
-**Why:** Auto-suggest removing dead tools = faster searches  
-**Example:**
-```
-GET /v1/analytics/popular
-→ {
-  "most_called": ["GMAIL_SEND_EMAIL", "GITHUB_CREATE_ISSUE"],
-  "never_called": ["EXOTIC_TOOL_1", "EXOTIC_TOOL_2"],
-  "avg_latency": {"GMAIL_SEND_EMAIL": 450ms},
-  "agent_preferences": {"email-bot": ["GMAIL_*", "NOTION_*"]}
-}
-```
+### 2.3 Tool Performance Analytics ✅ SHIPPED
+**What:** Track which tools agents actually use vs just search for
 **Implementation:**
-- [ ] Track `call_tool` usage in database
-- [ ] Track search-to-call conversion rates
-- [ ] New endpoint: `GET /v1/analytics/{scope}`
-- [ ] Background job: flag unused tools for removal
-- [ ] Dashboard: visual tool usage heatmap
+- [x] Every `/v1/call` logs to `tool_call_sequences` table
+- [x] `GET /v1/analytics/popular` — most-called tools by count
+- [x] `GET /v1/analytics/unused` — indexed but never called (cleanup candidates)
+- [x] `GET /v1/analytics/agents` — per-agent stats + favorite tools
+- [x] `GET /v1/analytics/conversion` — search-to-call conversion rates
+- [x] Agent preference auto-learning from `/v1/call` usage
 
-**Tokens saved:** Faster searches over time (smaller index)  
-**Effort:** Medium  
-**Depends on:** Nothing
+**Tokens saved:** Faster searches over time (smaller index)
+**Effort:** Medium
+
+### 2.4 Real Tool Execution Layer ✅ SHIPPED
+**What:** `/v1/call` actually executes tools, not just returns schemas
+**Implementation:**
+- [x] `caller.py` — shared execution module (extracted from api.py)
+- [x] Supports stdio MCP, HTTP MCP, skills, and macros
+- [x] `CallToolRequest` Pydantic model with `agent_id` + `query` tracking
+- [x] Automatic tool selection recording for preference learning
+- [x] Workflow engine wired to real execution via `tool_caller` callable
+- [x] `resolve_args()` — argument templating with `{var}` and `{step.N.field}`
 
 ---
 

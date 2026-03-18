@@ -393,73 +393,24 @@ class IngestionPipeline:
     def _ingest_local_skills(self, skills_dir: Path,
                               source_name: str = "tooldns-skills") -> int:
         """
-        Ingest skills from ~/.tooldns/skills/<name>/SKILL.md files.
+        Ingest skills from ~/.tooldns/skills/ — SKILL.md files AND Python tool scripts.
 
-        Each skill can be:
-            - A subfolder with SKILL.md: skills/my-skill/SKILL.md
-            - A flat .md file: skills/my-skill.md
-
-        The YAML front matter is parsed for name and description.
+        Delegates to ingest_source with SKILL_DIRECTORY type so that both
+        skill descriptions and Python MCP tools within skill folders are indexed.
 
         Args:
             skills_dir: Path to the skills directory.
-            source_name: Source name for tracking (default: "local-skills").
+            source_name: Source name for tracking (default: "tooldns-skills").
 
         Returns:
-            int: Number of skills ingested as tools.
+            int: Number of tools ingested.
         """
-        self.db.delete_tools_by_source(source_name)
-
-        tools = []
-
-        # Pattern 1: Folder-based skills (my-skill/SKILL.md)
-        for item in sorted(skills_dir.iterdir()):
-            if item.is_dir():
-                skill_file = item / "SKILL.md"
-                if not skill_file.exists():
-                    continue
-                try:
-                    content = skill_file.read_text(encoding="utf-8")
-                    name, description = self._parse_skill_md(content, item.name)
-                    tools.append({
-                        "name": name,
-                        "description": description,
-                        "inputSchema": {},
-                        "_source_server": source_name,
-                        "_source_type": "skill",
-                    })
-                    logger.info(f"  → Skill: {name}")
-                except Exception as e:
-                    logger.warning(f"  ✗ Skill {item.name}: {e}")
-
-            # Pattern 2: Flat .md files (my-skill.md)
-            elif item.is_file() and item.suffix == ".md" and item.name != "_index.md":
-                try:
-                    content = item.read_text(encoding="utf-8")
-                    name, description = self._parse_skill_md(content, item.stem)
-                    tools.append({
-                        "name": name,
-                        "description": description,
-                        "inputSchema": {},
-                        "_source_server": source_name,
-                        "_source_type": "skill",
-                    })
-                    logger.info(f"  → Skill: {name}")
-                except Exception as e:
-                    logger.warning(f"  ✗ Skill {item.name}: {e}")
-
-        count = self._index_tools(tools, source_name, "skill_directory")
-
-        # Register as a proper source so it appears in the UI sources table
-        source_id = self._make_source_id({"name": source_name, "type": "skill_directory"})
-        self.db.upsert_source(
-            source_id=source_id,
-            name=source_name,
-            source_type="skill_directory",
-            config={"type": "skill_directory", "name": source_name, "path": str(skills_dir)},
-            tools_count=count,
-            status="active",
-        )
+        config = {
+            "type": SourceType.SKILL_DIRECTORY.value,
+            "name": source_name,
+            "path": str(skills_dir),
+        }
+        return self.ingest_source(config)
         return count
 
     def _parse_skill_md(self, content: str, folder_name: str) -> tuple[str, str]:
