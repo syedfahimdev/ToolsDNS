@@ -29,6 +29,7 @@ import time
 import os
 import threading
 from collections import OrderedDict
+from typing import Optional
 import numpy as np
 from tooldns.config import logger, settings
 from tooldns.database import ToolDatabase
@@ -223,8 +224,65 @@ class SearchEngine:
 
         return ""
 
+    @staticmethod
+    def trim_schema(schema: dict) -> dict:
+        """
+        Return a minimal version of a JSON Schema — required fields only.
+
+        Strips optional parameters, lengthy descriptions, and nested examples
+        to cut schema token count by ~70% while preserving enough info for
+        an LLM to call the tool correctly.
+
+        Args:
+            schema: Full JSON Schema dict from the tool.
+
+        Returns:
+            dict: Trimmed schema with only required fields and their types.
+        """
+        if not schema:
+            return {}
+        props = schema.get("properties", {})
+        required = set(schema.get("required", []))
+
+        if required:
+            # Keep only required fields, strip descriptions/examples/defaults
+            trimmed_props = {}
+            for k in required:
+                if k not in props:
+                    continue
+                field = props[k]
+                slim = {"type": field.get("type", "string")}
+                # Keep enum values — agent needs them for correctness
+                if "enum" in field:
+                    slim["enum"] = field["enum"]
+                # Keep items for arrays (need to know element type)
+                if field.get("type") == "array" and "items" in field:
+                    slim["items"] = {"type": field["items"].get("type", "string")}
+                trimmed_props[k] = slim
+        else:
+            # No required fields — return top 5 most likely useful fields
+            # Prefer shorter field names (usually simpler/core params)
+            sorted_keys = sorted(props.keys(), key=len)[:5]
+            trimmed_props = {}
+            for k in sorted_keys:
+                field = props[k]
+                slim = {"type": field.get("type", "string")}
+                if "enum" in field:
+                    slim["enum"] = field["enum"]
+                trimmed_props[k] = slim
+
+        return {
+            "type": "object",
+            "properties": trimmed_props,
+            "required": list(required),
+            "_minimal": True,   # Flag so agents know this is a trimmed schema
+        }
+
     def search(self, query: str, top_k: int = 3,
-               threshold: float = 0.1, api_key: str = "") -> SearchResponse:
+               threshold: float = 0.1, api_key: str = "",
+               minimal: bool = False,
+               allowed_tool_ids: Optional[set] = None,
+               seen_tool_ids: Optional[set] = None) -> SearchResponse:
         """
         Search for tools matching a natural language query.
 
@@ -245,12 +303,15 @@ class SearchEngine:
         """
         start_time = time.time()
 
-        # Cache hit — return instantly without re-embedding
-        cache_key = (query.strip().lower(), top_k, round(threshold, 4))
-        cached = self._cache.get(cache_key)
-        if cached is not None:
-            logger.info(f"Cache hit: '{query[:50]}' (stats: {self._cache.stats})")
-            return cached
+        # Cache key includes minimal + profile fingerprint so different modes don't collide
+        allowed_key = frozenset(allowed_tool_ids) if allowed_tool_ids else None
+        cache_key = (query.strip().lower(), top_k, round(threshold, 4), minimal, allowed_key)
+        # Skip cache if session dedup is active (seen_tool_ids changes per-agent)
+        if not seen_tool_ids:
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                logger.info(f"Cache hit: '{query[:50]}' (stats: {self._cache.stats})")
+                return cached
 
         # Detect real-time/web intent before searching
         is_realtime = self._is_realtime_query(query)
@@ -269,13 +330,19 @@ class SearchEngine:
             )
 
         # Primary search (with web boost when real-time intent detected)
-        top_results, results = self._run_search(expanded_query, emb_matrix, all_tools, tool_ids, top_k, threshold, web_boost=web_boost)
+        top_results, results = self._run_search(
+            expanded_query, emb_matrix, all_tools, tool_ids, top_k, threshold,
+            web_boost=web_boost, allowed_tool_ids=allowed_tool_ids,
+        )
 
         # Fallback: if nothing found or best result is weak, try reformulated queries
         LOW_CONFIDENCE = 0.40
         if not results or results[0].confidence < LOW_CONFIDENCE:
             for fallback_q in self._generate_fallbacks(query, is_realtime=is_realtime):
-                fb_top, fb_results = self._run_search(fallback_q, emb_matrix, all_tools, tool_ids, top_k, threshold * 0.7, web_boost=web_boost)
+                fb_top, fb_results = self._run_search(
+                    fallback_q, emb_matrix, all_tools, tool_ids, top_k, threshold * 0.7,
+                    web_boost=web_boost, allowed_tool_ids=allowed_tool_ids,
+                )
                 if fb_results and fb_results[0].confidence >= 0.15:
                     top_results, results = fb_top, fb_results
                     expanded_query = fallback_q
@@ -314,6 +381,31 @@ class SearchEngine:
             + (f" (${cost_saved:.4f} @ {model_name})" if price else "")
         )
 
+        # --- Session schema dedup ---
+        # If caller passed seen_tool_ids, mark already-known tools and strip their schemas.
+        # This saves tokens for repeat queries within an agent session.
+        tokens_saved_by_dedup = 0
+        if seen_tool_ids:
+            for r in results:
+                if r.id in seen_tool_ids:
+                    # Calculate tokens we're about to save by not resending schema
+                    schema_tokens = count_tool_tokens({"input_schema": r.input_schema})
+                    tokens_saved_by_dedup += schema_tokens
+                    r.already_seen = True
+                    r.input_schema = {}  # Strip — agent already has it from earlier in session
+                    r.description = f"[already seen — use cached schema] {r.description[:60]}"
+
+        # --- Minimal schema mode ---
+        # Strip optional fields from schemas — cuts per-result token cost ~70%.
+        # Applied AFTER dedup so already_seen tools stay empty.
+        if minimal:
+            for r in results:
+                if not r.already_seen and r.input_schema:
+                    r.input_schema = self.trim_schema(r.input_schema)
+                    # Also trim description to 100 chars — agent just needs the gist
+                    if len(r.description) > 120:
+                        r.description = r.description[:120] + "…"
+
         # Build a hint for the calling LLM when confidence is low
         hint = None
         top_conf = results[0].confidence if results else 0.0
@@ -346,20 +438,24 @@ class SearchEngine:
             results=results,
             total_tools_indexed=total_tools,
             tokens_saved=tokens_saved,
+            tokens_saved_by_dedup=tokens_saved_by_dedup,
             search_time_ms=round(search_time, 2),
-            hint=hint
+            hint=hint,
         )
-        self._cache.set(cache_key, response)
+        # Only cache when no session dedup is active (dedup results are per-agent)
+        if not seen_tool_ids:
+            self._cache.set(cache_key, response)
         return response
 
     # Name fragments that indicate a tool can search/browse the web
     _WEB_TOOL_NAMES = {"search", "browse", "browser", "tavily", "web", "lookup", "crawl", "scrape", "fetch"}
 
     def _run_search(self, query: str, emb_matrix, all_tools, tool_ids, top_k: int, threshold: float,
-                    web_boost: float = 0.0):
+                    web_boost: float = 0.0, allowed_tool_ids: Optional[set] = None):
         """Run hybrid search for a given query string. Returns (top_results, SearchResult list).
 
         web_boost: extra score added to tools whose names contain web/search keywords.
+        allowed_tool_ids: if set, only tools with IDs in this set are considered (profile filter).
         """
         query_vec = np.array(self.embedder.embed(query), dtype=np.float32)
         semantic_scores = emb_matrix @ query_vec
@@ -367,8 +463,12 @@ class SearchEngine:
 
         scored_tools = []
         for i, tool in enumerate(all_tools):
+            tid = tool_ids[i]
+            # Profile filter — skip tools not in the allowed set
+            if allowed_tool_ids is not None and tid not in allowed_tool_ids:
+                continue
             sem = float(semantic_scores[i])
-            bm25 = bm25_scores.get(tool_ids[i], 0.0)
+            bm25 = bm25_scores.get(tid, 0.0)
             hybrid = self.SEMANTIC_WEIGHT * sem + self.BM25_WEIGHT * bm25
             boosted = False
             # Boost web/search tools when caller signals real-time intent

@@ -9,6 +9,9 @@ Key Models:
     UniversalTool: The normalized representation of any tool from any source.
     ToolSource: Describes where tools come from (MCP config, skill dir, etc).
     SearchRequest/SearchResponse: API models for the /v1/search endpoint.
+    BatchSearchRequest/BatchSearchResponse: Batch multi-query search.
+    AgentSession: Per-agent schema dedup session for token savings.
+    ToolProfile: Named tool subset for scoping agents to relevant tools.
     SourceRequest: API model for adding a new source via /v1/sources.
 """
 
@@ -104,7 +107,7 @@ class UniversalTool(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# API Request / Response Models
+# Search Models
 # ---------------------------------------------------------------------------
 
 class SearchRequest(BaseModel):
@@ -119,11 +122,26 @@ class SearchRequest(BaseModel):
                Example: "create a github issue about the login bug"
         top_k: Maximum number of results to return (default: 3).
         threshold: Minimum confidence score (0.0-1.0) to include a result (default: 0.1).
-            Sentence-transformers scores typically range 0.1-0.4 for related content.
+        minimal: If True, return trimmed schemas (required fields only) — saves ~70% tokens.
+        session_id: Agent session ID for schema dedup — skips tools already seen this session.
+        profile: Tool profile name to scope search to a relevant subset (e.g. "email-agent").
     """
     query: str
     top_k: int = Field(default=3, ge=1, le=20)
     threshold: float = Field(default=0.1, ge=0.0, le=1.0)
+    # ── Multi-agent token saving features ──────────────────────────────────
+    minimal: bool = Field(
+        default=False,
+        description="Return trimmed schemas (required fields only). Saves ~70% tokens per result."
+    )
+    session_id: Optional[str] = Field(
+        default=None,
+        description="Agent session ID. Tools already returned this session are skipped (dedup)."
+    )
+    profile: Optional[str] = Field(
+        default=None,
+        description="Tool profile name. Scopes search to a named subset of tools."
+    )
 
 
 class SearchResult(BaseModel):
@@ -142,6 +160,8 @@ class SearchResult(BaseModel):
         source: Which source this tool came from.
         how_to_call: Instructions for calling this tool (MCP server info, etc).
         match_reason: Human-readable explanation of why this tool was returned.
+        already_seen: True if this tool was already returned in the current session.
+                      When True, input_schema is omitted to save tokens.
     """
     id: str
     name: str
@@ -152,6 +172,7 @@ class SearchResult(BaseModel):
     category: str = "Other"
     how_to_call: dict = Field(default_factory=dict)
     match_reason: str = ""
+    already_seen: bool = False  # True = schema omitted, agent already has it
 
 
 class SearchResponse(BaseModel):
@@ -165,15 +186,189 @@ class SearchResponse(BaseModel):
     Attributes:
         results: List of matched tools, ordered by confidence.
         total_tools_indexed: Total number of tools in the index.
-        tokens_saved: Estimated tokens saved vs. loading all tool schemas.
+        tokens_saved: Tokens saved vs. loading all tool schemas.
+        tokens_saved_by_dedup: Additional tokens saved by session schema dedup.
         search_time_ms: How long the search took in milliseconds.
+        hint: LLM-readable suggestion when confidence is low.
+        profile_active: Name of the profile used to scope this search, if any.
+        session_tool_count: How many unique tools this session has seen so far.
     """
     results: list[SearchResult]
     total_tools_indexed: int = 0
     tokens_saved: int = 0
+    tokens_saved_by_dedup: int = 0       # Extra savings from session schema dedup
     search_time_ms: float = 0.0
-    hint: str | None = None  # LLM-readable suggestion when confidence is low
+    hint: str | None = None
+    profile_active: str | None = None    # Profile used for this search
+    session_tool_count: int = 0          # Total unique tools seen in this session
 
+
+# ---------------------------------------------------------------------------
+# Batch Search Models
+# ---------------------------------------------------------------------------
+
+class BatchSearchItem(BaseModel):
+    """A single query inside a batch search request."""
+    query: str
+    top_k: int = Field(default=3, ge=1, le=20)
+    threshold: float = Field(default=0.1, ge=0.0, le=1.0)
+
+
+class BatchSearchRequest(BaseModel):
+    """
+    Request body for POST /v1/search/batch.
+
+    Execute multiple tool searches in a single HTTP call.
+    Critical for multi-agent systems — 16 agents can submit all
+    their queries at once instead of making 16 separate requests.
+
+    The shared session_id ensures schema dedup works across all
+    queries in the batch: if query 1 and query 4 both match
+    GMAIL_SEND_EMAIL, it's only returned once with full schema.
+
+    Attributes:
+        queries: List of search queries to execute in parallel.
+        minimal: Strip schemas to required fields only (~70% token reduction).
+        session_id: Shared session for cross-query schema dedup.
+        profile: Tool profile to scope all queries to a relevant subset.
+    """
+    queries: list[BatchSearchItem] = Field(..., min_length=1, max_length=50)
+    minimal: bool = False
+    session_id: Optional[str] = None
+    profile: Optional[str] = None
+
+
+class BatchSearchResponse(BaseModel):
+    """
+    Response body for POST /v1/search/batch.
+
+    Attributes:
+        results: Ordered list of SearchResponse, one per query.
+        total_queries: Number of queries executed.
+        total_tokens_saved: Sum of tokens_saved across all results.
+        total_dedup_savings: Sum of tokens_saved_by_dedup across all results.
+        batch_time_ms: Wall-clock time for the entire batch.
+        vs_sequential_ms: Estimated time if queries were made sequentially.
+    """
+    results: list[SearchResponse]
+    total_queries: int
+    total_tokens_saved: int = 0
+    total_dedup_savings: int = 0
+    batch_time_ms: float = 0.0
+    vs_sequential_ms: float = 0.0   # Estimated sequential time for comparison
+
+
+# ---------------------------------------------------------------------------
+# Agent Session Models
+# ---------------------------------------------------------------------------
+
+class CreateSessionRequest(BaseModel):
+    """
+    Request body for POST /v1/sessions.
+
+    Creates an agent session for schema dedup tracking. Once created,
+    pass the session_id in search requests to avoid receiving duplicate
+    schemas for tools already seen in this session.
+
+    In multi-agent setups, each agent gets its own session. Or, agents
+    working on the same task can share a session to avoid redundant schemas
+    between them (set shared=True and distribute the session_id).
+
+    Attributes:
+        agent_id: Optional human-readable label (e.g. "email-agent-1").
+        profile: Pre-assign a tool profile to this session's searches.
+        shared: If True, this session_id can be used by multiple agents.
+        ttl_seconds: Session lifetime in seconds (default: 1 hour).
+    """
+    agent_id: str = ""
+    profile: str = ""
+    shared: bool = False
+    ttl_seconds: int = Field(default=3600, ge=60, le=86400)
+
+
+class SessionInfo(BaseModel):
+    """
+    Response body for session endpoints — current session state.
+
+    Attributes:
+        session_id: The session's unique ID to pass in search requests.
+        agent_id: Human label for this session.
+        profile: Active tool profile for this session.
+        shared: Whether this session is shared across agents.
+        tools_seen: Number of unique tool schemas sent so far.
+        tokens_saved_by_dedup: Tokens saved by not re-sending known schemas.
+        created_at: When this session was created.
+        expires_at: When this session will expire.
+    """
+    session_id: str
+    agent_id: str = ""
+    profile: str = ""
+    shared: bool = False
+    tools_seen: int = 0
+    tokens_saved_by_dedup: int = 0
+    created_at: datetime
+    expires_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# Tool Profile Models
+# ---------------------------------------------------------------------------
+
+class CreateProfileRequest(BaseModel):
+    """
+    Request body for POST /v1/profiles.
+
+    A tool profile is a named, reusable subset of tools scoped to a specific
+    agent type or task. Agents that use a profile only search within that
+    subset — dramatically reducing token cost and improving search accuracy.
+
+    Example profiles:
+        "email-agent"   → GMAIL_*, OUTLOOK_*, EMAIL_*
+        "code-agent"    → GITHUB_*, GITLAB_*, LINEAR_*, JIRA_*
+        "data-agent"    → AIRTABLE_*, NOTION_*, GOOGLEDRIVE_*, SHEETS_*
+        "social-agent"  → TWITTER_*, LINKEDIN_*, SLACK_*
+
+    Attributes:
+        name: Unique profile name (e.g. "email-agent").
+        description: What kind of agent/task this profile is for.
+        tool_patterns: Glob patterns matched against tool names (e.g. "GMAIL_*").
+        pinned_tool_ids: Always-include specific tool IDs regardless of patterns.
+    """
+    name: str
+    description: str = ""
+    tool_patterns: list[str] = Field(
+        default_factory=list,
+        description="Glob patterns matched against tool names. E.g. ['GMAIL_*', 'OUTLOOK_*']"
+    )
+    pinned_tool_ids: list[str] = Field(
+        default_factory=list,
+        description="Specific tool IDs to always include. E.g. ['composio__SLACK_SEND_MESSAGE']"
+    )
+
+
+class ProfileInfo(BaseModel):
+    """
+    A tool profile — named subset of tools for an agent type.
+
+    Attributes:
+        name: Unique profile name.
+        description: What this profile is for.
+        tool_patterns: Glob patterns for tool name matching.
+        pinned_tool_ids: Explicitly included tool IDs.
+        tool_count: Number of tools currently matched by this profile.
+        created_at: When this profile was created.
+    """
+    name: str
+    description: str = ""
+    tool_patterns: list[str] = Field(default_factory=list)
+    pinned_tool_ids: list[str] = Field(default_factory=list)
+    tool_count: int = 0
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ---------------------------------------------------------------------------
+# Source Models
+# ---------------------------------------------------------------------------
 
 class SourceRequest(BaseModel):
     """

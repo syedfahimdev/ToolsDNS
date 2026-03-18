@@ -1,13 +1,24 @@
 """
 api.py — FastAPI routes for the ToolsDNS API.
 
-Exposes four main endpoints:
-    POST /v1/search  — Search for tools by natural language query
-    POST /v1/sources — Add a new tool source
-    GET  /v1/sources — List all registered sources
-    GET  /v1/tools   — List all indexed tools
-    POST /v1/ingest  — Re-ingest all sources (refresh)
-    DELETE /v1/sources/{id} — Remove a source and its tools
+Endpoints:
+    POST /v1/search           — Search for tools by natural language query
+    POST /v1/search/batch     — Batch search: multiple queries, one HTTP call
+    POST /v1/sources          — Add a new tool source
+    GET  /v1/sources          — List all registered sources
+    GET  /v1/tools            — List all indexed tools
+    POST /v1/ingest           — Re-ingest all sources (refresh)
+    DELETE /v1/sources/{id}   — Remove a source and its tools
+
+    # Multi-agent token saving
+    POST   /v1/sessions             — Create an agent session for schema dedup
+    GET    /v1/sessions/{id}        — Get session stats
+    DELETE /v1/sessions/{id}        — End a session
+    POST   /v1/profiles             — Create a tool profile (scoped tool subset)
+    GET    /v1/profiles             — List all profiles
+    GET    /v1/profiles/{name}      — Get a profile + its matched tool count
+    DELETE /v1/profiles/{name}      — Delete a profile
+    GET    /v1/cost-report          — Token savings & cost report across all agents
 
 Each endpoint validates input via Pydantic models (see models.py)
 and requires a valid API key (see auth.py).
@@ -15,20 +26,119 @@ and requires a valid API key (see auth.py).
 
 import os
 import uuid
+import fnmatch
+import json as _json
+import threading
+import time
 import asyncio
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
-from tooldns.config import settings
+from tooldns.config import settings, TOOLDNS_HOME
 from tooldns.auth import require_api_key
 from tooldns.models import (
     SearchRequest, SearchResponse,
+    BatchSearchRequest, BatchSearchResponse,
+    CreateSessionRequest, SessionInfo,
+    CreateProfileRequest, ProfileInfo,
     SourceRequest, SourceResponse, SourceType,
     RegisterMCPRequest, CreateSkillRequest
 )
 
 router = APIRouter(prefix="/v1", dependencies=[Depends(require_api_key)])
 admin_router = APIRouter(prefix="/v1")
+
+# ---------------------------------------------------------------------------
+# In-memory session store (thread-safe)
+# ---------------------------------------------------------------------------
+# Sessions track which tool schemas have been sent to an agent so we never
+# resend the same schema twice in a session — saves significant tokens.
+
+_sessions: dict[str, dict] = {}
+_sessions_lock = threading.Lock()
+
+
+def _cleanup_sessions() -> None:
+    """Evict expired sessions. Called lazily on every session access."""
+    now = datetime.utcnow()
+    with _sessions_lock:
+        expired = [sid for sid, s in _sessions.items() if s["expires_at"] < now]
+        for sid in expired:
+            del _sessions[sid]
+
+
+def _get_session(session_id: str) -> dict | None:
+    _cleanup_sessions()
+    with _sessions_lock:
+        return _sessions.get(session_id)
+
+
+def _update_session(session_id: str, new_tool_ids: list[str], dedup_tokens: int) -> None:
+    """Add newly-seen tool IDs and accumulate dedup savings to a session."""
+    with _sessions_lock:
+        s = _sessions.get(session_id)
+        if s:
+            s["seen_tool_ids"].update(new_tool_ids)
+            s["tokens_saved_by_dedup"] += dedup_tokens
+
+
+# ---------------------------------------------------------------------------
+# Profile store (in-memory + persisted to ~/.tooldns/profiles.json)
+# ---------------------------------------------------------------------------
+
+_profiles: dict[str, dict] = {}
+_profiles_lock = threading.Lock()
+_PROFILES_FILE = TOOLDNS_HOME / "profiles.json"
+
+
+def _load_profiles() -> None:
+    """Load profiles from disk into memory at startup."""
+    if _PROFILES_FILE.exists():
+        try:
+            data = _json.loads(_PROFILES_FILE.read_text())
+            with _profiles_lock:
+                _profiles.update(data)
+        except Exception:
+            pass
+
+
+def _save_profiles() -> None:
+    """Persist the in-memory profile dict to disk."""
+    TOOLDNS_HOME.mkdir(parents=True, exist_ok=True)
+    with _profiles_lock:
+        _PROFILES_FILE.write_text(_json.dumps(_profiles, indent=2, default=str))
+
+
+def _resolve_profile_tool_ids(profile_name: str) -> set[str] | None:
+    """
+    Resolve a profile name to the set of tool IDs it allows.
+
+    Returns None if profile not found or has no restrictions (= all tools).
+    Uses fnmatch glob matching on tool names (e.g. "GMAIL_*").
+    """
+    with _profiles_lock:
+        profile = _profiles.get(profile_name)
+    if not profile:
+        return None
+
+    patterns = profile.get("tool_patterns", [])
+    pinned = set(profile.get("pinned_tool_ids", []))
+
+    if not patterns and not pinned:
+        return None  # No restrictions — treat as unrestricted
+
+    all_tools = _database.get_all_tools() if _database else []
+    allowed = set(pinned)
+    for tool in all_tools:
+        tool_name = tool.get("name", "")
+        tool_id = tool.get("id", "")
+        for pattern in patterns:
+            if fnmatch.fnmatch(tool_name, pattern) or fnmatch.fnmatch(tool_id, pattern):
+                allowed.add(tool_id)
+                break
+
+    return allowed if allowed else None
 
 # These get injected by main.py at startup
 _search_engine = None
@@ -55,6 +165,8 @@ def init_api(search_engine, ingestion_pipeline, database, health_monitor=None):
     _ingestion_pipeline = ingestion_pipeline
     _database = database
     _health_monitor = health_monitor
+    # Load persisted profiles from disk
+    _load_profiles()
 
 
 # -----------------------------------------------------------------------
@@ -69,20 +181,448 @@ def search_tools(req: SearchRequest, auth: dict = Depends(require_api_key)):
     This is the core endpoint. Send a description of what you need,
     and get back only the relevant tool schema(s).
 
+    Multi-agent token saving options:
+    - minimal=true  → strip schemas to required fields only (~70% token reduction)
+    - session_id    → skip tools already seen in this session (schema dedup)
+    - profile       → scope search to a named tool subset (faster + more accurate)
+
     Example:
         POST /v1/search
-        {"query": "create a github issue", "top_k": 2}
+        {"query": "create a github issue", "top_k": 2, "minimal": true, "session_id": "abc123"}
 
     Returns:
         SearchResponse with matched tools, confidence scores,
-        tokens_saved metric, and search time.
+        tokens_saved, tokens_saved_by_dedup, and search time.
     """
-    return _search_engine.search(
+    # Resolve profile → allowed tool IDs
+    allowed_tool_ids = None
+    profile_name = req.profile
+    if profile_name:
+        allowed_tool_ids = _resolve_profile_tool_ids(profile_name)
+
+    # Resolve session → seen tool IDs for dedup
+    session = None
+    seen_tool_ids = None
+    if req.session_id:
+        session = _get_session(req.session_id)
+        if session:
+            seen_tool_ids = set(session["seen_tool_ids"])
+        else:
+            raise HTTPException(status_code=404, detail=f"Session not found: {req.session_id}")
+
+    response = _search_engine.search(
         query=req.query,
         top_k=req.top_k,
         threshold=req.threshold,
         api_key=auth.get("key", ""),
+        minimal=req.minimal,
+        allowed_tool_ids=allowed_tool_ids,
+        seen_tool_ids=seen_tool_ids,
     )
+
+    # Update session with newly seen tools
+    if session and req.session_id:
+        new_ids = [r.id for r in response.results if not r.already_seen]
+        _update_session(req.session_id, new_ids, response.tokens_saved_by_dedup)
+        with _sessions_lock:
+            s = _sessions.get(req.session_id)
+            response.session_tool_count = len(s["seen_tool_ids"]) if s else 0
+
+    if profile_name:
+        response.profile_active = profile_name
+
+    return response
+
+
+# -----------------------------------------------------------------------
+# Batch Search
+# -----------------------------------------------------------------------
+
+@router.post("/search/batch", response_model=BatchSearchResponse)
+def batch_search_tools(req: BatchSearchRequest, auth: dict = Depends(require_api_key)):
+    """
+    Execute multiple tool searches in a single HTTP call.
+
+    Critical for multi-agent systems — instead of 16 agents each making
+    a separate search request, batch all queries into one call.
+
+    Benefits:
+    - Single HTTP round trip regardless of query count
+    - Shared session_id enables cross-query schema dedup (tool returned
+      for query 1 won't have its schema resent for query 4)
+    - Shared profile scopes all queries to the same tool subset
+    - Total tokens_saved reported across the entire batch
+
+    Example:
+        POST /v1/search/batch
+        {
+            "queries": [
+                {"query": "send gmail email", "top_k": 1},
+                {"query": "create github issue", "top_k": 1},
+                {"query": "upload to google drive", "top_k": 1}
+            ],
+            "minimal": true,
+            "session_id": "agent-session-abc"
+        }
+    """
+    import time as _time
+
+    # Resolve profile once for the entire batch
+    allowed_tool_ids = None
+    if req.profile:
+        allowed_tool_ids = _resolve_profile_tool_ids(req.profile)
+
+    # Resolve session once — seen_tool_ids is shared across all queries
+    session = None
+    seen_tool_ids = None
+    if req.session_id:
+        session = _get_session(req.session_id)
+        if session:
+            seen_tool_ids = set(session["seen_tool_ids"])
+        else:
+            raise HTTPException(status_code=404, detail=f"Session not found: {req.session_id}")
+
+    batch_start = _time.time()
+    results = []
+    total_tokens_saved = 0
+    total_dedup_savings = 0
+    total_sequential_ms = 0.0
+
+    for item in req.queries:
+        # Use the live seen_tool_ids (updated after each query so dedup works across queries)
+        resp = _search_engine.search(
+            query=item.query,
+            top_k=item.top_k,
+            threshold=item.threshold,
+            api_key=auth.get("key", ""),
+            minimal=req.minimal,
+            allowed_tool_ids=allowed_tool_ids,
+            seen_tool_ids=seen_tool_ids,
+        )
+
+        # Update shared seen_tool_ids so next query in batch benefits from dedup
+        if seen_tool_ids is not None:
+            new_ids = [r.id for r in resp.results if not r.already_seen]
+            seen_tool_ids.update(new_ids)
+
+        if req.profile:
+            resp.profile_active = req.profile
+
+        total_tokens_saved += resp.tokens_saved
+        total_dedup_savings += resp.tokens_saved_by_dedup
+        total_sequential_ms += resp.search_time_ms
+        results.append(resp)
+
+    batch_time_ms = (_time.time() - batch_start) * 1000
+
+    # Flush updated seen_tool_ids back to the session store
+    if session and req.session_id and seen_tool_ids is not None:
+        new_all_ids = list(seen_tool_ids - set(session["seen_tool_ids"]))
+        _update_session(req.session_id, new_all_ids, total_dedup_savings)
+
+    return BatchSearchResponse(
+        results=results,
+        total_queries=len(req.queries),
+        total_tokens_saved=total_tokens_saved,
+        total_dedup_savings=total_dedup_savings,
+        batch_time_ms=round(batch_time_ms, 2),
+        vs_sequential_ms=round(total_sequential_ms, 2),
+    )
+
+
+# -----------------------------------------------------------------------
+# Agent Sessions
+# -----------------------------------------------------------------------
+
+@router.post("/sessions", response_model=SessionInfo)
+def create_session(req: CreateSessionRequest):
+    """
+    Create an agent session for schema dedup tracking.
+
+    Once created, pass the returned session_id in search requests.
+    ToolsDNS will track which tool schemas were sent to this agent
+    and skip resending them — saving tokens on every repeated search.
+
+    In multi-agent setups:
+    - Each agent gets its own session (intra-agent dedup)
+    - OR, agents on the same task share a session (inter-agent dedup)
+      by setting shared=true and distributing the session_id
+
+    Example:
+        POST /v1/sessions
+        {"agent_id": "email-agent-1", "profile": "email-agent", "ttl_seconds": 3600}
+
+        → {"session_id": "sess_abc123", "expires_at": "..."}
+
+        Then in searches:
+        POST /v1/search
+        {"query": "send email", "session_id": "sess_abc123"}
+    """
+    _cleanup_sessions()
+    session_id = f"sess_{uuid.uuid4().hex[:16]}"
+    now = datetime.utcnow()
+    expires_at = now + timedelta(seconds=req.ttl_seconds)
+
+    session_data = {
+        "session_id": session_id,
+        "agent_id": req.agent_id,
+        "profile": req.profile,
+        "shared": req.shared,
+        "seen_tool_ids": set(),
+        "tokens_saved_by_dedup": 0,
+        "created_at": now,
+        "expires_at": expires_at,
+    }
+    with _sessions_lock:
+        _sessions[session_id] = session_data
+
+    return SessionInfo(
+        session_id=session_id,
+        agent_id=req.agent_id,
+        profile=req.profile,
+        shared=req.shared,
+        tools_seen=0,
+        tokens_saved_by_dedup=0,
+        created_at=now,
+        expires_at=expires_at,
+    )
+
+
+@router.get("/sessions/{session_id}", response_model=SessionInfo)
+def get_session(session_id: str):
+    """
+    Get current stats for an agent session.
+
+    Returns how many unique tool schemas have been sent to this agent
+    and how many tokens have been saved by not resending duplicates.
+    """
+    session = _get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail=f"Session not found or expired: {session_id}")
+
+    return SessionInfo(
+        session_id=session["session_id"],
+        agent_id=session.get("agent_id", ""),
+        profile=session.get("profile", ""),
+        shared=session.get("shared", False),
+        tools_seen=len(session["seen_tool_ids"]),
+        tokens_saved_by_dedup=session["tokens_saved_by_dedup"],
+        created_at=session["created_at"],
+        expires_at=session["expires_at"],
+    )
+
+
+@router.delete("/sessions/{session_id}")
+def delete_session(session_id: str):
+    """End an agent session and clear its dedup state."""
+    with _sessions_lock:
+        if session_id not in _sessions:
+            raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+        session = _sessions.pop(session_id)
+
+    return {
+        "status": "deleted",
+        "session_id": session_id,
+        "tools_seen": len(session["seen_tool_ids"]),
+        "tokens_saved_by_dedup": session["tokens_saved_by_dedup"],
+    }
+
+
+@router.get("/sessions")
+def list_sessions():
+    """List all active sessions with their stats."""
+    _cleanup_sessions()
+    with _sessions_lock:
+        return [
+            {
+                "session_id": s["session_id"],
+                "agent_id": s.get("agent_id", ""),
+                "profile": s.get("profile", ""),
+                "shared": s.get("shared", False),
+                "tools_seen": len(s["seen_tool_ids"]),
+                "tokens_saved_by_dedup": s["tokens_saved_by_dedup"],
+                "expires_at": s["expires_at"].isoformat(),
+            }
+            for s in _sessions.values()
+        ]
+
+
+# -----------------------------------------------------------------------
+# Tool Profiles
+# -----------------------------------------------------------------------
+
+@router.post("/profiles", response_model=ProfileInfo)
+def create_profile(req: CreateProfileRequest):
+    """
+    Create a tool profile — a named, reusable subset of tools for an agent type.
+
+    Agents that search with a profile only search within the matched tools —
+    not all 5,000+. This gives three wins simultaneously:
+    1. Faster search (smaller matrix)
+    2. Better accuracy (no noise from irrelevant tools)
+    3. Lower tokens (fewer tools to return)
+
+    Example profiles:
+        "email-agent"   → tool_patterns: ["GMAIL_*", "OUTLOOK_*"]
+        "code-agent"    → tool_patterns: ["GITHUB_*", "GITLAB_*", "LINEAR_*"]
+        "data-agent"    → tool_patterns: ["AIRTABLE_*", "NOTION_*", "GOOGLEDRIVE_*"]
+        "social-agent"  → tool_patterns: ["TWITTER_*", "LINKEDIN_*", "DISCORDBOT_*"]
+
+    Example:
+        POST /v1/profiles
+        {
+            "name": "email-agent",
+            "description": "Agent that handles all email and calendar tasks",
+            "tool_patterns": ["GMAIL_*", "OUTLOOK_*", "GOOGLECALENDAR_*"],
+            "pinned_tool_ids": ["composio__SLACK_SEND_MESSAGE"]
+        }
+    """
+    with _profiles_lock:
+        if req.name in _profiles:
+            raise HTTPException(status_code=409, detail=f"Profile already exists: {req.name}")
+
+    # Count how many tools this profile currently matches
+    allowed_ids = _resolve_profile_tool_ids(req.name) or set()
+    # Need to temporarily store the profile to resolve it
+    profile_data = {
+        "name": req.name,
+        "description": req.description,
+        "tool_patterns": req.tool_patterns,
+        "pinned_tool_ids": req.pinned_tool_ids,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    with _profiles_lock:
+        _profiles[req.name] = profile_data
+
+    # Now resolve with the profile stored
+    allowed_ids = _resolve_profile_tool_ids(req.name) or set()
+    _save_profiles()
+
+    return ProfileInfo(
+        name=req.name,
+        description=req.description,
+        tool_patterns=req.tool_patterns,
+        pinned_tool_ids=req.pinned_tool_ids,
+        tool_count=len(allowed_ids),
+        created_at=datetime.utcnow(),
+    )
+
+
+@router.get("/profiles", response_model=list[ProfileInfo])
+def list_profiles():
+    """List all tool profiles with their current matched tool counts."""
+    with _profiles_lock:
+        profile_list = list(_profiles.values())
+
+    result = []
+    for p in profile_list:
+        allowed = _resolve_profile_tool_ids(p["name"]) or set()
+        result.append(ProfileInfo(
+            name=p["name"],
+            description=p.get("description", ""),
+            tool_patterns=p.get("tool_patterns", []),
+            pinned_tool_ids=p.get("pinned_tool_ids", []),
+            tool_count=len(allowed),
+            created_at=datetime.fromisoformat(p["created_at"]) if isinstance(p.get("created_at"), str) else datetime.utcnow(),
+        ))
+    return result
+
+
+@router.get("/profiles/{profile_name}", response_model=ProfileInfo)
+def get_profile(profile_name: str):
+    """Get a specific profile with its current matched tool count."""
+    with _profiles_lock:
+        p = _profiles.get(profile_name)
+    if not p:
+        raise HTTPException(status_code=404, detail=f"Profile not found: {profile_name}")
+
+    allowed = _resolve_profile_tool_ids(profile_name) or set()
+    return ProfileInfo(
+        name=p["name"],
+        description=p.get("description", ""),
+        tool_patterns=p.get("tool_patterns", []),
+        pinned_tool_ids=p.get("pinned_tool_ids", []),
+        tool_count=len(allowed),
+        created_at=datetime.fromisoformat(p["created_at"]) if isinstance(p.get("created_at"), str) else datetime.utcnow(),
+    )
+
+
+@router.delete("/profiles/{profile_name}")
+def delete_profile(profile_name: str):
+    """Delete a tool profile."""
+    with _profiles_lock:
+        if profile_name not in _profiles:
+            raise HTTPException(status_code=404, detail=f"Profile not found: {profile_name}")
+        del _profiles[profile_name]
+    _save_profiles()
+    return {"status": "deleted", "profile": profile_name}
+
+
+# -----------------------------------------------------------------------
+# Cost Report
+# -----------------------------------------------------------------------
+
+@router.get("/cost-report")
+def cost_report():
+    """
+    Token savings & cost report across all agents and sessions.
+
+    Shows the real ROI of running ToolsDNS — how many tokens have been
+    saved across all search queries, schema dedup, and profiles.
+
+    Returns:
+        - Lifetime token savings from search (not loading full index)
+        - Lifetime token savings from session schema dedup
+        - Cost saved in USD (per model if TOOLDNS_MODEL is set)
+        - Active sessions with their individual savings
+        - Cache performance (hit rate)
+        - Top searched queries
+    """
+    from tooldns.tokens import get_model_price, tokens_to_cost
+
+    stats = _database.get_search_stats()
+    cache_stats = _search_engine._cache.stats
+
+    # Session dedup savings across all active sessions
+    _cleanup_sessions()
+    with _sessions_lock:
+        active_sessions = list(_sessions.values())
+
+    session_dedup_tokens = sum(s["tokens_saved_by_dedup"] for s in active_sessions)
+    total_tokens_saved = stats.get("total_tokens_saved", 0) + session_dedup_tokens
+
+    # Cost calculation
+    model_name = _search_engine._get_model()
+    price = get_model_price(model_name) if model_name else None
+    cost_saved_usd = tokens_to_cost(total_tokens_saved, price) if price else None
+
+    # Active profiles
+    with _profiles_lock:
+        profile_names = list(_profiles.keys())
+
+    return {
+        "lifetime": {
+            "total_searches": stats.get("total_searches", 0),
+            "tokens_saved_by_search": stats.get("total_tokens_saved", 0),
+            "tokens_saved_by_dedup": session_dedup_tokens,
+            "total_tokens_saved": total_tokens_saved,
+            "cost_saved_usd": round(cost_saved_usd, 4) if cost_saved_usd else None,
+            "model": model_name or "not set (set TOOLDNS_MODEL for cost calc)",
+        },
+        "cache": cache_stats,
+        "active_sessions": [
+            {
+                "session_id": s["session_id"],
+                "agent_id": s.get("agent_id", ""),
+                "tools_seen": len(s["seen_tool_ids"]),
+                "tokens_saved_by_dedup": s["tokens_saved_by_dedup"],
+                "expires_at": s["expires_at"].isoformat(),
+            }
+            for s in active_sessions
+        ],
+        "active_profiles": profile_names,
+        "tools_indexed": _database.get_tool_count(),
+    }
 
 
 # -----------------------------------------------------------------------
