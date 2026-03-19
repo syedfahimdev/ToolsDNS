@@ -32,6 +32,7 @@ from collections import OrderedDict
 from typing import Optional
 import numpy as np
 from tooldns.config import logger, settings
+from tooldns.cache import create_cache
 from tooldns.database import ToolDatabase
 from tooldns.embedder import Embedder
 from tooldns.models import SearchResult, SearchResponse
@@ -138,7 +139,7 @@ class SearchEngine:
         self._emb_ids: list[str] = []                 # tool IDs in matrix row order
         self._emb_lock = threading.Lock()
         # Query result cache — avoids re-embedding identical queries within TTL
-        self._cache = _SearchCache(maxsize=256, ttl_secs=60.0)
+        self._cache = create_cache(maxsize=256, ttl_secs=60.0)
 
     def invalidate_cache(self) -> None:
         """Drop the in-memory embedding matrix and query cache so next search reloads from DB."""
@@ -147,6 +148,23 @@ class SearchEngine:
             self._emb_tools = []
             self._emb_ids = []
         self._cache.clear()
+
+    def warm_cache(self, top_n: int = 20) -> int:
+        """Pre-run popular queries to warm the cache. Returns number warmed."""
+        stats = self.db.get_search_stats()
+        recent = stats.get("recent_searches", [])
+        warmed = 0
+        seen_queries = set()
+        for entry in recent[:top_n]:
+            q = entry.get("query", "").strip()
+            if q and q not in seen_queries:
+                seen_queries.add(q)
+                try:
+                    self.search(query=q, top_k=3, threshold=0.1)
+                    warmed += 1
+                except Exception:
+                    pass
+        return warmed
 
     def _get_embedding_matrix(self) -> tuple[np.ndarray, list[dict], list[str]]:
         """

@@ -49,7 +49,7 @@ import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from tooldns.config import settings, TOOLDNS_HOME
 from tooldns.auth import require_api_key
 from tooldns.workflows import WorkflowEngine
@@ -66,6 +66,7 @@ from tooldns.models import (
     RegisterMCPRequest, CreateSkillRequest,
     CallToolRequest, CreateMacroRequest, MacroStep, MacroInfo,
     PreflightRequest, PreflightResponse, PreflightToolMatch,
+    SearchSelectRequest,
 )
 from tooldns.caller import call_tool as caller_call_tool, load_skill_content, resolve_args
 
@@ -235,6 +236,8 @@ def search_tools(req: SearchRequest, auth: dict = Depends(require_api_key)):
         session = _get_session(req.session_id)
         if session:
             seen_tool_ids = set(session["seen_tool_ids"])
+            if not req.agent_id and session.get("agent_id"):
+                req.agent_id = session["agent_id"]
         else:
             raise HTTPException(status_code=404, detail=f"Session not found: {req.session_id}")
 
@@ -696,6 +699,14 @@ def batch_search_tools(req: BatchSearchRequest, auth: dict = Depends(require_api
         else:
             raise HTTPException(status_code=404, detail=f"Session not found: {req.session_id}")
 
+    # Get agent preference boosts if agent_id provided
+    preference_boosts = {}
+    if req.agent_id and _workflow_engine:
+        try:
+            preference_boosts = _workflow_engine.get_agent_boosts(req.agent_id)
+        except Exception as e:
+            logger.warning(f"Failed to get agent preferences: {e}")
+
     batch_start = _time.time()
     results = []
     total_tokens_saved = 0
@@ -712,6 +723,7 @@ def batch_search_tools(req: BatchSearchRequest, auth: dict = Depends(require_api
             minimal=req.minimal,
             allowed_tool_ids=allowed_tool_ids,
             seen_tool_ids=seen_tool_ids,
+            preference_boosts=preference_boosts if preference_boosts else None,
         )
 
         # Update shared seen_tool_ids so next query in batch benefits from dedup
@@ -742,6 +754,24 @@ def batch_search_tools(req: BatchSearchRequest, auth: dict = Depends(require_api
         batch_time_ms=round(batch_time_ms, 2),
         vs_sequential_ms=round(total_sequential_ms, 2),
     )
+
+
+# -----------------------------------------------------------------------
+# Search Select — record tool selection without calling the tool
+# -----------------------------------------------------------------------
+
+@router.post("/search/select")
+def search_select(req: SearchSelectRequest):
+    """
+    Record which search result an agent selected.
+
+    Allows agents to report tool selections without executing the tool
+    via /v1/call. Updates agent preferences for personalized search.
+    """
+    if not _workflow_engine:
+        raise HTTPException(status_code=503, detail="Workflow engine not initialized")
+    _workflow_engine.record_tool_selection(req.agent_id, req.tool_id, req.query, req.confidence)
+    return {"status": "ok", "agent_id": req.agent_id, "tool_id": req.tool_id}
 
 
 # -----------------------------------------------------------------------
@@ -923,8 +953,11 @@ def create_profile(req: CreateProfileRequest):
 
 
 @router.get("/profiles", response_model=list[ProfileInfo])
-def list_profiles():
+def list_profiles(response: Response = None):
     """List all tool profiles with their current matched tool counts."""
+    if response:
+        response.headers["Cache-Control"] = "public, max-age=60"
+
     with _profiles_lock:
         profile_list = list(_profiles.values())
 
@@ -1106,12 +1139,15 @@ def _sanitize_source(source: dict, is_admin: bool) -> dict:
 
 
 @router.get("/sources")
-def list_sources(key_info: dict = Depends(require_api_key)):
+def list_sources(key_info: dict = Depends(require_api_key), response: Response = None):
     """
     List all registered sources with their status and tool counts.
 
     Admin keys see full config. Sub-keys see name/type/status only.
     """
+    if response:
+        response.headers["Cache-Control"] = "public, max-age=60"
+
     sources = _database.get_all_sources()
     is_admin = key_info.get("is_admin", False)
     return [_sanitize_source(s, is_admin) for s in sources]
@@ -1181,7 +1217,7 @@ def list_categories():
 
 
 @router.get("/tools")
-def list_tools(source: str = None, category: str = None):
+def list_tools(source: str = None, category: str = None, response: Response = None):
     """
     List all indexed tools, optionally filtered by source or category.
 
@@ -1192,6 +1228,9 @@ def list_tools(source: str = None, category: str = None):
     Returns:
         dict: Tool list with count.
     """
+    if response:
+        response.headers["Cache-Control"] = "public, max-age=300"
+
     if source:
         tools = _database.get_tools_by_source(source)
     else:
@@ -1207,7 +1246,7 @@ def list_tools(source: str = None, category: str = None):
 
 
 @router.get("/tool/{tool_id:path}")
-def get_tool(tool_id: str):
+def get_tool(tool_id: str, response: Response = None):
     """
     Get full details for a specific tool.
 
@@ -1227,6 +1266,7 @@ def get_tool(tool_id: str):
     """
     from pathlib import Path
     import json as json_mod
+    import hashlib
 
     # Find the tool in the database
     tool = _database.get_tool_by_id(tool_id)
@@ -1251,6 +1291,12 @@ def get_tool(tool_id: str):
         skill_content = load_skill_content(tool["name"], source_info)
         if skill_content:
             result["skill_content"] = skill_content
+
+    # Cache headers + ETag
+    if response:
+        response.headers["Cache-Control"] = "public, max-age=300"
+        etag = hashlib.md5(json_mod.dumps(result, sort_keys=True).encode()).hexdigest()
+        response.headers["ETag"] = f'"{etag}"'
 
     return result
 

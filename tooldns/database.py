@@ -1430,6 +1430,18 @@ class ToolDatabase:
         conn.close()
         return agents
 
+    def get_recent_logs(self, limit: int = 20) -> list[dict]:
+        """Get recent tool call logs."""
+        conn = self._get_conn()
+        rows = conn.execute("""
+            SELECT agent_id, tool_id, query, timestamp
+            FROM tool_call_sequences
+            ORDER BY timestamp DESC
+            LIMIT ?
+        """, [limit]).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
     def get_search_to_call_conversion(self, limit: int = 20) -> list[dict]:
         """
         Get search-to-call conversion rates per tool.

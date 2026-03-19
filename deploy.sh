@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
 # deploy.sh — One-command ToolsDNS installer for Ubuntu/Debian VPS
 #
-# Installs ToolsDNS directly on the host (no Docker) and configures
-# Caddy as the HTTPS reverse proxy.
+# Installs ToolsDNS directly on the host with Redis caching,
+# security hardening, and systemd services. Runs locally only.
 #
 # Usage:
 #   curl -sSL https://raw.githubusercontent.com/syedfahimdev/ToolsDNS/master/deploy.sh | bash
 #   ./deploy.sh
-#   ./deploy.sh --domain api.example.com      # skip domain prompt
-#   ./deploy.sh --domain api.example.com --no-caddy  # skip Caddy setup
 
 set -euo pipefail
 
@@ -32,32 +30,21 @@ DATA_DIR="${TOOLDNS_DATA_DIR:-/root/.tooldns}"
 PORT="${TOOLDNS_PORT:-8787}"
 MCP_PORT="${TOOLDNS_MCP_PORT:-8788}"
 SERVICE_USER="root"
-DOMAIN=""
-NO_CADDY=false
 
 # Files created — tracked for the summary
 CREATED_FILES=()
 CREATED_SERVICES=()
 
-# Parse flags
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --domain)   DOMAIN="$2"; shift 2 ;;
-    --no-caddy) NO_CADDY=true; shift ;;
-    *)          shift ;;
-  esac
-done
-
 # ── Banner ────────────────────────────────────────────────────────────────────
 echo ""
 echo -e "${CYAN}╔════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║            ⚡ ToolsDNS ⚡               ║${NC}"
-echo -e "${CYAN}║     VPS Installer (host + Caddy)       ║${NC}"
+echo -e "${CYAN}║            ToolsDNS                    ║${NC}"
+echo -e "${CYAN}║     VPS Installer (local)              ║${NC}"
 echo -e "${CYAN}╚════════════════════════════════════════╝${NC}"
 echo ""
 echo "  Install dir : $INSTALL_DIR"
 echo "  Data dir    : $DATA_DIR"
-echo "  Port        : $PORT  (API)"
+echo "  Port        : $PORT  (API — localhost only)"
 echo "  MCP port    : $MCP_PORT  (MCP persistent HTTP)"
 echo ""
 
@@ -68,25 +55,17 @@ echo ""
 section "System dependencies"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq python3 python3-pip python3-venv git curl openssl
-info "System packages installed (python3, pip, venv, git, curl, openssl)"
+apt-get install -y -qq python3 python3-pip python3-venv git curl openssl redis-server
+info "System packages installed (python3, pip, venv, git, curl, openssl, redis)"
 
-# ── Caddy ─────────────────────────────────────────────────────────────────────
-if [[ "$NO_CADDY" == false ]]; then
-  section "Caddy (reverse proxy)"
-  if ! command -v caddy &>/dev/null; then
-    info "Installing Caddy..."
-    curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key \
-      | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-    echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] \
-      https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" \
-      > /etc/apt/sources.list.d/caddy-stable.list
-    apt-get update -qq
-    apt-get install -y -qq caddy
-    info "Caddy installed"
-  else
-    info "Caddy already installed ($(caddy version 2>/dev/null | head -1))"
-  fi
+# ── Redis ─────────────────────────────────────────────────────────────────────
+section "Redis (L2 cache)"
+systemctl enable redis-server
+systemctl start redis-server
+if redis-cli ping &>/dev/null; then
+  info "Redis running — $(redis-server --version | head -1)"
+else
+  warn "Redis failed to start — ToolsDNS will use memory-only cache"
 fi
 
 # ── Clone / update repo ───────────────────────────────────────────────────────
@@ -109,7 +88,8 @@ section "Python environment"
 python3 -m venv "$INSTALL_DIR/.venv"
 "$INSTALL_DIR/.venv/bin/pip" install -q --upgrade pip
 "$INSTALL_DIR/.venv/bin/pip" install -q -e "$INSTALL_DIR"
-info "Python virtualenv ready at $INSTALL_DIR/.venv"
+"$INSTALL_DIR/.venv/bin/pip" install -q redis
+info "Python virtualenv ready at $INSTALL_DIR/.venv (includes redis-py)"
 
 # ── Data directory & config ───────────────────────────────────────────────────
 section "Data directory & config"
@@ -118,16 +98,35 @@ info "Directories: $DATA_DIR/skills  $DATA_DIR/tools"
 
 CONFIG_FILE="$DATA_DIR/config.json"
 if [[ ! -f "$CONFIG_FILE" ]]; then
+  # Read Composio env vars if set, otherwise use placeholders
+  _COMPOSIO_KEY="${COMPOSIO_API_KEY:-}"
+  _COMPOSIO_URL="${COMPOSIO_MCP_URL:-}"
+  _BROWSERUSE_KEY="${BROWSER_USE_API_KEY:-}"
+
   cat > "$CONFIG_FILE" << EOF
 {
-  "mcpServers": {},
+  "mcpServers": {
+    "composio": {
+      "url": "${_COMPOSIO_URL}",
+      "headers": {}
+    },
+    "browseruse": {
+      "command": "npx",
+      "args": ["-y", "@anthropic/browseruse-mcp@latest"],
+      "env": {
+        "BROWSER_USE_API_KEY": "${_BROWSERUSE_KEY}"
+      }
+    }
+  },
   "skillPaths": [
     "$DATA_DIR/skills"
   ]
 }
 EOF
   CREATED_FILES+=("$CONFIG_FILE")
-  info "Created $CONFIG_FILE (add MCP servers here)"
+  info "Created $CONFIG_FILE (includes Composio + Browser Use MCP)"
+  [[ -z "$_COMPOSIO_URL" ]] && warn "Set COMPOSIO_MCP_URL in .env to enable Composio"
+  [[ -z "$_BROWSERUSE_KEY" ]] && warn "Set BROWSER_USE_API_KEY in .env to enable Browser Use"
 else
   info "Existing $CONFIG_FILE kept (not overwritten)"
 fi
@@ -142,7 +141,7 @@ if [[ ! -f "$ENV_FILE" ]]; then
 
 # ── API Server ────────────────────────────────────────────────
 TOOLDNS_API_KEY=$API_KEY
-TOOLDNS_HOST=0.0.0.0
+TOOLDNS_HOST=127.0.0.1
 TOOLDNS_PORT=$PORT
 TOOLDNS_APP_NAME=ToolsDNS
 TOOLDNS_APP_TAGLINE=DNS for AI Tools
@@ -154,15 +153,15 @@ TOOLDNS_MCP_TRANSPORT=http
 TOOLDNS_MCP_HOST=127.0.0.1
 TOOLDNS_MCP_PORT=$MCP_PORT
 
-# ── Public URL ────────────────────────────────────────────────
-# Set this to your domain after Caddy is configured.
-# Used in system-prompt output and download URLs returned by skills.
-# TOOLDNS_PUBLIC_URL=https://api.yourdomain.com
-
+# ── Redis (L2 cache) ─────────────────────────────────────────
+TOOLDNS_REDIS_URL=redis://127.0.0.1:6379
 
 # ── Composio (2,000+ managed tools) ──────────────────────────
 # COMPOSIO_API_KEY=your_key_here
 # COMPOSIO_MCP_URL=your_mcp_url_here
+
+# ── Browser Use (web browsing for agents) ────────────────────
+# BROWSER_USE_API_KEY=your_key_here
 EOF
   CREATED_FILES+=("$ENV_FILE")
   info "Created $ENV_FILE"
@@ -185,6 +184,12 @@ EOF
     MCP_PORT=$(grep "^TOOLDNS_MCP_PORT=" "$ENV_FILE" | cut -d= -f2- | tr -d ' ' || echo "$MCP_PORT")
   fi
 fi
+
+# ── Security hardening ────────────────────────────────────────────────────────
+section "Security hardening"
+chmod 700 "$DATA_DIR"
+chmod 600 "$ENV_FILE"
+info "Data dir (700) and .env (600) — owner-only access"
 
 # ── Systemd services ──────────────────────────────────────────────────────────
 section "Systemd services"
@@ -293,79 +298,7 @@ for i in {1..8}; do
   sleep 3
 done
 
-# ── Caddy configuration ───────────────────────────────────────────────────────
-CADDY_CONFIG_FILE=""
-
-if [[ "$NO_CADDY" == false ]]; then
-  section "Caddy configuration"
-
-  if [[ -z "$DOMAIN" ]]; then
-    # Try to read from terminal directly — works even when script is piped from curl
-    if [[ -t 0 ]] || [[ -e /dev/tty ]]; then
-      echo ""
-      echo "  Enter the domain for the ToolsDNS API (e.g. api.toolsdns.com)."
-      echo "  Leave blank to skip — run 'tooldns caddy-setup' later."
-      echo ""
-      printf "  Domain: "
-      read -r DOMAIN </dev/tty 2>/dev/null || DOMAIN=""
-    fi
-  fi
-
-  if [[ -n "$DOMAIN" ]]; then
-    CADDY_CONFIG_FILE="/etc/caddy/conf.d/tooldns.caddy"
-    mkdir -p /etc/caddy/conf.d
-
-    cat > "$CADDY_CONFIG_FILE" << EOF
-# ToolsDNS API — managed by deploy.sh
-$DOMAIN {
-    # HTTPS via Let's Encrypt (automatic — Caddy handles certs)
-
-    header {
-        Strict-Transport-Security "max-age=31536000; includeSubDomains"
-        X-Content-Type-Options "nosniff"
-        X-Frame-Options "DENY"
-        -Server
-    }
-
-    reverse_proxy localhost:$PORT {
-        header_up X-Forwarded-For {remote_host}
-        header_up X-Real-IP {remote_host}
-    }
-}
-EOF
-    CREATED_FILES+=("$CADDY_CONFIG_FILE")
-
-    # Include conf.d in main Caddyfile if not already there
-    CADDYFILE="/etc/caddy/Caddyfile"
-    if ! grep -q "conf.d" "$CADDYFILE" 2>/dev/null; then
-      echo "" >> "$CADDYFILE"
-      echo "import /etc/caddy/conf.d/*.caddy" >> "$CADDYFILE"
-      info "Added conf.d import to $CADDYFILE"
-    fi
-
-    if caddy validate --config "$CADDYFILE" 2>/dev/null; then
-      systemctl reload caddy 2>/dev/null || systemctl restart caddy 2>/dev/null || true
-      info "Caddy reloaded — $DOMAIN → localhost:$PORT"
-    else
-      warn "Caddy config validation failed — check $CADDY_CONFIG_FILE manually"
-    fi
-
-    # Write TOOLDNS_PUBLIC_URL into .env if not already set
-    if ! grep -q "^TOOLDNS_PUBLIC_URL=" "$ENV_FILE" 2>/dev/null; then
-      echo "" >> "$ENV_FILE"
-      echo "TOOLDNS_PUBLIC_URL=https://$DOMAIN" >> "$ENV_FILE"
-      systemctl restart tooldns 2>/dev/null || true
-      info "TOOLDNS_PUBLIC_URL=https://$DOMAIN written to .env"
-    fi
-  else
-    warn "Skipped Caddy — run 'tooldns caddy-setup' to configure HTTPS later"
-  fi
-fi
-
 # ── Final summary ─────────────────────────────────────────────────────────────
-PUBLIC_URL=""
-[[ -n "$DOMAIN" ]] && PUBLIC_URL="https://$DOMAIN"
-[[ -z "$PUBLIC_URL" ]] && PUBLIC_URL=$(grep "^TOOLDNS_PUBLIC_URL=" "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d ' ' || true)
 
 echo ""
 echo -e "${CYAN}╔══════════════════════════════════════════════════════════════════╗${NC}"
@@ -375,21 +308,19 @@ echo ""
 
 # ── Services ─────────────────────────────────────────────────────────────────
 echo -e "${BOLD}SERVICES${NC}"
-echo -e "  API backend    → http://localhost:${PORT}          (systemd: tooldns)"
+echo -e "  API backend    → http://127.0.0.1:${PORT}          (systemd: tooldns)"
 echo -e "  MCP server     → http://127.0.0.1:${MCP_PORT}/mcp/  (systemd: tooldns-mcp)"
-[[ -n "$PUBLIC_URL" ]] && \
-  echo -e "  Public URL     → ${PUBLIC_URL}"
+echo -e "  Redis cache    → redis://127.0.0.1:6379            (systemd: redis-server)"
 echo ""
 
 # ── Files created ─────────────────────────────────────────────────────────────
 echo -e "${BOLD}FILES CREATED${NC}"
-echo -e "  Config (.env)  → ${ENV_FILE}"
+echo -e "  Config (.env)  → ${ENV_FILE}  ${DIM}(chmod 600)${NC}"
+echo -e "  Data dir       → ${DATA_DIR}  ${DIM}(chmod 700)${NC}"
 echo -e "  Systemd        → /etc/systemd/system/tooldns.service"
 echo -e "  Systemd        → /etc/systemd/system/tooldns-mcp.service"
 echo -e "  App code       → ${INSTALL_DIR}"
 echo -e "  CLI command    → /usr/local/bin/tooldns"
-[[ -n "$CADDY_CONFIG_FILE" ]] && \
-  echo -e "  Caddy config   → ${CADDY_CONFIG_FILE}"
 echo ""
 
 # ── Credentials ──────────────────────────────────────────────────────────────
@@ -401,8 +332,6 @@ echo ""
 # ── Where to edit ─────────────────────────────────────────────────────────────
 echo -e "${BOLD}WHERE TO EDIT${NC}"
 echo -e "  Server config   → ${ENV_FILE}"
-echo -e "  Add domain      → uncomment TOOLDNS_PUBLIC_URL in .env, then:"
-echo -e "                    tooldns caddy-setup"
 echo -e "  Add tools       → ${DATA_DIR}/skills/  (drop skill folders here)"
 echo -e "  Restart service → systemctl restart tooldns tooldns-mcp"
 echo ""
@@ -410,21 +339,6 @@ echo ""
 # ── Connect an agent ─────────────────────────────────────────────────────────
 echo -e "${BOLD}CONNECT AN AGENT — add this to your MCP config${NC}"
 echo ""
-if [[ -n "$PUBLIC_URL" ]]; then
-  echo -e "  ${DIM}# Public (HTTPS — use this for remote agents):${NC}"
-  cat << EOF
-  {
-    "mcpServers": {
-      "tooldns": {
-        "url": "${PUBLIC_URL}/mcp/",
-        "headers": { "Authorization": "Bearer ${API_KEY}" }
-      }
-    }
-  }
-EOF
-  echo ""
-fi
-echo -e "  ${DIM}# Local (no TLS — use this for agents on the same server):${NC}"
 cat << EOF
   {
     "mcpServers": {
@@ -439,24 +353,8 @@ echo ""
 
 # ── System prompt ─────────────────────────────────────────────────────────────
 echo -e "${BOLD}SYSTEM PROMPT FOR YOUR AGENT${NC}"
-echo -e "  Paste this URL as the system prompt source in your agent config:"
-if [[ -n "$PUBLIC_URL" ]]; then
-  echo -e "  ${YELLOW}${PUBLIC_URL}/v1/system-prompt${NC}"
-else
-  echo -e "  ${YELLOW}http://localhost:${PORT}/v1/system-prompt${NC}"
-fi
+echo -e "  ${YELLOW}http://127.0.0.1:${PORT}/v1/system-prompt${NC}"
 echo -e "  ${DIM}(returns live tool count + usage instructions every session)${NC}"
-echo ""
-
-# ── Skills (for TOOLDNS_URL env var) ─────────────────────────────────────────
-echo -e "${BOLD}SKILL TOOLS (if you use skill scripts on another machine)${NC}"
-echo -e "  Set this env var on the machine running the skills:"
-if [[ -n "$PUBLIC_URL" ]]; then
-  echo -e "  ${YELLOW}export TOOLDNS_URL=${PUBLIC_URL}${NC}"
-else
-  echo -e "  ${YELLOW}export TOOLDNS_URL=http://YOUR_SERVER_IP:${PORT}${NC}"
-fi
-echo -e "  ${DIM}(skills upload generated files here and return download URLs)${NC}"
 echo ""
 
 # ── Next steps ────────────────────────────────────────────────────────────────
@@ -464,25 +362,20 @@ echo -e "${BOLD}NEXT STEPS${NC}"
 echo ""
 echo -e "  1. ${BOLD}Add your first tools:${NC}"
 echo -e "       tooldns add             # interactive — MCP server, skill, OpenAPI, etc."
-echo -e "       tooldns install-mcp     # install from marketplace (GitHub, Gmail, Slack…)"
+echo -e "       tooldns install-mcp     # install from marketplace (GitHub, Gmail, Slack...)"
 echo ""
 echo -e "  2. ${BOLD}Create agent API keys:${NC}  (separate key per agent/customer)"
 echo -e "       tooldns key-create"
 echo ""
-[[ -z "$PUBLIC_URL" ]] && {
-echo -e "  3. ${BOLD}Set up HTTPS (optional but recommended):${NC}"
-echo -e "       tooldns caddy-setup     # configure domain + Let's Encrypt"
-echo ""
-}
 echo -e "${BOLD}USEFUL COMMANDS${NC}"
 echo -e "  tooldns                    # interactive menu"
 echo -e "  tooldns status             # service health check"
-echo -e "  tooldns logs               # follow live logs"
 echo -e "  tooldns stats              # token savings report"
+echo -e "  tooldns doctor             # diagnose common issues"
+echo -e "  tooldns export             # backup config + data"
 echo -e "  tooldns key-list           # list keys + usage"
 echo -e "  tooldns key-create         # create a new key"
 echo -e "  tooldns update             # pull latest + restart"
-echo -e "  tooldns caddy-setup        # configure HTTPS reverse proxy"
 echo -e "  journalctl -u tooldns -f   # raw systemd logs"
 echo -e "  journalctl -u tooldns-mcp -f"
 echo ""

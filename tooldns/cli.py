@@ -20,6 +20,11 @@ Commands:
     toolsdns search      — Search for a tool
     toolsdns ingest      — Re-ingest all sources
     toolsdns serve       — Start the API server
+    toolsdns stats       — Show search analytics and token savings
+    toolsdns test        — Test a tool with dry-run
+    toolsdns logs        — Show recent tool call logs
+    toolsdns doctor      — Run diagnostic checks
+    toolsdns export      — Export config + data as JSON backup
 
 Usage:
     python3 -m tooldns.cli install
@@ -1065,6 +1070,293 @@ def cmd_system_prompt():
         print(f"   Start it with: tooldns serve   (expected on {base_url})")
 
 
+def cmd_stats(as_json: bool = False):
+    """
+    Show search analytics: tokens saved, cost saved, popular tools.
+
+    Args:
+        as_json: If True, output raw JSON instead of formatted text.
+    """
+    db, _, search, _ = get_components()
+
+    stats = db.get_search_stats()
+    popular = db.get_popular_tools(limit=5)
+    cache_stats = search._cache.stats
+
+    if as_json:
+        data = {
+            "searches_today": len([
+                s for s in stats.get("daily", [])
+                if s["day"] == __import__("datetime").date.today().isoformat()
+            ]),
+            "searches_all_time": stats["total_searches"],
+            "tokens_saved": stats["total_tokens_saved"],
+            "cost_saved_usd": stats["total_cost_saved_usd"],
+            "avg_search_time_ms": stats["avg_search_time_ms"],
+            "cache_hit_rate": cache_stats["hit_rate"],
+            "top_tools": popular,
+        }
+        print(json.dumps(data, indent=2))
+        return
+
+    from datetime import date
+    today_str = date.today().isoformat()
+    today_searches = 0
+    for d in stats.get("daily", []):
+        if d["day"] == today_str:
+            today_searches = d["searches"]
+
+    print(f"\n  ToolsDNS Analytics\n")
+    print(f"  Searches today:     {today_searches}")
+    print(f"  Searches all time:  {stats['total_searches']}")
+    print(f"  Tokens saved:       {stats['total_tokens_saved']:,}")
+    print(f"  Cost saved:         ${stats['total_cost_saved_usd']:.4f}")
+    print(f"  Avg search time:    {stats['avg_search_time_ms']:.1f}ms")
+    print(f"  Cache hit rate:     {cache_stats['hit_rate']:.1%}")
+
+    if popular:
+        print(f"\n  Top 5 most-called tools:")
+        for i, t in enumerate(popular, 1):
+            print(f"    {i}. {t['tool_name']} ({t['call_count']} calls)")
+
+    print()
+
+
+def cmd_test(tool_id: str, args_json: str = "{}"):
+    """
+    Test a tool with dry-run. Show schema and optionally call it.
+
+    Args:
+        tool_id: The tool ID to look up and test.
+        args_json: JSON string of arguments to pass.
+    """
+    import urllib.request
+    import urllib.error
+
+    db, _, _, _ = get_components()
+    tool = db.get_tool_by_id(tool_id)
+
+    if not tool:
+        print(f"  Tool not found: {tool_id}")
+        return
+
+    print(f"\n  Tool: {tool['name']}")
+    print(f"  Description: {tool['description']}")
+    print(f"  Source: {tool.get('source_info', {}).get('source_name', '?')}")
+    print(f"\n  Input Schema:")
+    print(f"  {json.dumps(tool['input_schema'], indent=4)}")
+
+    # Try calling via the API server
+    try:
+        call_args = json.loads(args_json)
+    except json.JSONDecodeError:
+        print(f"\n  Invalid JSON args: {args_json}")
+        return
+
+    if not call_args:
+        print(f"\n  Dry run only (no --args provided). Pass --args to call the tool.")
+        return
+
+    print(f"\n  Calling tool with args: {json.dumps(call_args)}")
+    api_key = settings.api_key
+    base_url = f"http://127.0.0.1:{settings.port}"
+
+    payload = json.dumps({
+        "tool_id": tool_id,
+        "arguments": call_args,
+    }).encode()
+
+    try:
+        req = urllib.request.Request(
+            f"{base_url}/v1/call",
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read())
+            print(f"\n  Result:")
+            print(f"  {json.dumps(result, indent=4)}")
+    except urllib.error.URLError as e:
+        print(f"\n  Could not reach server at {base_url}: {e}")
+        print(f"  Start the server with: tooldns serve")
+    except Exception as e:
+        print(f"\n  Error calling tool: {e}")
+
+
+def cmd_logs(limit: int = 20):
+    """
+    Show recent tool call logs.
+
+    Args:
+        limit: Number of log entries to show.
+    """
+    db, _, _, _ = get_components()
+    logs = db.get_recent_logs(limit=limit)
+
+    if not logs:
+        print("  No tool call logs found.")
+        return
+
+    print(f"\n  Recent Tool Calls ({len(logs)}):\n")
+    for entry in logs:
+        ts = entry.get("timestamp", "?")
+        agent = entry.get("agent_id", "?")
+        tool = entry.get("tool_id", "?")
+        query = entry.get("query", "")
+        line = f"  [{ts}] agent={agent} tool={tool}"
+        if query:
+            line += f" query=\"{query[:60]}\""
+        print(line)
+    print()
+
+
+def cmd_doctor():
+    """Run diagnostic checks and report system health."""
+    import urllib.request
+    import urllib.error
+
+    home = TOOLDNS_HOME
+
+    print(f"\n  ToolsDNS Doctor\n")
+
+    # 1. Home directory
+    if home.exists() and os.access(str(home), os.W_OK):
+        print(f"  \u2713 Home directory: {home}")
+    else:
+        print(f"  \u2717 Home directory: {home} (missing or not writable)")
+
+    # 2. .env file with API key
+    env_path = home / ".env"
+    if env_path.exists():
+        env_text = env_path.read_text()
+        if "TOOLDNS_API_KEY" in env_text:
+            print(f"  \u2713 .env file: API key set")
+        else:
+            print(f"  \u2717 .env file: TOOLDNS_API_KEY not found")
+    else:
+        print(f"  \u2717 .env file: not found at {env_path}")
+
+    # 3. Database accessible
+    try:
+        db, _, _, _ = get_components()
+        tool_count = db.get_tool_count()
+        print(f"  \u2713 Database: {tool_count} tools indexed")
+    except Exception as e:
+        print(f"  \u2717 Database: {e}")
+        db = None
+
+    # 4. Sources status
+    if db:
+        try:
+            sources = db.get_all_sources()
+            if sources:
+                healthy = sum(1 for s in sources if s["status"] == "active")
+                errored = len(sources) - healthy
+                if errored == 0:
+                    print(f"  \u2713 Sources: {len(sources)} registered, all active")
+                else:
+                    print(f"  \u2717 Sources: {len(sources)} registered, {errored} with errors")
+            else:
+                print(f"  \u2717 Sources: none registered")
+        except Exception as e:
+            print(f"  \u2717 Sources: {e}")
+
+    # 5. Embedding model
+    try:
+        from tooldns.embedder import Embedder
+        embedder = Embedder()
+        _ = embedder.embed("test")
+        print(f"  \u2713 Embedding model: loaded")
+    except Exception as e:
+        print(f"  \u2717 Embedding model: {e}")
+
+    # 6. Server reachable
+    base_url = f"http://127.0.0.1:{settings.port}"
+    try:
+        with urllib.request.urlopen(f"{base_url}/health", timeout=3) as resp:
+            data = json.loads(resp.read())
+            tools = data.get("tools_indexed", "?")
+            print(f"  \u2713 Server: reachable at {base_url} ({tools} tools)")
+    except Exception:
+        print(f"  \u2717 Server: not reachable at {base_url}")
+
+    # 7. Config file
+    config_file = home / "config.json"
+    if config_file.exists():
+        try:
+            json.loads(config_file.read_text())
+            print(f"  \u2713 Config file: valid JSON")
+        except Exception:
+            print(f"  \u2717 Config file: invalid JSON at {config_file}")
+    else:
+        print(f"  \u2717 Config file: not found at {config_file}")
+
+    print()
+
+
+def cmd_export(output_path: str = None):
+    """
+    Export config and data as JSON backup.
+
+    Args:
+        output_path: File path to write. If None, prints to stdout.
+    """
+    home = TOOLDNS_HOME
+    db, _, _, _ = get_components()
+
+    export_data = {}
+
+    # Config
+    config_file = home / "config.json"
+    if config_file.exists():
+        try:
+            export_data["config"] = json.loads(config_file.read_text())
+        except Exception:
+            export_data["config"] = None
+    else:
+        export_data["config"] = None
+
+    # Sources
+    export_data["sources"] = db.get_all_sources()
+
+    # Tool profiles
+    export_data["tools"] = db.get_all_tools()
+
+    # Macros (workflows)
+    export_data["macros"] = db.get_all_workflows()
+
+    # Skill directory contents (names only)
+    skill_names = []
+    skill_dirs = [home / "skills"]
+    if config_file.exists():
+        try:
+            cfg = json.loads(config_file.read_text())
+            for sp_str in cfg.get("skillPaths", []):
+                p = Path(os.path.expanduser(sp_str))
+                if p.exists() and p not in skill_dirs:
+                    skill_dirs.append(p)
+        except Exception:
+            pass
+
+    for sd in skill_dirs:
+        if sd.exists():
+            for item in sorted(sd.iterdir()):
+                if item.is_dir() and (item / "SKILL.md").exists():
+                    skill_names.append(item.name)
+    export_data["skills"] = skill_names
+
+    output = json.dumps(export_data, indent=2, default=str)
+
+    if output_path:
+        Path(output_path).write_text(output)
+        print(f"  Exported to {output_path}")
+    else:
+        print(output)
+
+
 def cmd_ingest():
     """Re-ingest all registered sources."""
     _, _, _, pipeline = get_components()
@@ -1117,6 +1409,11 @@ def main():
         search     Search for a tool by query
         status     Show system status and health
         ingest     Re-ingest all sources
+        stats      Show search analytics and token savings
+        test       Test a tool with dry-run
+        logs       Show recent tool call logs
+        doctor     Run diagnostic checks
+        export     Export config + data as JSON backup
         serve      Start the API server
     """
     if len(sys.argv) < 2:
@@ -1136,6 +1433,11 @@ def main():
         print("  status       Show system status and health")
         print("  ingest       Re-ingest all sources")
         print("  system-prompt  Generate system prompt to paste into your agent")
+        print("  stats        Show search analytics and token savings")
+        print("  test         Test a tool (tooldns test <id> [--args '{...}'])")
+        print("  logs         Show recent tool call logs [--limit N]")
+        print("  doctor       Run diagnostic checks")
+        print("  export       Export config + data as JSON [--output path.json]")
         print("  serve        Start the API server")
         return
 
@@ -1180,6 +1482,39 @@ def main():
         cmd_serve()
     elif cmd == "system-prompt":
         cmd_system_prompt()
+    elif cmd == "stats":
+        as_json = "--json" in sys.argv
+        cmd_stats(as_json=as_json)
+    elif cmd == "test":
+        if len(sys.argv) < 3:
+            print("Usage: tooldns test <tool_id> [--args '{\"key\":\"val\"}']")
+            return
+        tool_id = sys.argv[2]
+        args_json = "{}"
+        if "--args" in sys.argv:
+            idx = sys.argv.index("--args")
+            if idx + 1 < len(sys.argv):
+                args_json = sys.argv[idx + 1]
+        cmd_test(tool_id, args_json)
+    elif cmd == "logs":
+        limit = 20
+        if "--limit" in sys.argv:
+            idx = sys.argv.index("--limit")
+            if idx + 1 < len(sys.argv):
+                try:
+                    limit = int(sys.argv[idx + 1])
+                except ValueError:
+                    pass
+        cmd_logs(limit=limit)
+    elif cmd == "doctor":
+        cmd_doctor()
+    elif cmd == "export":
+        output_path = None
+        if "--output" in sys.argv:
+            idx = sys.argv.index("--output")
+            if idx + 1 < len(sys.argv):
+                output_path = sys.argv[idx + 1]
+        cmd_export(output_path=output_path)
     else:
         print(f"Unknown command: {cmd}")
         print("Run 'python3 -m tooldns.cli' for help.")

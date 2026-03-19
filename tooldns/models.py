@@ -635,6 +635,14 @@ class AgentPreferenceBoost(BaseModel):
     reason: str  # Why this boost was applied
 
 
+class SearchSelectRequest(BaseModel):
+    """Record which search result an agent selected."""
+    agent_id: str
+    tool_id: str
+    query: str = ""
+    confidence: float = 0.0
+
+
 class LearnFromUsageRequest(BaseModel):
     """Request body for POST /v1/learn (trigger learning)."""
     time_window_hours: int = Field(default=1, ge=1, le=24)

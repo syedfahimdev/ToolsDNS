@@ -530,25 +530,37 @@ class WorkflowEngine:
     def get_agent_boosts(self, agent_id: str) -> dict[str, float]:
         """
         Get confidence boosts for tools based on agent preferences.
-        
+
         Returns:
             Dict mapping tool_id to boost amount.
         """
         pref = self.db.get_agent_preferences(agent_id)
         if not pref:
             return {}
-        
+
         boosts = {}
         counts = pref.get("tool_selection_counts", {})
         total_selections = sum(counts.values())
-        
+
         if total_selections == 0:
             return {}
-        
+
+        # Time-based decay: reduce boost for stale preferences
+        decay = 1.0
+        last_updated = pref.get("last_updated")
+        if last_updated:
+            try:
+                if isinstance(last_updated, str):
+                    last_updated = datetime.fromisoformat(last_updated)
+                days_since = (datetime.utcnow() - last_updated).total_seconds() / 86400
+                decay = max(0.3, 1.0 - days_since / 90)
+            except (ValueError, TypeError):
+                pass
+
         # Calculate boost based on selection frequency
         for tool_id, count in counts.items():
             frequency = count / total_selections
-            # Boost up to 0.15 based on frequency
-            boosts[tool_id] = min(0.15, frequency * 0.3)
-        
+            # Boost up to 0.15 based on frequency, decayed over time
+            boosts[tool_id] = min(0.15, frequency * 0.3) * decay
+
         return boosts

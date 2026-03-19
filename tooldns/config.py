@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     refresh_interval: int = 15
     log_level: str = "INFO"
     model: str = ""  # LLM model name for cost calc (e.g. claude-sonnet-4-6)
+    redis_url: str = ""  # Redis URL for L2 cache (e.g. redis://localhost:6379)
     webhook_url: str = ""  # POST health alerts here (Slack/Discord/custom)
     webhook_secret: str = ""  # Added as X-ToolsDNS-Secret header if set
     public_url: str = ""  # Public HTTPS URL (e.g. https://api.toolsdns.com) — used in connect snippets
