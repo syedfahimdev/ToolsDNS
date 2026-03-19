@@ -326,10 +326,10 @@ class ToolDatabase:
                 "input_schema": json.loads(row["input_schema"]),
                 "source_info": json.loads(row["source_info"]),
                 "tags": json.loads(row["tags"]),
-                "embedding": json.loads(row["embedding"]),
+                "embedding": json.loads(row["embedding"]) if row["embedding"] else None,
                 "indexed_at": row["indexed_at"]
             })
-        return results
+        return [r for r in results if r["embedding"] is not None]
 
     def get_tool_by_id(self, tool_id: str) -> Optional[dict]:
         """

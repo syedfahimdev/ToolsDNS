@@ -26,8 +26,8 @@ COPY . .
 RUN pip install --no-cache-dir -e .
 
 # Pre-download the embedding model so first startup is instant
-# (all-MiniLM-L6-v2 is ~23 MB — downloads to HuggingFace cache)
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+# (bge-base-en-v1.5 is ~110 MB — downloads to HuggingFace cache)
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-base-en-v1.5')"
 
 # ToolsDNS home dir — bind-mount this for persistent config/db/skills
 ENV TOOLDNS_HOME=/data

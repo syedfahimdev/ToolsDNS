@@ -7,7 +7,8 @@ Supports three backends (auto-selected in priority order):
   3. Ollama — local HTTP API for larger/better models
 
 Select the backend via TOOLDNS_EMBEDDING_MODEL:
-  - "all-MiniLM-L6-v2"         → ONNX (fast) or sentence-transformers
+  - "all-MiniLM-L6-v2"         → ONNX (fast) or sentence-transformers (384d)
+  - "bge-base-en-v1.5"         → ONNX or sentence-transformers (768d, recommended)
   - "ollama/nomic-embed-text"   → Ollama (run: ollama serve)
   - "ollama/mxbai-embed-large"  → Ollama large model
 
@@ -16,6 +17,10 @@ All backends expose the same Embedder interface so callers
 
 ONNX vs sentence-transformers produce numerically equivalent
 embeddings for the same model — compatible with existing DB vectors.
+
+NOTE: bge-base-en-v1.5 uses instruction-prefixed queries for best
+retrieval performance. The Embedder class handles this automatically
+via embed_query() for search queries vs embed() for documents.
 """
 
 import numpy as np
@@ -45,6 +50,7 @@ class _ONNXBackend:
     _HF_ALIASES = {
         "all-MiniLM-L6-v2": "sentence-transformers/all-MiniLM-L6-v2",
         "all-mpnet-base-v2": "sentence-transformers/all-mpnet-base-v2",
+        "bge-base-en-v1.5": "BAAI/bge-base-en-v1.5",
     }
 
     def __init__(self, model_name: str):
@@ -100,8 +106,15 @@ class _ONNXBackend:
 class _SentenceTransformerBackend:
     """Local embedding via sentence-transformers (fallback if ONNX unavailable)."""
 
+    # Map short names to full HF repo IDs
+    _HF_ALIASES = {
+        "bge-base-en-v1.5": "BAAI/bge-base-en-v1.5",
+        "bge-large-en-v1.5": "BAAI/bge-large-en-v1.5",
+        "bge-small-en-v1.5": "BAAI/bge-small-en-v1.5",
+    }
+
     def __init__(self, model_name: str):
-        self.model_name = model_name
+        self.model_name = self._HF_ALIASES.get(model_name, model_name)
         self._model = None
 
     def _load(self):
@@ -192,13 +205,26 @@ class Embedder:
     The public embed() and embed_batch() interface is identical
     regardless of which backend is active.
 
+    Use embed() / embed_batch() for documents (tool descriptions).
+    Use embed_query() for search queries — adds instruction prefix
+    for models that benefit from it (e.g., bge-base-en-v1.5).
+
     Attributes:
         model_name: Full model name including backend prefix (e.g., "ollama/nomic-embed-text").
     """
 
+    # Models that benefit from an instruction prefix on queries
+    _QUERY_PREFIX_MODELS = {
+        "bge-base-en-v1.5", "BAAI/bge-base-en-v1.5",
+        "bge-large-en-v1.5", "BAAI/bge-large-en-v1.5",
+        "bge-small-en-v1.5", "BAAI/bge-small-en-v1.5",
+    }
+    _QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
+
     def __init__(self, model_name: str = None):
         raw_name = model_name or settings.embedding_model
         self.model_name = raw_name
+        self._uses_query_prefix = raw_name in self._QUERY_PREFIX_MODELS
 
         if raw_name.startswith("ollama/"):
             ollama_model = raw_name[len("ollama/"):]
@@ -213,12 +239,21 @@ class Embedder:
                 self._backend = _SentenceTransformerBackend(raw_name)
                 logger.info(f"Embedding backend: sentence-transformers ({raw_name})")
 
+        if self._uses_query_prefix:
+            logger.info(f"Query prefix enabled for model {raw_name}")
+
     def embed(self, text: str) -> list[float]:
-        """Generate an embedding for a single text string."""
+        """Generate an embedding for a document (tool description). No prefix added."""
+        return self._backend.embed(text)
+
+    def embed_query(self, text: str) -> list[float]:
+        """Generate an embedding for a search query. Adds instruction prefix for BGE models."""
+        if self._uses_query_prefix:
+            text = self._QUERY_PREFIX + text
         return self._backend.embed(text)
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        """Generate embeddings for a batch of texts."""
+        """Generate embeddings for a batch of documents."""
         return self._backend.embed_batch(texts)
 
     def preload(self):

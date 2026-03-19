@@ -27,6 +27,7 @@ Usage:
 import os
 import re
 import json
+import time
 import hashlib
 from pathlib import Path
 from typing import Optional
@@ -115,79 +116,93 @@ class IngestionPipeline:
     # Main entry points
     # -------------------------------------------------------------------
 
-    def ingest_source(self, source_config: dict) -> int:
+    def ingest_source(self, source_config: dict, max_retries: int = 3) -> int:
         """
-        Ingest tools from a single source configuration.
+        Ingest tools from a single source configuration with automatic retry.
 
         Dispatches to the appropriate handler based on source type,
-        then indexes all discovered tools.
+        then indexes all discovered tools. On failure, retries up to
+        max_retries times with exponential backoff.
 
         Args:
             source_config: Source configuration dict with at least:
                 - type (str): The source type (see SourceType enum).
                 - name (str): Human-readable source name.
                 Plus type-specific fields (path, url, command, etc).
+            max_retries: Maximum number of retry attempts on failure.
 
         Returns:
             int: Number of tools successfully ingested.
 
         Raises:
-            ValueError: If the source type is not supported.
+            ValueError: If the source type is not supported (no retry).
         """
         source_type = source_config.get("type", "")
         source_name = source_config.get("name", "unknown")
         source_id = self._make_source_id(source_config)
 
-        logger.info(f"Ingesting source: {source_name} (type: {source_type})")
+        last_error = None
+        for attempt in range(max_retries + 1):
+            if attempt > 0:
+                delay = min(2 ** attempt, 30)
+                logger.info(f"Retrying ingest of {source_name} (attempt {attempt + 1}/{max_retries + 1}) after {delay}s...")
+                time.sleep(delay)
 
-        try:
-            # Clear old tools from this source before re-ingesting
-            removed = self.db.delete_tools_by_source(source_name)
-            if removed:
-                logger.info(f"Removed {removed} old tools from {source_name}")
+            logger.info(f"Ingesting source: {source_name} (type: {source_type})")
 
-            # Dispatch to the right handler
-            if source_type == SourceType.MCP_CONFIG:
-                tools = self._ingest_mcp_config(source_config)
-            elif source_type == SourceType.MCP_STDIO:
-                tools = self._ingest_mcp_stdio(source_config)
-            elif source_type == SourceType.MCP_HTTP:
-                tools = self._ingest_mcp_http(source_config)
-            elif source_type == SourceType.SKILL_DIRECTORY:
-                tools = self._ingest_skill_directory(source_config)
-            elif source_type == SourceType.CUSTOM:
-                tools = self._ingest_custom(source_config)
-            else:
-                raise ValueError(f"Unsupported source type: {source_type}")
+            try:
+                # Clear old tools from this source before re-ingesting
+                removed = self.db.delete_tools_by_source(source_name)
+                if removed:
+                    logger.info(f"Removed {removed} old tools from {source_name}")
 
-            # Embed and store each tool
-            count = self._index_tools(tools, source_name, source_type)
+                # Dispatch to the right handler
+                if source_type == SourceType.MCP_CONFIG:
+                    tools = self._ingest_mcp_config(source_config)
+                elif source_type == SourceType.MCP_STDIO:
+                    tools = self._ingest_mcp_stdio(source_config)
+                elif source_type == SourceType.MCP_HTTP:
+                    tools = self._ingest_mcp_http(source_config)
+                elif source_type == SourceType.SKILL_DIRECTORY:
+                    tools = self._ingest_skill_directory(source_config)
+                elif source_type == SourceType.CUSTOM:
+                    tools = self._ingest_custom(source_config)
+                else:
+                    raise ValueError(f"Unsupported source type: {source_type}")
 
-            # Update source record
-            self.db.upsert_source(
-                source_id=source_id,
-                name=source_name,
-                source_type=source_type,
-                config=source_config,
-                tools_count=count,
-                status="active"
-            )
+                # Embed and store each tool
+                count = self._index_tools(tools, source_name, source_type)
 
-            logger.info(f"Successfully ingested {count} tools from {source_name}")
-            return count
+                # Update source record
+                self.db.upsert_source(
+                    source_id=source_id,
+                    name=source_name,
+                    source_type=source_type,
+                    config=source_config,
+                    tools_count=count,
+                    status="active"
+                )
 
-        except Exception as e:
-            logger.error(f"Failed to ingest {source_name}: {e}")
-            self.db.upsert_source(
-                source_id=source_id,
-                name=source_name,
-                source_type=source_type,
-                config=source_config,
-                tools_count=0,
-                status="error",
-                error=str(e)
-            )
-            raise
+                logger.info(f"Successfully ingested {count} tools from {source_name}")
+                return count
+
+            except ValueError:
+                raise  # Don't retry on bad source type
+            except Exception as e:
+                last_error = e
+                logger.error(f"Failed to ingest {source_name} (attempt {attempt + 1}): {e}")
+
+        # All retries exhausted
+        self.db.upsert_source(
+            source_id=source_id,
+            name=source_name,
+            source_type=source_type,
+            config=source_config,
+            tools_count=0,
+            status="error",
+            error=str(last_error)
+        )
+        raise last_error
 
     def _cleanup_orphaned_tools(self) -> None:
         """
@@ -238,6 +253,7 @@ class IngestionPipeline:
         sources = self.db.get_all_sources()
         total = 0
         errors = []
+        ingested_names: set[str] = set()
 
         for source in sources:
             try:
@@ -259,13 +275,14 @@ class IngestionPipeline:
 
                 count = self.ingest_source(config)
                 total += count
+                ingested_names.add(source["name"])
             except Exception as e:
                 errors.append(f"{source['name']}: {e}")
                 logger.error(f"Error re-ingesting {source['name']}: {e}")
 
-        # Also ingest local config directories
+        # Also ingest local config directories — skip sources already processed above
         try:
-            local_count = self.ingest_local()
+            local_count = self.ingest_local(skip_sources=ingested_names)
             total += local_count
         except Exception as e:
             logger.error(f"Error ingesting local config: {e}")
@@ -276,7 +293,7 @@ class IngestionPipeline:
         logger.info(f"Full re-ingestion complete: {total} tools from {len(sources)} sources + local")
         return total
 
-    def ingest_local(self) -> int:
+    def ingest_local(self, skip_sources: set[str] | None = None) -> int:
         """
         Ingest tools from ~/.tooldns/ local directories only.
 
@@ -285,34 +302,42 @@ class IngestionPipeline:
             2. ~/.tooldns/skills/ — local skill files
             3. ~/.tooldns/tools/ — custom Python tool definitions
 
+        Args:
+            skip_sources: Set of source names already ingested (avoids double-processing).
+
         Returns:
             int: Total tools ingested from local directories.
         """
         from tooldns.config import TOOLDNS_HOME
         home = TOOLDNS_HOME
         total = 0
+        skip_sources = skip_sources or set()
 
         # 1. Custom MCP config from config.json
-        config_file = home / "config.json"
-        if config_file.exists():
-            try:
-                config_data = json.loads(config_file.read_text(encoding="utf-8"))
-                if config_data.get("mcpServers"):
-                    count = self._ingest_local_config(config_file)
-                    total += count
-                    logger.info(f"Local config.json: {count} MCP tools")
-            except Exception as e:
-                logger.error(f"Local config.json error: {e}")
+        if "tooldns" not in skip_sources:
+            config_file = home / "config.json"
+            if config_file.exists():
+                try:
+                    config_data = json.loads(config_file.read_text(encoding="utf-8"))
+                    if config_data.get("mcpServers"):
+                        count = self._ingest_local_config(config_file)
+                        total += count
+                        logger.info(f"Local config.json: {count} MCP tools")
+                except Exception as e:
+                    logger.error(f"Local config.json error: {e}")
+        else:
+            logger.debug("Skipping local config.json — already ingested")
 
         # 2. Built-in skills directory
-        skills_dir = home / "skills"
-        if skills_dir.exists():
-            try:
-                count = self._ingest_local_skills(skills_dir)
-                total += count
-                logger.info(f"Local skills/: {count} tools")
-            except Exception as e:
-                logger.error(f"Local skills/ error: {e}")
+        if "tooldns-skills" not in skip_sources:
+            skills_dir = home / "skills"
+            if skills_dir.exists():
+                try:
+                    count = self._ingest_local_skills(skills_dir)
+                    total += count
+                    logger.info(f"Local skills/: {count} tools")
+                except Exception as e:
+                    logger.error(f"Local skills/ error: {e}")
 
         # 3. Custom tools directory
         tools_dir = home / "tools"
@@ -850,11 +875,16 @@ class IngestionPipeline:
         if not raw_tools:
             return 0
 
-        # Build descriptions and check embedding cache
-        descriptions = [
-            f"{t.get('name', '')}: {t.get('description', '')}"
-            for t in raw_tools
-        ]
+        # Build descriptions for embedding — include param names for richer semantics
+        descriptions = []
+        for t in raw_tools:
+            desc = f"{t.get('name', '')}: {t.get('description', '')}"
+            schema = t.get("inputSchema", {})
+            props = schema.get("properties", {}) if isinstance(schema, dict) else {}
+            if props:
+                param_names = " ".join(props.keys())
+                desc = f"{desc} | params: {param_names}"
+            descriptions.append(desc)
 
         # Persistent vector cache: compute hash per description, only embed cache misses
         desc_hashes = [hashlib.sha256(d.encode()).hexdigest() for d in descriptions]
@@ -865,11 +895,27 @@ class IngestionPipeline:
         missing_idx = [i for i, c in enumerate(cached) if c is None]
         if missing_idx:
             missing_texts = [descriptions[i] for i in missing_idx]
-            new_embeddings = self.embedder.embed_batch(missing_texts)
+            try:
+                new_embeddings = self.embedder.embed_batch(missing_texts)
+            except Exception as e:
+                # Batch failed — fall back to individual embedding
+                logger.warning(f"Batch embedding failed ({e}), falling back to individual embedding")
+                new_embeddings = []
+                for text in missing_texts:
+                    try:
+                        new_embeddings.append(self.embedder.embed(text))
+                    except Exception as e2:
+                        logger.error(f"Failed to embed tool: {e2}")
+                        new_embeddings.append(None)
             for i, embedding in zip(missing_idx, new_embeddings):
-                self.db.set_cached_embedding(desc_hashes[i], model_name, embedding)
-                cached[i] = embedding
-            logger.info(f"Embedded {len(missing_idx)} new tools, {len(descriptions) - len(missing_idx)} from cache")
+                if embedding is not None:
+                    self.db.set_cached_embedding(desc_hashes[i], model_name, embedding)
+                    cached[i] = embedding
+            failed = sum(1 for e in new_embeddings if e is None)
+            if failed:
+                logger.warning(f"Embedded {len(missing_idx) - failed}/{len(missing_idx)} new tools ({failed} failed)")
+            else:
+                logger.info(f"Embedded {len(missing_idx)} new tools, {len(descriptions) - len(missing_idx)} from cache")
         else:
             logger.info(f"All {len(descriptions)} embeddings served from cache")
 
@@ -877,6 +923,8 @@ class IngestionPipeline:
 
         batch = []
         for tool, embedding in zip(raw_tools, embeddings):
+            if embedding is None:
+                continue  # Skip tools that failed to embed
             name = tool.get("name", "unknown")
             server = tool.get("_source_server", source_name)
             tool_id = f"{source_name}__{name}"

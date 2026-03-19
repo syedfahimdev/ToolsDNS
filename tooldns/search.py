@@ -462,7 +462,7 @@ class SearchEngine:
         allowed_tool_ids: if set, only tools with IDs in this set are considered (profile filter).
         preference_boosts: dict of tool_id -> boost amount from agent preferences.
         """
-        query_vec = np.array(self.embedder.embed(query), dtype=np.float32)
+        query_vec = np.array(self.embedder.embed_query(query), dtype=np.float32)
         semantic_scores = emb_matrix @ query_vec
         bm25_scores = self.db.bm25_search(query, limit=50)
 

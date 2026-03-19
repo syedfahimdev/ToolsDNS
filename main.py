@@ -181,23 +181,30 @@ def _get_key(request: Request) -> str:
 limiter = Limiter(key_func=_get_key, default_limits=["120/minute"])
 
 
+_ingest_lock = asyncio.Lock()
+
 async def _auto_refresh(pipeline: IngestionPipeline, interval_min: int, search_engine=None):
     """Background task: re-ingest all sources every interval_min minutes.
 
     Runs once immediately at startup (after a short delay) to register local
     skill sources, then repeats on the configured interval.
+    Uses a global lock to prevent concurrent ingests.
     """
     await asyncio.sleep(5)  # Short delay to let server finish starting
     while True:
-        try:
-            logger.info("Auto-refresh: re-ingesting all sources...")
-            loop = asyncio.get_event_loop()
-            total = await loop.run_in_executor(None, pipeline.ingest_all)
-            logger.info(f"Auto-refresh complete: {total} tools indexed")
-            if search_engine:
-                search_engine.invalidate_cache()
-        except Exception as e:
-            logger.error(f"Auto-refresh error: {e}")
+        if _ingest_lock.locked():
+            logger.info("Auto-refresh: skipping — another ingest is running")
+        else:
+            async with _ingest_lock:
+                try:
+                    logger.info("Auto-refresh: re-ingesting all sources...")
+                    loop = asyncio.get_event_loop()
+                    total = await loop.run_in_executor(None, pipeline.ingest_all)
+                    logger.info(f"Auto-refresh complete: {total} tools indexed")
+                    if search_engine:
+                        search_engine.invalidate_cache()
+                except Exception as e:
+                    logger.error(f"Auto-refresh error: {e}")
         await asyncio.sleep(interval_min * 60)
 
 
@@ -244,6 +251,67 @@ async def _config_watcher(pipeline: IngestionPipeline, config_path: Path):
     observer.schedule(_Handler(), str(config_path.parent), recursive=False)
     observer.start()
     logger.info(f"Hot-reload watching: {config_path}")
+    try:
+        while True:
+            await asyncio.sleep(1)
+    finally:
+        observer.stop()
+        observer.join()
+
+
+async def _skills_watcher(pipeline: IngestionPipeline, search_engine=None):
+    """Watch ~/.tooldns/skills/ for new or changed skill folders and auto-ingest."""
+    from watchdog.observers import Observer
+    from watchdog.events import FileSystemEventHandler
+
+    skills_dir = Path(os.path.expanduser("~/.tooldns/skills"))
+    if not skills_dir.exists():
+        logger.info("Skills directory not found, skipping skills watcher")
+        return
+
+    loop = asyncio.get_running_loop()
+    _lock = asyncio.Lock()
+    _pending = [False]
+
+    async def _reload():
+        if _lock.locked() or _ingest_lock.locked():
+            _pending[0] = True
+            return
+        async with _ingest_lock:
+            async with _lock:
+                await asyncio.sleep(1)  # debounce — wait for writes to settle
+                try:
+                    total = await loop.run_in_executor(None, pipeline.ingest_local)
+                    logger.info(f"Skills hot-reload complete: {total} tools re-indexed")
+                    if search_engine:
+                        search_engine.invalidate_cache()
+                except Exception as e:
+                    logger.error(f"Skills hot-reload error: {e}")
+                # If more changes came in while we were ingesting, re-run once
+                if _pending[0]:
+                    _pending[0] = False
+                    asyncio.ensure_future(_reload())
+
+    class _Handler(FileSystemEventHandler):
+        def on_any_event(self, event):
+            # Trigger on new/changed files in skills directory
+            if event.is_directory and event.event_type == "modified":
+                return  # Skip directory modification events (noisy)
+            # Skip transient events (opened, closed) — only act on created/modified/deleted
+            if event.event_type not in ("created", "modified", "deleted"):
+                return
+            src = Path(event.src_path)
+            if src.suffix in (".py", ".md", ".yaml", ".yml", ".json"):
+                # Skip if an ingest is already running (prevents cascade)
+                if _ingest_lock.locked():
+                    return
+                logger.info(f"Skills change detected: {event.event_type} {src.name}")
+                asyncio.run_coroutine_threadsafe(_reload(), loop)
+
+    observer = Observer()
+    observer.schedule(_Handler(), str(skills_dir), recursive=True)
+    observer.start()
+    logger.info(f"Skills watcher active: {skills_dir}")
     try:
         while True:
             await asyncio.sleep(1)
@@ -386,6 +454,9 @@ async def lifespan(app: FastAPI):
     # Hot-reload: watch config.json for changes
     config_file = Path(settings.home) / "config.json"
     tasks.append(asyncio.create_task(_config_watcher(pipeline, config_file)))
+
+    # Hot-reload: watch skills directory for new/changed skills
+    tasks.append(asyncio.create_task(_skills_watcher(pipeline, search_engine)))
 
     # Start the MCP ASGI app's lifespan (initializes the task group required
     # by fastmcp's StreamableHTTPSessionManager — must run while app is live)

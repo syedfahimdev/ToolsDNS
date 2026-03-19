@@ -17,7 +17,7 @@ Environment Variables:
     TOOLDNS_API_KEY: API key for authenticating requests
     TOOLDNS_HOST: Server host (default: 0.0.0.0)
     TOOLDNS_PORT: Server port (default: 8787)
-    TOOLDNS_EMBEDDING_MODEL: Sentence-transformer model name (default: all-MiniLM-L6-v2)
+    TOOLDNS_EMBEDDING_MODEL: Embedding model name (default: bge-base-en-v1.5)
     TOOLDNS_DB_PATH: Path to SQLite database (default: ~/.tooldns/tooldns.db)
     TOOLDNS_REFRESH_INTERVAL: Auto-refresh interval in minutes (default: 15, 0 = disabled)
     TOOLDNS_LOG_LEVEL: Logging level (default: INFO)
@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     api_key: str = "td_dev_key"
     host: str = "0.0.0.0"
     port: int = 8787
-    embedding_model: str = "all-MiniLM-L6-v2"
+    embedding_model: str = "bge-base-en-v1.5"
     db_path: str = str(TOOLDNS_HOME / "tooldns.db")
     refresh_interval: int = 15
     log_level: str = "INFO"
