@@ -540,36 +540,51 @@ def preflight_search(req: PreflightRequest, auth: dict = Depends(require_api_key
         except Exception:
             pass
 
-    # Build context block
+    # Build context block — action instruction FIRST, then tool details
     context_block = None
     if req.format == "context_block":
+        # Find the best non-skill tool with a call template for the quick-call line
+        best = tools[0] if tools else None
+        best_call = None
+        for t in tools[:3]:
+            if t.call_template:
+                best_call = t
+                break
+
         lines = [
-            "[ToolsDNS Auto-Discovery]",
-            "IMPORTANT: Use the `toolsdns` tool for all calls below. Do NOT use mcp_tooldns_* tools.",
+            "[ToolsDNS Auto-Discovery] — tools already found, DO NOT search again.",
             "",
         ]
+
+        # Put the direct call instruction FIRST
+        if best_call:
+            lines.append(f">>> CALL THIS NOW: {best_call.call_template}")
+            lines.append(f"    (tool: {best_call.name} — {best_call.description[:80]})")
+            lines.append("")
+        elif best:
+            lines.append(f'>>> CALL THIS NOW: toolsdns(action="call", tool_id="{best.tool_id}", arguments={{}})')
+            lines.append(f"    (tool: {best.name} — {best.description[:80]})")
+            lines.append("")
+
+        lines.append("RULES: Your FIRST tool call must be toolsdns action=call. Do NOT action=search. Do NOT action=get. Do NOT use mcp_tooldns_* tools.")
+        lines.append("")
+
+        # Then show all matches with schemas
         for i, t in enumerate(tools):
-            lines.append(f"{'>>> BEST MATCH' if i == 0 else f'--- Match {i+1}'}  [{t.confidence:.0%} confidence]")
-            lines.append(f"  TOOL_ID: {t.tool_id}")
-            lines.append(f"  name: {t.name}")
-            lines.append(f"  description: {t.description[:120]}")
+            lines.append(f"{'BEST MATCH' if i == 0 else f'Match {i+1}'}  [{t.confidence:.0%}]  TOOL_ID: {t.tool_id}")
+            lines.append(f"  {t.name} — {t.description[:120]}")
             if t.input_schema and t.input_schema.get("properties"):
-                lines.append("  parameters:")
                 lines.append(_compact_schema_text(t.input_schema))
-            if t.call_template:
+            if t.call_template and t != best_call:
                 lines.append(f"  CALL: {t.call_template}")
             elif "skill" in str(t.source_type).lower():
-                lines.append(f'  TYPE: skill — use toolsdns(action="get", tool_id="{t.tool_id}") for instructions')
+                lines.append(f'  SKILL: use toolsdns(action="get", tool_id="{t.tool_id}") for instructions')
             lines.append("")
 
         if macros_list:
-            lines.append(f"MACROS (call directly via toolsdns action=call): {', '.join(macros_list)}")
+            lines.append(f"MACROS available: {', '.join(macros_list)}")
             lines.append("")
 
-        lines.append("INSTRUCTIONS:")
-        lines.append("- For the best match: fill in the <placeholders> and call directly")
-        lines.append("- For skills: use action=\"get\" first to read the skill instructions")
-        lines.append("- If arguments are unclear: use action=\"get\" to see the full schema")
         context_block = "\n".join(lines)
 
     elapsed = (_time.perf_counter() - start) * 1000
