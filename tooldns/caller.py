@@ -11,12 +11,86 @@ and enable workflow execution to call real tools.
 import os
 import re
 import json
+import time
+import hashlib
+import threading
 import httpx
+from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
 
 from tooldns.config import logger, TOOLDNS_HOME
 from tooldns.fetcher import MCPFetcher
+
+
+# ---------------------------------------------------------------------------
+# MCP Session pool — reuse sessions to avoid handshake on every call
+# ---------------------------------------------------------------------------
+
+_session_lock = threading.Lock()
+_sessions: dict[str, dict] = {}  # url -> {"session_id": str, "headers": dict, "client": httpx.Client, "created": float}
+_SESSION_TTL = 300.0  # 5 minutes
+
+# ---------------------------------------------------------------------------
+# Result cache for read-only tool calls
+# ---------------------------------------------------------------------------
+
+_result_cache_lock = threading.Lock()
+_result_cache: OrderedDict[str, tuple[float, dict]] = OrderedDict()
+_RESULT_CACHE_TTL = 600.0  # 10 minutes
+_RESULT_CACHE_MAX = 128
+
+# Read-only tool name patterns (prefixes that indicate read/list/get operations)
+_READ_ONLY_PREFIXES = (
+    "GMAIL_FETCH", "GMAIL_LIST", "GMAIL_GET",
+    "GOOGLECALENDAR_FIND", "GOOGLECALENDAR_LIST", "GOOGLECALENDAR_GET",
+    "GOOGLE_CALENDAR_FIND", "GOOGLE_CALENDAR_LIST", "GOOGLE_CALENDAR_GET",
+    "REDDIT_GET", "REDDIT_LIST", "REDDIT_FETCH",
+    "SLACK_LIST", "SLACK_GET",
+    "GITHUB_LIST", "GITHUB_GET",
+)
+
+
+def _is_read_only(tool_name: str) -> bool:
+    """Check if a tool call is read-only and safe to cache."""
+    upper = tool_name.upper()
+    return any(upper.startswith(p) or upper.endswith(p) for p in _READ_ONLY_PREFIXES)
+
+
+def _cache_key(tool_name: str, arguments: dict) -> str:
+    """Generate a stable cache key from tool name + arguments."""
+    raw = f"{tool_name}:{json.dumps(arguments, sort_keys=True)}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _get_cached_result(tool_name: str, arguments: dict) -> Optional[dict]:
+    """Return cached result if available and not expired."""
+    if not _is_read_only(tool_name):
+        return None
+    key = _cache_key(tool_name, arguments)
+    with _result_cache_lock:
+        entry = _result_cache.get(key)
+        if entry is None:
+            return None
+        expires_at, result = entry
+        if time.monotonic() > expires_at:
+            del _result_cache[key]
+            return None
+        _result_cache.move_to_end(key)
+        logger.debug("Result cache HIT for {}", tool_name)
+        return result
+
+
+def _set_cached_result(tool_name: str, arguments: dict, result: dict) -> None:
+    """Cache a read-only tool result."""
+    if not _is_read_only(tool_name):
+        return
+    key = _cache_key(tool_name, arguments)
+    with _result_cache_lock:
+        _result_cache[key] = (time.monotonic() + _RESULT_CACHE_TTL, result)
+        if len(_result_cache) > _RESULT_CACHE_MAX:
+            _result_cache.popitem(last=False)
+    logger.debug("Result cache SET for {} (ttl={}s)", tool_name, _RESULT_CACHE_TTL)
 
 
 # ---------------------------------------------------------------------------
@@ -287,51 +361,127 @@ def _lookup_http_config(source_info: dict, database) -> tuple:
     return None, {}
 
 
-def _http_tool_call(server_url: str, server_headers: dict,
-                    tool_name: str, arguments: dict) -> dict:
-    """Send a tools/call request to an HTTP MCP server."""
+def _get_or_create_session(server_url: str, server_headers: dict) -> tuple[httpx.Client, dict]:
+    """
+    Get or create a pooled MCP session for the given server URL.
+
+    Reuses existing sessions (with their MCP session ID and persistent
+    HTTP connection) to avoid the initialize+notify handshake on every call.
+    Sessions expire after _SESSION_TTL seconds.
+
+    Returns (client, headers) ready for tools/call requests.
+    """
+    now = time.monotonic()
+
+    with _session_lock:
+        cached = _sessions.get(server_url)
+        if cached and (now - cached["created"]) < _SESSION_TTL:
+            return cached["client"], cached["headers"]
+
+        # Close old client if expired
+        if cached:
+            try:
+                cached["client"].close()
+            except Exception:
+                pass
+
+    # Create new session outside the lock (handshake is slow)
     h = {
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
         **server_headers
     }
 
-    init_resp = httpx.post(
-        server_url, headers=h,
-        json={
-            "jsonrpc": "2.0", "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "tooldns-proxy", "version": "1.0.0"}
-            }
-        },
-        timeout=30
-    )
-    session_id = init_resp.headers.get("mcp-session-id")
-    if session_id:
-        h["mcp-session-id"] = session_id
+    client = httpx.Client(timeout=httpx.Timeout(60.0, connect=10.0))
 
-    httpx.post(
-        server_url, headers=h,
-        json={"jsonrpc": "2.0", "method": "notifications/initialized"},
-        timeout=10
-    )
+    try:
+        init_resp = client.post(
+            server_url, headers=h,
+            json={
+                "jsonrpc": "2.0", "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "tooldns-proxy", "version": "1.0.0"}
+                }
+            },
+        )
+        session_id = init_resp.headers.get("mcp-session-id")
+        if session_id:
+            h["mcp-session-id"] = session_id
 
-    resp = httpx.post(
-        server_url, headers=h,
-        json={
-            "jsonrpc": "2.0", "id": 2,
-            "method": "tools/call",
-            "params": {"name": tool_name, "arguments": arguments}
-        },
-        timeout=60
-    )
-    resp.raise_for_status()
+        client.post(
+            server_url, headers=h,
+            json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+            timeout=10
+        )
+    except Exception as e:
+        logger.warning("MCP session init failed for {}: {}", server_url, e)
+        # Continue anyway — some servers don't require handshake
+        client.close()
+        client = httpx.Client(timeout=httpx.Timeout(60.0, connect=10.0))
+
+    with _session_lock:
+        _sessions[server_url] = {
+            "session_id": h.get("mcp-session-id"),
+            "headers": h,
+            "client": client,
+            "created": time.monotonic(),
+        }
+
+    logger.info("MCP session created for {} (session_id={})", server_url[:60], h.get("mcp-session-id", "none"))
+    return client, h
+
+
+def _http_tool_call(server_url: str, server_headers: dict,
+                    tool_name: str, arguments: dict) -> dict:
+    """Send a tools/call request to an HTTP MCP server with session pooling and result caching."""
+
+    # Check result cache for read-only tools
+    cached = _get_cached_result(tool_name, arguments)
+    if cached is not None:
+        return cached
+
+    t0 = time.monotonic()
+    client, h = _get_or_create_session(server_url, server_headers)
+
+    try:
+        resp = client.post(
+            server_url, headers=h,
+            json={
+                "jsonrpc": "2.0", "id": 2,
+                "method": "tools/call",
+                "params": {"name": tool_name, "arguments": arguments}
+            },
+        )
+        resp.raise_for_status()
+    except (httpx.RemoteProtocolError, httpx.ConnectError, httpx.ReadError) as e:
+        # Session may have expired server-side — retry with fresh session
+        logger.warning("MCP session error, retrying with fresh session: {}", e)
+        with _session_lock:
+            _sessions.pop(server_url, None)
+        try:
+            client.close()
+        except Exception:
+            pass
+        client, h = _get_or_create_session(server_url, server_headers)
+        resp = client.post(
+            server_url, headers=h,
+            json={
+                "jsonrpc": "2.0", "id": 2,
+                "method": "tools/call",
+                "params": {"name": tool_name, "arguments": arguments}
+            },
+        )
+        resp.raise_for_status()
+
+    elapsed = time.monotonic() - t0
+    logger.info("Tool {} executed in {:.1f}s", tool_name, elapsed)
 
     content_type = resp.headers.get("content-type", "")
     if "text/event-stream" in content_type:
+        result = None
         for line in resp.text.split("\n"):
             line = line.strip()
             if line.startswith("data:"):
@@ -339,13 +489,19 @@ def _http_tool_call(server_url: str, server_headers: dict,
                 if data:
                     try:
                         parsed = json.loads(data)
-                        return parsed.get("result", parsed)
+                        result = parsed.get("result", parsed)
+                        break
                     except Exception:
                         continue
-        return {"raw": resp.text}
+        if result is None:
+            result = {"raw": resp.text}
     else:
         data = resp.json()
-        return data.get("result", data)
+        result = data.get("result", data)
+
+    # Cache read-only results
+    _set_cached_result(tool_name, arguments, result)
+    return result
 
 
 def _resolve_env(val):
