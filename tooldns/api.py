@@ -361,6 +361,17 @@ _PREFLIGHT_INTENT_MAP: list[tuple[_re.Pattern, list[str]]] = [
     # WhatsApp
     (_re.compile(r"\b(whatsapp|whats app)\b", _re.I),
      ["WHATSAPP_SEND_MESSAGE", "whatsapp send message"]),
+    # Reddit
+    (_re.compile(r"\b(reddit)\b.*\b(news|posts?|search|check|latest|top|hot)\b", _re.I),
+     ["REDDIT_SEARCH_ACROSS_SUBREDDITS", "reddit search posts news"]),
+    (_re.compile(r"\b(reddit)\b", _re.I),
+     ["REDDIT_SEARCH_ACROSS_SUBREDDITS", "reddit"]),
+    # HackerNews
+    (_re.compile(r"\b(hacker\s*news|hn|ycombinator)\b", _re.I),
+     ["HACKERNEWS_SEARCH_POSTS", "hacker news search"]),
+    # News / headlines
+    (_re.compile(r"\b(news|headlines|latest)\b.*\b(ai|tech|artificial|machine learning)\b", _re.I),
+     ["REDDIT_SEARCH_ACROSS_SUBREDDITS", "HACKERNEWS_SEARCH_POSTS", "AI news headlines"]),
     # Generic notify
     (_re.compile(r"\b(notify|alert|inform|tell)\b.*\b(someone|team|user|them)\b", _re.I),
      ["send notification", "SLACK_SEND_MESSAGE", "GMAIL_SEND_EMAIL"]),
@@ -385,20 +396,38 @@ def _preflight_clean_query(text: str) -> str:
 
 
 def _preflight_extract_intents(text: str) -> list[str]:
-    """Extract tool-friendly search queries using intent patterns."""
+    """Extract tool-friendly search queries using intent patterns.
+
+    Supports compound messages: splits on 'and', 'then', 'also', '+', ','
+    and extracts intents from each sub-clause independently.
+    """
+    # Split compound messages into sub-clauses
+    splitter = _re.compile(r"\b(?:and\s+(?:also\s+)?|then\s+|also\s+|plus\s+|\+|,\s*(?:and\s+)?)\b", _re.I)
+    clauses = splitter.split(text)
+    # Always include the full text as a clause too
+    if len(clauses) > 1:
+        clauses.append(text)
+
     queries: list[str] = []
     seen: set[str] = set()
-    matched = 0
-    for pattern, query_list in _PREFLIGHT_INTENT_MAP:
-        if pattern.search(text):
-            for q in query_list:
-                ql = q.lower()
-                if ql not in seen:
-                    seen.add(ql)
-                    queries.append(q)
-            matched += 1
-            if matched >= 2 or len(queries) >= 4:
-                break
+    for clause in clauses:
+        clause = clause.strip()
+        if len(clause) < 5:
+            continue
+        matched_this_clause = 0
+        for pattern, query_list in _PREFLIGHT_INTENT_MAP:
+            if pattern.search(clause):
+                for q in query_list:
+                    ql = q.lower()
+                    if ql not in seen:
+                        seen.add(ql)
+                        queries.append(q)
+                matched_this_clause += 1
+                # 1 match per clause is enough — move to next clause
+                if matched_this_clause >= 1:
+                    break
+        if len(queries) >= 8:
+            break
     return queries
 
 
@@ -449,14 +478,35 @@ def preflight_search(req: PreflightRequest, auth: dict = Depends(require_api_key
     if len(text) < 10:
         return PreflightResponse(found=False)
 
-    # Build search queries
-    cleaned = _preflight_clean_query(text)
-    intent_queries = _preflight_extract_intents(text)
+    # Hybrid approach:
+    # 1. Split compound messages into sub-clauses (dynamic)
+    # 2. Also extract intent keywords from patterns (for name-style matching)
+    # 3. Search each separately, merge results
 
-    search_queries = [cleaned]
+    splitter = _re.compile(r"\b(?:and\s+(?:also\s+)?|then\s+|also\s+|plus\s+|after\s+that\s+|\+|,\s*(?:and\s+)?)\b", _re.I)
+    clauses = splitter.split(text)
+
+    search_queries: list[str] = []
+    seen_q: set[str] = set()
+
+    # Add each cleaned sub-clause as a search query
+    for clause in clauses:
+        cleaned_clause = _preflight_clean_query(clause.strip())
+        if len(cleaned_clause) >= 8 and cleaned_clause.lower() not in seen_q:
+            seen_q.add(cleaned_clause.lower())
+            search_queries.append(cleaned_clause)
+
+    # Also add intent-extracted queries (name-style like GMAIL_SEND_EMAIL)
+    # These boost matching against tool names, not just descriptions
+    intent_queries = _preflight_extract_intents(text)
     for iq in intent_queries:
-        if iq.lower() != cleaned.lower():
+        if iq.lower() not in seen_q:
+            seen_q.add(iq.lower())
             search_queries.append(iq)
+
+    # Fallback: if nothing was extracted, use the full cleaned message
+    if not search_queries:
+        search_queries = [_preflight_clean_query(text)]
 
     # Get preference boosts
     preference_boosts = {}
@@ -469,7 +519,7 @@ def preflight_search(req: PreflightRequest, auth: dict = Depends(require_api_key
     # Run all searches and merge results
     all_results: dict[str, dict] = {}  # tool_id -> best result + matched_by
 
-    for q in search_queries[:5]:
+    for q in search_queries[:8]:
         try:
             response = _search_engine.search(
                 query=q,
@@ -496,7 +546,7 @@ def preflight_search(req: PreflightRequest, auth: dict = Depends(require_api_key
 
     if not all_results:
         elapsed = (_time.perf_counter() - start) * 1000
-        return PreflightResponse(found=False, queries_used=search_queries[:5], search_time_ms=elapsed)
+        return PreflightResponse(found=False, queries_used=search_queries[:8], search_time_ms=elapsed)
 
     # Sort and limit
     sorted_results = sorted(all_results.values(), key=lambda r: r["confidence"], reverse=True)[:req.max_results]
@@ -593,7 +643,7 @@ def preflight_search(req: PreflightRequest, auth: dict = Depends(require_api_key
         tools=tools,
         macros=macros_list,
         context_block=context_block,
-        queries_used=search_queries[:5],
+        queries_used=search_queries[:8],
         search_time_ms=elapsed,
     )
 
