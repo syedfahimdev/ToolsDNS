@@ -275,13 +275,256 @@ Your ToolsDNS → queries → Partner's ToolsDNS
 
 ---
 
+## Phase 5: Developer Experience & Ecosystem (Month 4-5)
+
+### 5.1 VS Code Extension ⭐ DX PRIORITY
+**What:** Inline tool discovery while coding agents
+**Why:** Meet developers where they work — no context switching
+**Features:**
+- [ ] Auto-complete for tool names while typing
+- [ ] Hover to see tool schema + description
+- [ ] Command palette: "ToolsDNS: Search for tool"
+- [ ] Status bar: token savings today
+- [ ] Debug panel: view agent sessions, tool calls
+
+**Implementation:**
+- [ ] TypeScript VS Code extension
+- [ ] LSP-like tool suggestion provider
+- [ ] Webview panel for tool browser
+- [ ] Settings sync with ToolsDNS API key
+
+**Effort:** Medium  
+**Impact:** ⭐⭐⭐⭐⭐ Developer adoption
+
+---
+
+### 5.2 CLI Enhancement Suite
+**What:** Rich terminal experience for ToolsDNS
+**Why:** Power users prefer CLI over web UI
+**Features:**
+- [ ] `tooldns search "send email"` — quick search from terminal
+- [ ] `tooldns stats` — daily/weekly analytics
+- [ ] `tooldns test <tool_id>` — test tool with dry-run
+- [ ] `tooldns logs` — tail tool call logs
+- [ ] `tooldns doctor` — diagnose common issues
+- [ ] `tooldns export` — backup config + skills
+
+**Implementation:**
+- [ ] Rich terminal UI (rich library)
+- [ ] Interactive prompts (inquirer)
+- [ ] Progress bars for long operations
+- [ ] JSON/YAML output modes for scripting
+
+**Effort:** Low-Medium  
+**Impact:** ⭐⭐⭐⭐ Power user satisfaction
+
+---
+
+### 5.3 Integration Ecosystem
+**What:** Native plugins for popular frameworks
+**Why:** Reduce friction for existing projects
+**Integrations:**
+- [ ] **LangChain** — `ToolsDNSToolKit` class
+- [ ] **LlamaIndex** — tool retriever
+- [ ] **n8n** — custom node for workflow automation
+- [ ] **Zapier** — connector for no-code users
+- [ ] **Discord Bot** — natural language tool calling in chat
+- [ ] **GitHub Actions** — use tools in CI/CD pipelines
+
+**Implementation:**
+- [ ] Separate repos for each integration
+- [ ] Consistent SDK pattern across all
+- [ ] Documentation + examples
+
+**Effort:** Medium (per integration)  
+**Impact:** ⭐⭐⭐⭐⭐ Ecosystem growth
+
+---
+
+## Phase 6: Performance & Scale (Month 5-6)
+
+### 6.1 Vector Database Migration
+**What:** Replace in-memory embeddings with vector DB
+**Why:** Scale to 100k+ tools without memory issues
+**Options:**
+- [ ] Pinecone (managed, expensive)
+- [ ] Weaviate (open source, self-hosted)
+- [ ] pgvector (if already using Postgres)
+- [ ] Qdrant (fast, Rust-based)
+
+**Implementation:**
+- [ ] Abstract embedding storage interface
+- [ ] Migration script for existing tools
+- [ ] Hybrid search (vector + BM25)
+- [ ] Sub-10ms search at 100k tools
+
+**Effort:** High  
+**Impact:** ⭐⭐⭐⭐⭐ Scale capability
+
+---
+
+### 6.2 Caching & CDN Layer
+**What:** Multi-level caching for tool schemas
+**Why:** Reduce API latency, handle traffic spikes
+**Layers:**
+- [ ] **L1:** In-memory LRU (current)
+- [ ] **L2:** Redis for cross-instance sharing
+- [ ] **L3:** CDN for static tool schemas (CloudFlare)
+- [ ] **L4:** Browser cache for web UI
+
+**Implementation:**
+- [ ] Cache invalidation on tool updates
+- [ ] Cache warming for popular tools
+- [ ] Cache hit/miss analytics
+
+**Effort:** Medium  
+**Impact:** ⭐⭐⭐⭐ Performance
+
+---
+
+### 6.3 Connection Pooling & MCP Optimization
+**What:** Efficient MCP server connection management
+**Why:** Eliminate 1.3s cold-start penalty
+**Features:**
+- [ ] Persistent stdio process pools
+- [ ] HTTP keep-alive for MCP servers
+- [ ] Lazy connection (connect on first use)
+- [ ] Connection health checks
+- [ ] Auto-restart dead connections
+
+**Implementation:**
+- [ ] Connection pool manager
+- [ ] Circuit breaker pattern for failing servers
+- [ ] Connection metrics (active, idle, failed)
+
+**Effort:** Medium  
+**Impact:** ⭐⭐⭐⭐⭐ Latency reduction
+
+---
+
+## Phase 7: Security & Enterprise (Month 6-7)
+
+### 7.1 Security Hardening
+**What:** Production-ready security features
+**Why:** Enterprise adoption requires security
+**Features:**
+- [ ] Rate limiting per API key (token bucket)
+- [ ] IP allowlisting for sensitive tools
+- [ ] Audit logging (who called what, when)
+- [ ] Secret rotation automation
+- [ ] Tool sandboxing (isolated containers)
+- [ ] SOC 2 compliance documentation
+
+**Implementation:**
+- [ ] Middleware for rate limiting
+- [ ] Audit log table with retention
+- [ ] Automated security scanning (Snyk, Trivy)
+
+**Effort:** High  
+**Impact:** ⭐⭐⭐⭐⭐ Enterprise readiness
+
+---
+
+### 7.2 Multi-Tenant Architecture
+**What:** True SaaS with isolated workspaces
+**Why:** Scale to thousands of users
+**Features:**
+- [ ] Organization/team workspaces
+- [ ] Role-based access control (RBAC)
+- [ ] Resource quotas per tenant
+- [ ] Tenant-specific tool indexing
+- [ ] White-label options
+
+**Implementation:**
+- [ ] Tenant isolation in database
+- [ ] Subdomain routing (org.toolsdns.com)
+- [ ] Billing per tenant (Stripe integration)
+
+**Effort:** High  
+**Impact:** ⭐⭐⭐⭐⭐ Business model
+
+---
+
+## Phase 8: Intelligence & Automation (Month 7-8)
+
+### 8.1 Auto-Workflow Discovery
+**What:** AI suggests workflows from usage patterns
+**Why:** Users don't know what workflows they need
+**Features:**
+- [ ] Analyze tool call sequences
+- [ ] Suggest workflow patterns
+- [ ] One-click workflow creation
+- [ ] Workflow effectiveness scoring
+
+**Implementation:**
+- [ ] Sequence mining algorithm
+- [ ] LLM-based workflow suggestion
+- [ ] A/B testing for workflow recommendations
+
+**Effort:** High  
+**Impact:** ⭐⭐⭐⭐⭐ User value
+
+---
+
+### 8.2 Self-Healing System
+**What:** Automatic problem detection & resolution
+**Why:** Reduce operational overhead
+**Features:**
+- [ ] Auto-restart failed MCP servers
+- [ ] Detect and quarantine broken tools
+- [ ] Auto-scale based on load
+- [ ] Predictive maintenance alerts
+- [ ] Cost anomaly detection
+
+**Implementation:**
+- [ ] Health check automation
+- [ ] Kubernetes operator (optional)
+- [ ] ML-based anomaly detection
+
+**Effort:** High  
+**Impact:** ⭐⭐⭐⭐ Operational excellence
+
+---
+
+## Quick Wins (Can Ship This Week) — UPDATED
+
+| Feature | Why | Effort | Priority |
+|---------|-----|--------|----------|
+| Web UI Dashboard | Visual tool browser, session manager, cost tracker | Medium | ⭐⭐⭐⭐⭐ |
+| CLI `tooldns stats` | Terminal analytics (popular tools, cost saved) | Low | ⭐⭐⭐⭐⭐ |
+| Fix arguments parameter bug | Blocking bug in tool calls | Low | ⭐⭐⭐⭐⭐ URGENT |
+| Webhook notifications | Alert when source goes down, daily cost report | Low | ⭐⭐⭐⭐ |
+| Auto-cleanup dead tools | Remove tools not called in 30 days | Low | ⭐⭐⭐ |
+| VS Code Extension MVP | Basic tool search in editor | Medium | ⭐⭐⭐⭐⭐ |
+
+---
+
+## Updated Decision Matrix
+
+| Feature | Token Impact | User Impact | Build Effort | Priority |
+|---------|-------------|-------------|--------------|----------|
+| **Fix arguments bug** | - | ⭐⭐⭐⭐⭐ | Low | **URGENT** |
+| Smart Tool Chaining | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | Medium | **#1** |
+| Tool Composition (Macros) | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | Medium | **#2** |
+| VS Code Extension | - | ⭐⭐⭐⭐⭐ | Medium | **#3** |
+| Vector DB Migration | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ | High | #4 |
+| Analytics Dashboard | ⭐⭐ | ⭐⭐⭐⭐ | Medium | #5 |
+| Security Hardening | - | ⭐⭐⭐⭐⭐ | High | #6 |
+| Multi-Tenant | - | ⭐⭐⭐⭐⭐ | High | #7 |
+| Marketplace | - | ⭐⭐⭐⭐⭐ | High | #8 |
+
+---
+
 ## Notes
 
 - All features backward compatible
 - Each feature includes token savings tracking
 - Focus on "ship fast, measure impact" — your vibe coding style
 - After each phase, update this PLAN.md with actual metrics
+- **CRITICAL:** Fix the arguments parameter bug before shipping new features
 
 ---
 
-**Next step:** Pick Phase 2.1 (Smart Tool Chaining) or 2.2 (Tool Composition) and I'll start building.
+**Next step:** 
+1. **URGENT:** Fix the `arguments` parameter bug in tool calls
+2. Then pick: VS Code Extension (DX) or Vector DB (Scale)
