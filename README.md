@@ -59,8 +59,11 @@ Loading 500 tool schemas into every LLM message is like making someone memorize 
 
 | Feature | Description |
 |---|---|
-| 🔍 **Semantic Search** | Natural language queries — "send email" finds `GMAIL_SEND_EMAIL` even without exact name match |
+| 🔍 **Semantic Search** | Natural language queries — "send email" finds `GMAIL_SEND_EMAIL` at 0.81 confidence |
 | ⚡ **Hybrid Scoring** | Semantic similarity (70%) + BM25 keyword (30%) + `match_reason` explains every result |
+| 🧠 **BGE-base Embeddings** | 768-dimensional `bge-base-en-v1.5` model with instruction-prefixed queries for top-tier retrieval |
+| 🎯 **Preflight Endpoint** | `POST /v1/preflight` — one call does intent extraction + multi-strategy search. Framework-agnostic |
+| 🔀 **Multi-Intent Splitting** | Compound messages ("check calendar AND send email AND search reddit") split into sub-queries automatically |
 | 🚀 **Persistent MCP Server** | Runs as a systemd service on port 8788 — 11ms connect vs 1.3s cold-start spawn |
 | ⚡ **Query Cache** | Thread-safe LRU cache (256 entries, 60s TTL) — repeat searches return in ~17ms |
 | 🛡️ **Duplicate Call Guard** | 30-second dedup window — prevents agents from calling the same tool twice |
@@ -75,7 +78,9 @@ Loading 500 tool schemas into every LLM message is like making someone memorize 
 | 🔧 **Auto-Discovery** | Point at any Smithery URL, npm package, GitHub repo, or HTTP MCP endpoint |
 | 🔑 **API Key Manager** | Multi-tenant sub-keys with per-key usage tracking and monthly limits |
 | 🚀 **One-Command Deploy** | `curl \| bash` installer for any Ubuntu/Debian VPS |
-| 🔄 **Hot Reload** | Edit `config.json` → tools re-index in ~1 second, no restart needed |
+| 🔄 **Hot Reload** | Edit `config.json` or skills → tools re-index automatically, no restart needed |
+| 🔄 **Skills Watcher** | File watcher on `~/.tooldns/skills/` — new or changed skills re-index instantly |
+| 🛡️ **Resilient Ingestion** | Auto-retry with exponential backoff (3 attempts), per-tool fallback on embedding failure |
 | 🏷️ **Tool Categories** | 15 categories auto-assigned (Dev & Code, Communication, AI & Agents, etc.) |
 | 🔒 **Security First** | Bandit static analysis + CVE scanning in CI, API key auth on all endpoints |
 | 🎯 **Tool Profiles** | Scope agents to relevant tool subsets — "email-agent" only sees 20 tools, not 5,000 |
@@ -338,6 +343,76 @@ No hardcoded tool names. No 500-tool schemas in context. Just works.
 
 ---
 
+## Preflight — One-Call Tool Discovery
+
+The `/v1/preflight` endpoint does everything in a single HTTP call: extracts intents from the user's message, splits compound queries, runs multi-strategy search, and returns a ready-to-inject context block. Works with **any** agent framework — no framework-specific code needed.
+
+```bash
+curl -X POST http://localhost:8787/v1/preflight \
+  -H "Authorization: Bearer td_your_key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Check my calendar for next week and send the summary to fahim via email",
+    "top_k": 5,
+    "include_schemas": true,
+    "include_call_templates": true,
+    "format": "context_block"
+  }'
+```
+
+**What happens server-side:**
+1. Splits compound message into sub-clauses: `["Check my calendar for next week", "send the summary to fahim via email"]`
+2. Extracts intent keywords via regex patterns: `["GOOGLECALENDAR_FIND_EVENT", "GMAIL_SEND_EMAIL"]`
+3. Searches each clause + intent independently
+4. Merges results, deduplicates, returns top matches with schemas + call templates
+
+**Response (structured format):**
+```json
+{
+  "found": true,
+  "tools": [
+    {"tool_id": "composio__GOOGLECALENDAR_FIND_EVENT", "confidence": 0.88, "call_template": "..."},
+    {"tool_id": "composio__GMAIL_SEND_EMAIL", "confidence": 0.81, "call_template": "..."}
+  ],
+  "queries_used": ["Check my calendar for next week", "send the summary...", "GOOGLECALENDAR_FIND_EVENT", "GMAIL_SEND_EMAIL"],
+  "search_time_ms": 45.2
+}
+```
+
+**Response (context_block format — inject directly into LLM prompt):**
+```
+[ToolsDNS Auto-Discovery] — tools already found, DO NOT search again.
+
+>>> CALL THIS NOW: toolsdns(action="call", tool_id="composio__GOOGLECALENDAR_FIND_EVENT", arguments={...})
+    (tool: GOOGLECALENDAR_FIND_EVENT — Finds events in a Google Calendar)
+
+>>> CALL THIS NOW: toolsdns(action="call", tool_id="composio__GMAIL_SEND_EMAIL", arguments={...})
+    (tool: GMAIL_SEND_EMAIL — Sends an email via Gmail)
+```
+
+### Integration Example (Python)
+
+```python
+import httpx
+
+# Call preflight BEFORE the LLM loop
+resp = httpx.post("http://localhost:8787/v1/preflight", headers=HEADERS, json={
+    "message": user_message,
+    "format": "context_block",
+    "include_schemas": True,
+})
+context = resp.json().get("context_block", "")
+
+# Inject into system prompt or first user message
+messages = [
+    {"role": "system", "content": f"You are an AI assistant.\n\n{context}"},
+    {"role": "user", "content": user_message},
+]
+# LLM now knows exactly which tools to call — no search step needed
+```
+
+---
+
 ## Multi-Agent Token Savings
 
 Running 16 agents? ToolsDNS has 4 features designed specifically to minimize token costs at scale:
@@ -538,6 +613,10 @@ This prevents large base64 blobs from entering the LLM context and causing `400 
 
 ### Re-indexing after changes
 
+Skills are **automatically re-indexed** when files change — a file watcher monitors `~/.tooldns/skills/` for new, modified, or deleted `.py`, `.md`, `.yaml`, and `.json` files.
+
+To manually trigger a re-index:
+
 ```bash
 tooldns ingest
 # or for a specific skill only:
@@ -675,7 +754,7 @@ All settings via environment variables or `~/.tooldns/.env`:
 | `TOOLDNS_MCP_TRANSPORT` | `http` | MCP server transport: `http` or `stdio` |
 | `TOOLDNS_MCP_HOST` | `127.0.0.1` | MCP server bind address |
 | `TOOLDNS_MCP_PORT` | `8788` | MCP server port |
-| `TOOLDNS_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Sentence-transformer model for search |
+| `TOOLDNS_EMBEDDING_MODEL` | `bge-base-en-v1.5` | Embedding model for search (`bge-base-en-v1.5`, `all-MiniLM-L6-v2`, or `ollama/<model>`) |
 | `TOOLDNS_REFRESH_INTERVAL` | `15` | Auto re-index interval in minutes (0 = off) |
 | `TOOLDNS_MODEL` | *(auto-detect)* | LLM model name for token cost calculations |
 | `TOOLDNS_LOG_LEVEL` | `INFO` | Log verbosity |
@@ -738,7 +817,7 @@ ToolsDNS/
 │   ├── config.py          # Settings from env vars
 │   ├── database.py        # SQLite with FTS5 full-text + embedding cache
 │   ├── discover.py        # Auto-discover from Smithery/npm/GitHub/HTTP
-│   ├── embedder.py        # Local sentence-transformer embeddings
+│   ├── embedder.py        # Local embeddings (BGE/ONNX/sentence-transformers/Ollama)
 │   ├── fetcher.py         # MCP protocol client (stdio + HTTP transport)
 │   ├── health.py          # Source health monitor + webhook alerts
 │   ├── ingestion.py       # Parallel tool indexing pipeline
