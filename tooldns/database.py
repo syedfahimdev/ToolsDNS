@@ -1096,6 +1096,20 @@ class ToolDatabase:
                 timestamp TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # Successful tool call arguments (for tool memory / hints)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS tool_call_args (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_id TEXT NOT NULL,
+                tool_id TEXT NOT NULL,
+                arguments TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_tool_call_args_lookup
+            ON tool_call_args(agent_id, tool_id)
+        """)
         conn.commit()
         conn.close()
 
@@ -1257,10 +1271,62 @@ class ToolDatabase:
         return sequences
 
     # -----------------------------------------------------------------------
+    # Tool Call Args (Tool Memory / Hints)
+    # -----------------------------------------------------------------------
+
+    def log_successful_args(self, agent_id: str, tool_id: str, arguments: dict) -> None:
+        """Store successful tool call args. Keeps last 5 per agent+tool (FIFO)."""
+        import json as _json
+        conn = self._get_conn()
+        conn.execute("""
+            INSERT INTO tool_call_args (agent_id, tool_id, arguments, created_at)
+            VALUES (?, ?, ?, ?)
+        """, [agent_id, tool_id, _json.dumps(arguments), datetime.utcnow().isoformat()])
+        # FIFO cleanup: keep only last 5
+        conn.execute("""
+            DELETE FROM tool_call_args WHERE id NOT IN (
+                SELECT id FROM tool_call_args
+                WHERE agent_id = ? AND tool_id = ?
+                ORDER BY created_at DESC LIMIT 5
+            ) AND agent_id = ? AND tool_id = ?
+        """, [agent_id, tool_id, agent_id, tool_id])
+        conn.commit()
+        conn.close()
+
+    def get_tool_hints(self, agent_id: str, tool_ids: list[str], limit: int = 1) -> dict[str, list[dict]]:
+        """Batch-get last N successful arg patterns per tool.
+
+        Returns {tool_id: [{"arguments": {...}, "at": "..."}]}.
+        """
+        import json as _json
+        if not tool_ids:
+            return {}
+        conn = self._get_conn()
+        placeholders = ",".join("?" for _ in tool_ids)
+        rows = conn.execute(f"""
+            SELECT tool_id, arguments, created_at FROM tool_call_args
+            WHERE agent_id = ? AND tool_id IN ({placeholders})
+            ORDER BY created_at DESC
+        """, [agent_id] + tool_ids).fetchall()
+        conn.close()
+
+        result: dict[str, list[dict]] = {}
+        for row in rows:
+            tid = row["tool_id"]
+            if tid not in result:
+                result[tid] = []
+            if len(result[tid]) < limit:
+                result[tid].append({
+                    "arguments": _json.loads(row["arguments"]),
+                    "at": row["created_at"],
+                })
+        return result
+
+    # -----------------------------------------------------------------------
     # Agent Preferences (Agent Memory)
     # -----------------------------------------------------------------------
 
-    def upsert_agent_preference(self, agent_id: str, tool_id: str, 
+    def upsert_agent_preference(self, agent_id: str, tool_id: str,
                                  confidence: float = 0.0) -> None:
         """Update agent preferences when they select a tool."""
         conn = self._get_conn()

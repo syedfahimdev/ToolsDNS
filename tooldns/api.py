@@ -66,7 +66,7 @@ from tooldns.models import (
     RegisterMCPRequest, CreateSkillRequest,
     CallToolRequest, CreateMacroRequest, MacroStep, MacroInfo,
     PreflightRequest, PreflightResponse, PreflightToolMatch,
-    SearchSelectRequest,
+    SearchSelectRequest, ToolHintsRequest,
 )
 from tooldns.caller import call_tool as caller_call_tool, load_skill_content, resolve_args
 
@@ -1374,7 +1374,28 @@ def call_tool_endpoint(req: CallToolRequest):
         except Exception as e:
             logger.warning(f"Failed to log tool call: {e}")
 
+    # Log successful args for tool memory / hints
+    is_error = (isinstance(result, dict) and result.get("isError"))
+    if _database and arguments and not is_error:
+        try:
+            _database.log_successful_args(agent_id, tool_id, arguments)
+        except Exception as e:
+            logger.warning(f"Failed to log successful args: {e}")
+
     return result
+
+
+# -----------------------------------------------------------------------
+# Tool Hints (Tool Memory)
+# -----------------------------------------------------------------------
+
+@router.post("/tool-hints")
+def get_tool_hints(req: ToolHintsRequest):
+    """Batch-get successful argument patterns for multiple tools."""
+    if not _database or not req.tool_ids:
+        return {"hints": {}, "found": False}
+    hints = _database.get_tool_hints(req.agent_id, req.tool_ids)
+    return {"hints": hints, "found": bool(hints)}
 
 
 # -----------------------------------------------------------------------

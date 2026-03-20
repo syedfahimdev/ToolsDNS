@@ -563,6 +563,16 @@ class CallToolRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Tool Hints (Tool Memory)
+# ---------------------------------------------------------------------------
+
+class ToolHintsRequest(BaseModel):
+    """Request body for POST /v1/tool-hints."""
+    agent_id: str = "mawa"
+    tool_ids: list[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
 # Macro Models
 # ---------------------------------------------------------------------------
 
