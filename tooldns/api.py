@@ -43,9 +43,12 @@ import os
 import uuid
 import fnmatch
 import json as _json
+import logging
 import threading
 import time
 import asyncio
+
+logger = logging.getLogger("tooldns")
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -67,6 +70,7 @@ from tooldns.models import (
     CallToolRequest, CreateMacroRequest, MacroStep, MacroInfo,
     PreflightRequest, PreflightResponse, PreflightToolMatch,
     SearchSelectRequest, ToolHintsRequest,
+    MemoryIngestRequest,
 )
 from tooldns.caller import call_tool as caller_call_tool, load_skill_content, resolve_args
 
@@ -260,6 +264,10 @@ def search_tools(req: SearchRequest, auth: dict = Depends(require_api_key)):
         preference_boosts=preference_boosts if preference_boosts else None,
     )
     response.agent_preferences_applied = len(preference_boosts) > 0
+
+    # Filter by ID prefix (e.g. "memory__" for memory-only search)
+    if req.id_prefix:
+        response.results = [r for r in response.results if r.id.startswith(req.id_prefix)]
 
     # Update session with newly seen tools
     if session and req.session_id:
@@ -1408,6 +1416,76 @@ def get_tool_hints(req: ToolHintsRequest):
         return {"hints": {}, "found": False}
     hints = _database.get_tool_hints(req.agent_id, req.tool_ids)
     return {"hints": hints, "found": bool(hints)}
+
+
+# -----------------------------------------------------------------------
+# Memory Ingest (Hybrid Memory System)
+# -----------------------------------------------------------------------
+
+@router.post("/memory/ingest")
+def memory_ingest(req: MemoryIngestRequest):
+    """Index memory chunks (knowledge, learnings, rules, history) for semantic search."""
+    if not _database or not req.chunks:
+        return {"indexed": 0}
+
+    # Delete existing memory entries for files being re-indexed
+    file_paths = {c.file_path for c in req.chunks if c.file_path}
+    if file_paths:
+        import sqlite3 as _sqlite3
+        conn = _sqlite3.connect(_database.db_path)
+        for fp in file_paths:
+            conn.execute(
+                "DELETE FROM tools WHERE json_extract(source_info, '$.source_type') = 'memory' "
+                "AND json_extract(source_info, '$.file_path') = ?",
+                [fp],
+            )
+        conn.commit()
+        conn.close()
+
+    # Build tool entries from chunks
+    tools = []
+    for c in req.chunks:
+        tools.append({
+            "name": c.title,
+            "description": c.content[:1000],
+            "inputSchema": {},
+            "_source_server": "memory",
+            "_source_type": "memory",
+        })
+
+    # Embed and upsert
+    if _search_engine and tools:
+        try:
+            embedder = _search_engine.embedder
+            embedded = []
+            descs = [t["description"] for t in tools]
+            vectors = embedder.embed_batch(descs)
+            for i, t in enumerate(tools):
+                chunk = req.chunks[i]
+                embedded.append({
+                    "tool_id": chunk.chunk_id,
+                    "name": t["name"],
+                    "description": t["description"],
+                    "input_schema": {},
+                    "source_info": {
+                        "source_type": "memory",
+                        "source_name": "memory",
+                        "original_name": t["name"],
+                        "server": "memory",
+                        "file_path": chunk.file_path,
+                        "section": chunk.section,
+                    },
+                    "embedding": vectors[i] if i < len(vectors) else None,
+                    "tags": ["memory"],
+                })
+            _database.upsert_tools_batch(embedded)
+            logger.info(f"Memory ingest: indexed {len(embedded)} chunks from {len(file_paths)} files")
+            return {"indexed": len(embedded)}
+        except Exception as e:
+            logger.error(f"Memory ingest failed: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    return {"indexed": 0}
 
 
 # -----------------------------------------------------------------------

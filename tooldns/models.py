@@ -149,6 +149,10 @@ class SearchRequest(BaseModel):
         default=None,
         description="Agent identifier for personalized search based on learned preferences."
     )
+    id_prefix: Optional[str] = Field(
+        default=None,
+        description="Filter results to tool IDs starting with this prefix (e.g. 'memory__')."
+    )
 
 
 class SearchResult(BaseModel):
@@ -570,6 +574,24 @@ class ToolHintsRequest(BaseModel):
     """Request body for POST /v1/tool-hints."""
     agent_id: str = "mawa"
     tool_ids: list[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Memory Ingest
+# ---------------------------------------------------------------------------
+
+class MemoryChunk(BaseModel):
+    """A single chunk of memory content to index."""
+    chunk_id: str
+    title: str
+    content: str
+    file_path: str = ""
+    section: str = ""
+
+
+class MemoryIngestRequest(BaseModel):
+    """Request body for POST /v1/memory/ingest."""
+    chunks: list[MemoryChunk] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
