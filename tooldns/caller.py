@@ -242,9 +242,14 @@ def call_tool(database, tool_id: str, arguments: dict) -> dict:
     source_info = tool.get("source_info", {})
     source_type = source_info.get("source_type", "")
 
-    # Skills — return content for LLM execution
+    # Skills — executable skill tools run via stdio; instruction-only skills return content
     _SKILL_CONTENT_TYPES = {"skill", "skill_directory", "skill_file"}
     if source_type in _SKILL_CONTENT_TYPES:
+        # If the skill has a command, execute it (e.g. cea_report_get_dates)
+        if source_info.get("command"):
+            result = proxy_mcp_call(tool, arguments, database)
+            return {"type": "mcp_result", "result": result}
+        # Otherwise return SKILL.md content for LLM-driven execution
         content = load_skill_content(tool["name"], source_info)
         return {
             "type": "skill",
