@@ -1349,6 +1349,18 @@ def call_tool_endpoint(req: CallToolRequest):
         return {"type": "macro_result", "macro_id": tool_id, "steps": results}
 
     # --- Single tool call ---
+    # Server-side param sanitization: strip args not in tool's schema
+    if _database and arguments:
+        tool_meta = _database.get_tool_by_id(tool_id)
+        if tool_meta:
+            schema = tool_meta.get("input_schema", tool_meta.get("inputSchema", {}))
+            valid_params = set(schema.get("properties", {}).keys())
+            if valid_params:
+                clean = {k: v for k, v in arguments.items() if k in valid_params}
+                if clean != arguments:
+                    removed = set(arguments) - set(clean)
+                    logger.info(f"Sanitized args for {tool_id}: stripped {removed}")
+                    arguments = clean
     try:
         result = caller_call_tool(_database, tool_id, arguments)
     except ValueError as e:
