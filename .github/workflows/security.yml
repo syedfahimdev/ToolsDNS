@@ -79,56 +79,13 @@ jobs:
           echo ".env check passed — no secrets in repo"
 
       - name: Check API key masking (never expose keys in responses)
-        run: |
-          python3 -c "
-          import re, glob, sys
-          issues = []
-          # Scan Python source for patterns that might return raw API keys in responses
-          for f in glob.glob('tooldns/**/*.py', recursive=True):
-              content = open(f).read()
-              # Flag if full key is returned in a JSON response dict (not just logged)
-              if re.search(r'['\''\"]\s*key\s*[''\"].*credentials\.credentials', content):
-                  issues.append(f'{f}: possible raw key exposure in response')
-          if issues:
-              print('API KEY EXPOSURE ISSUES:')
-              for i in issues: print(' ', i)
-              sys.exit(1)
-          print('API key masking check passed')
-          "
+        run: python3 scripts/ci/check_api_key_masking.py
 
       - name: Check for SQL injection risks
-        run: |
-          python3 -c "
-          import re, glob, sys
-          issues = []
-          for f in glob.glob('tooldns/**/*.py', recursive=True):
-              content = open(f).read()
-              # Flag f-string SQL queries (risk of injection)
-              matches = re.findall(r'f[\"\'](.*?SELECT.*?WHERE.*?)[\"\']\s*[,)]', content, re.IGNORECASE)
-              for m in matches:
-                  if '{' in m:
-                      issues.append(f'{f}: possible SQL injection: {m[:80]}')
-          if issues:
-              print('SQL INJECTION RISKS:')
-              for i in issues: print(' ', i)
-              # Warn only, don't fail (could be false positives)
-          else:
-              print('SQL injection check passed')
-          "
+        run: python3 scripts/ci/check_sql_injection.py
 
       - name: Check CORS and auth middleware
-        run: |
-          python3 -c "
-          content = open('main.py').read()
-          issues = []
-          if 'allow_origins=[\"*\"]' in content or \"allow_origins=['*']\" in content:
-              issues.append('CORS allows ALL origins — restrict in production')
-          if issues:
-              print('SECURITY WARNINGS:')
-              for i in issues: print(' -', i)
-          else:
-              print('CORS/auth check passed')
-          "
+        run: python3 scripts/ci/check_cors.py
 
       - name: Upload Bandit report
         uses: actions/upload-artifact@v7
